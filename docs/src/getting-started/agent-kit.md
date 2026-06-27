@@ -133,6 +133,9 @@ strata init claude              # default: repo scope
 strata init claude --scope project  # same, explicit
 ```
 
+Note: `--global` and `--scope user` are equivalent. Combining `--global` with
+`--scope project` is an error (the two flags conflict on scope and are rejected).
+
 ### What each scope writes
 
 **Repo scope** (`--scope project`, the default) writes into the repo:

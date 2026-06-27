@@ -251,8 +251,8 @@ strata init [OPTIONS] [AGENT]
 | `[AGENT]` |  | Which agent to set up: `claude` or `kiro`. Omit to list supported agents. An unknown agent is an error naming the supported set. |
 | `--path <DIR>` | `.` | Project root to install into. Ignored when `--global` / `--scope user` is used (the target is always `~/.claude`). |
 | `--yes` | off | Run any needed `strata index` non-interactively (no prompts). With `--yes` and no index yet, `init` indexes first so the steering identity line carries real counts. |
-| `--global` | off | Install into `~/.claude` (user scope) instead of the current repository. Equivalent to `--scope user`. Requires the `claude` CLI to be on PATH; aborts before writing anything if it is absent. Only supported for `claude` (Kiro has no equivalent global scope). |
-| `--scope <SCOPE>` | `project` | Install scope: `project` (repo, the default) or `user` (global, `~/.claude`). `--scope user` is identical to `--global`. `--scope project` is the default and is the same as omitting the flag. |
+| `--global` | off | Install into `~/.claude` (user scope) instead of the current repository. Equivalent to `--scope user`. Requires the `claude` CLI to be on PATH; aborts before writing anything if it is absent. Only supported for `claude` (Kiro has no equivalent global scope). **Conflicts with `--scope project`**: passing both is an error (they must agree on scope). |
+| `--scope <SCOPE>` | `project` | Install scope: `project` (repo, the default) or `user` (global, `~/.claude`). `--scope user` is identical to `--global`. `--scope project` is the default and is the same as omitting the flag. **Combining `--global` with `--scope project` is rejected as a conflict.** |
 
 ## Exit codes
 
