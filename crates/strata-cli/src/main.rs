@@ -451,10 +451,11 @@ fn main() -> ExitCode {
                 // repo root so detect_changes can diff it. Additive: if neither
                 // --repo nor cwd is available we fall back to None (existing
                 // "needs a repo root" error from detect_changes).
-                let repo_root = repo
-                    .as_deref()
-                    .map(Path::to_path_buf)
-                    .or_else(|| std::env::current_dir().ok());
+                let repo_root = Some(strata_cli::resolve_mcp_cwd(
+                    repo.as_deref(),
+                    std::env::var("CLAUDE_PROJECT_DIR").ok().as_deref(),
+                    std::env::current_dir().ok(),
+                ));
                 cmd_mcp_workspace(&manifest, repo_root.as_deref()).map(|()| None)
             } else if db.is_some() {
                 // Explicit --db: existing single-repo path (back-compat).
@@ -465,9 +466,11 @@ fn main() -> ExitCode {
                 // or single accordingly, always carrying the member repo root
                 // in ToolCtx. --repo overrides cwd so an agent launched from
                 // outside the member directory can still resolve the estate.
-                let cwd = repo
-                    .or_else(|| std::env::current_dir().ok())
-                    .unwrap_or_else(|| PathBuf::from("."));
+                let cwd = strata_cli::resolve_mcp_cwd(
+                    repo.as_deref(),
+                    std::env::var("CLAUDE_PROJECT_DIR").ok().as_deref(),
+                    std::env::current_dir().ok(),
+                );
                 match strata_cli::resolve_mcp_launch(&cwd) {
                     McpLaunch::Estate {
                         manifest,

@@ -92,6 +92,25 @@ fn load_existing_graph(db: &Path) -> Result<Graph, CliError> {
         .map_err(|e| CliError::Other(e.to_string()))
 }
 
+/// Resolve the working repo for `strata mcp`: `--repo` if given, else a non-empty
+/// `$CLAUDE_PROJECT_DIR` (set by Claude Code for stdio MCP servers, so a global
+/// server resolves the project the user is in), else the process cwd, else ".".
+pub fn resolve_mcp_cwd(
+    repo: Option<&Path>,
+    project_dir_env: Option<&str>,
+    cwd: Option<PathBuf>,
+) -> PathBuf {
+    if let Some(r) = repo {
+        return r.to_path_buf();
+    }
+    if let Some(env) = project_dir_env {
+        if !env.is_empty() {
+            return PathBuf::from(env);
+        }
+    }
+    cwd.unwrap_or_else(|| PathBuf::from("."))
+}
+
 // ── workspace helpers ──────────────────────────────────────────────────────────
 
 /// Load and validate a workspace manifest from `manifest_path`.
@@ -2764,6 +2783,28 @@ mod tests {
             matches!(&launch_other, McpLaunch::Single { .. }),
             "--repo pointing at non-estate dir must resolve to Single; got: {launch_other:?}"
         );
+    }
+
+    #[test]
+    fn resolve_mcp_cwd_precedence() {
+        use std::path::{Path, PathBuf};
+        // --repo wins over everything.
+        assert_eq!(
+            resolve_mcp_cwd(Some(Path::new("/r")), Some("/env"), Some(PathBuf::from("/cwd"))),
+            PathBuf::from("/r")
+        );
+        // CLAUDE_PROJECT_DIR wins over cwd when --repo is absent.
+        assert_eq!(
+            resolve_mcp_cwd(None, Some("/env"), Some(PathBuf::from("/cwd"))),
+            PathBuf::from("/env")
+        );
+        // An empty CLAUDE_PROJECT_DIR is ignored; falls through to cwd.
+        assert_eq!(
+            resolve_mcp_cwd(None, Some(""), Some(PathBuf::from("/cwd"))),
+            PathBuf::from("/cwd")
+        );
+        // Nothing resolvable falls back to ".".
+        assert_eq!(resolve_mcp_cwd(None, None, None), PathBuf::from("."));
     }
 
     /// A directory with a valid `.strata/estate.toml` marker (written by
