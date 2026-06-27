@@ -1,38 +1,79 @@
 //! Claude Code artifact renderer for `strata init claude`.
 //!
 //! Writes, all merge-safely:
-//! * `.mcp.json` — merge-add `mcpServers.strata` with the detected launch args;
-//! * `CLAUDE.md` + `AGENTS.md` — the same managed steering block (spec §2);
+//! * `.mcp.json` — merge-add `mcpServers.strata` with the detected launch args
+//!   (project scope only; user scope defers MCP registration to Task 5);
+//! * `CLAUDE.md` + `AGENTS.md` — the same managed steering block (project scope),
+//!   or `~/.claude/CLAUDE.md` with the generic identity block (user scope);
 //! * `.claude/skills/strata/<slug>/SKILL.md` — the four task-routed skills;
 //! * `.claude/settings.json` — scoped, silent-when-clean hooks (R1/R2), each
 //!   carrying the `strata-hook` marker token for structural idempotency.
+//!   User scope uses a `.strata`-guarded SessionStart so global installs are
+//!   silent in repos that have not been indexed with StrataGraph.
 
 use std::path::Path;
 
 use serde_json::{json, Value};
 
-use super::content::{self};
+use super::content::{self, Identity};
 use super::writers::{self, hooks_event_array, upsert_hook, WriteError, HOOK_MARKER};
-use super::{FileReport, RepoContext};
+use super::{FileReport, InstallScope, RepoContext};
 
 /// Install the Claude Code kit under `root`, returning a [`FileReport`] per file.
-pub fn install(root: &Path, ctx: &RepoContext, _scope: crate::init::InstallScope) -> Result<Vec<FileReport>, WriteError> {
+///
+/// Task 5 will extend this to shell out for the MCP registration (user scope).
+/// For now `install` delegates entirely to [`install_files`].
+pub fn install(root: &Path, ctx: &RepoContext, scope: InstallScope) -> Result<Vec<FileReport>, WriteError> {
+    install_files(root, ctx, scope)
+}
+
+/// Write all Claude Code file artifacts under `root` for the given `scope`,
+/// returning a [`FileReport`] per file.
+///
+/// This is the file-writing portion of the install, separated so Task 5 can
+/// call it after the MCP shell-out without duplicating logic, and so the test
+/// suite can exercise it directly.
+///
+/// **Project scope** (root is the repo):
+///   - `.mcp.json` — merge-add `mcpServers.strata`;
+///   - `CLAUDE.md` + `AGENTS.md` — managed steering block (per-repo identity);
+///   - `.claude/skills/strata/<slug>/SKILL.md` — four task-routed skills;
+///   - `.claude/settings.json` — hooks with project SessionStart.
+///
+/// **User scope** (root is the home directory, e.g. `~`):
+///   - NO `.mcp.json` (Task 5 handles MCP registration via `claude mcp add`);
+///   - `.claude/CLAUDE.md` — managed steering block with generic identity;
+///   - `.claude/skills/strata/<slug>/SKILL.md` — four task-routed skills;
+///   - `.claude/settings.json` — hooks with `.strata`-guarded SessionStart.
+pub fn install_files(root: &Path, ctx: &RepoContext, scope: InstallScope) -> Result<Vec<FileReport>, WriteError> {
     let mut reports = Vec::new();
 
-    // 1. .mcp.json — merge-add mcpServers.strata.
-    let mcp_path = root.join(".mcp.json");
-    let server = mcp_server_value(&ctx.mcp_args);
-    let outcome = writers::merge_json(&mcp_path, &json!({ "mcpServers": { "strata": server } }))?;
-    reports.push(FileReport::new(".mcp.json", outcome));
+    match scope {
+        InstallScope::Project => {
+            // 1. .mcp.json — merge-add mcpServers.strata (project only).
+            let mcp_path = root.join(".mcp.json");
+            let server = mcp_server_value(&ctx.mcp_args);
+            let outcome = writers::merge_json(&mcp_path, &json!({ "mcpServers": { "strata": server } }))?;
+            reports.push(FileReport::new(".mcp.json", outcome));
 
-    // 2. CLAUDE.md + AGENTS.md — the same managed steering block.
-    let block = content::render_steering_block(&ctx.identity, content::CLAUDE_ROUTING);
-    for fname in ["CLAUDE.md", "AGENTS.md"] {
-        let outcome = writers::upsert_managed_block(&root.join(fname), &block)?;
-        reports.push(FileReport::new(fname, outcome));
+            // 2. CLAUDE.md + AGENTS.md — per-repo identity steering block.
+            let block = content::render_steering_block(&ctx.identity, content::CLAUDE_ROUTING);
+            for fname in ["CLAUDE.md", "AGENTS.md"] {
+                let outcome = writers::upsert_managed_block(&root.join(fname), &block)?;
+                reports.push(FileReport::new(fname, outcome));
+            }
+        }
+        InstallScope::User => {
+            // 1. No .mcp.json — Task 5 handles MCP registration via `claude mcp add`.
+            // 2. ~/.claude/CLAUDE.md — generic identity steering block.
+            let block = content::render_steering_block(&Identity::Global, content::CLAUDE_ROUTING);
+            let claude_md = root.join(".claude/CLAUDE.md");
+            let outcome = writers::upsert_managed_block(&claude_md, &block)?;
+            reports.push(FileReport::new(".claude/CLAUDE.md", outcome));
+        }
     }
 
-    // 3. Skills — wholly owned files.
+    // 3. Skills — wholly owned files (identical for both scopes).
     for (slug, body) in content::skills() {
         let rel = format!(".claude/skills/strata/{slug}/SKILL.md");
         let outcome = writers::write_owned(&root.join(&rel), &body)?;
@@ -40,8 +81,9 @@ pub fn install(root: &Path, ctx: &RepoContext, _scope: crate::init::InstallScope
     }
 
     // 4. .claude/settings.json — scoped silent-when-clean hooks.
+    //    SessionStart variant differs by scope; Pre/PostToolUse are identical.
     let settings_path = root.join(".claude/settings.json");
-    let outcome = writers::edit_json(&settings_path, install_hooks)?;
+    let outcome = writers::edit_json(&settings_path, |root| install_hooks_for(root, scope))?;
     reports.push(FileReport::new(".claude/settings.json", outcome));
 
     Ok(reports)
@@ -65,9 +107,13 @@ fn mcp_server_value(args: &[String]) -> Value {
 ///   no index / no file / nothing to say, degrade-safe on any error.
 /// * **PostToolUse** `Edit|Write|MultiEdit` → R2 stay-fresh: silent (exit 0) when
 ///   `.strata/` is absent, else backgrounds an incremental `strata index`.
-/// * **SessionStart** → R1: a single guidance line *only* when the graph DB is
-///   missing, silent otherwise.
-fn install_hooks(root: &mut Value) {
+/// * **SessionStart** → R1: chosen by `scope` — project uses the nudge-when-unindexed
+///   variant; user uses the `.strata`-guarded variant (silent in non-Strata repos).
+///
+/// Pre- and PostToolUse groups are identical across scopes (already `$CLAUDE_PROJECT_DIR`
+/// and `.strata`-guarded, so they are inert in non-Strata repos). Only SessionStart
+/// differs: for User scope a global install must never nag in non-Strata projects.
+fn install_hooks_for(root: &mut Value, scope: InstallScope) {
     if let Some(arr) = hooks_event_array(root, "PreToolUse") {
         upsert_hook(arr, pre_tool_use_group());
     }
@@ -75,7 +121,11 @@ fn install_hooks(root: &mut Value) {
         upsert_hook(arr, post_tool_use_group());
     }
     if let Some(arr) = hooks_event_array(root, "SessionStart") {
-        upsert_hook(arr, session_start_group());
+        let group = match scope {
+            InstallScope::Project => session_start_group(),
+            InstallScope::User => session_start_group_guarded(),
+        };
+        upsert_hook(arr, group);
     }
 }
 
@@ -135,6 +185,18 @@ fn session_start_group() -> Value {
         "matcher": "",
         "hooks": [ { "type": "command", "command": command } ]
     })
+}
+
+/// The SessionStart matcher-group for user (global) scope: like
+/// [`session_start_group`] but also guards on the `.strata` directory being
+/// present, so a global install never nags in repos that have not been
+/// indexed with StrataGraph. Silent unless the repo has `.strata/` but not
+/// `.strata/graph.duckdb`.
+fn session_start_group_guarded() -> Value {
+    let command = format!(
+        "sh -c 'd=\"$CLAUDE_PROJECT_DIR\"; [ -d \"$d/.strata\" ] || exit 0; [ -f \"$d/.strata/graph.duckdb\" ] && exit 0; echo \"StrataGraph: no index yet, run \\`strata index .\\` to enable cross-plane impact analysis.\"' # {HOOK_MARKER}"
+    );
+    json!({ "matcher": "", "hooks": [ { "type": "command", "command": command } ] })
 }
 
 #[cfg(test)]
@@ -366,6 +428,34 @@ mod tests {
             "the pre-edit hook script must be valid shell; sh -n said: {}",
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    #[test]
+    fn user_scope_writes_global_artifacts_and_no_mcp_json() {
+        let home = TempDir::new().unwrap();
+        let ctx = RepoContext { mcp_args: vec![], identity: Identity::Global };
+        let reports = install_files(home.path(), &ctx, crate::init::InstallScope::User).unwrap();
+
+        let claude = home.path().join(".claude");
+        assert!(claude.join("CLAUDE.md").exists(), "global steering at ~/.claude/CLAUDE.md");
+        assert!(!home.path().join(".mcp.json").exists(), "no .mcp.json for global");
+        assert!(!home.path().join("CLAUDE.md").exists(), "no ~/CLAUDE.md (home root)");
+        assert!(claude.join("settings.json").exists());
+        assert!(claude.join("skills/strata/strata-guide/SKILL.md").exists());
+
+        // Steering is the generic block (no repo identity counts).
+        let steering = std::fs::read_to_string(claude.join("CLAUDE.md")).unwrap();
+        assert!(steering.contains("installed globally by StrataGraph"));
+        assert!(!steering.contains("indexed by StrataGraph as"));
+
+        // SessionStart is the guarded variant (silent in non-Strata repos).
+        let settings = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+        assert!(settings.contains(r#"[ -d \"$d/.strata\" ]"#) || settings.contains("-d \"$d/.strata\""),
+            "global SessionStart must guard on the .strata dir: {settings}");
+
+        // All files in the report were created.
+        assert!(!reports.is_empty());
+        let _ = reports; // suppress unused warning
     }
 
     #[test]
