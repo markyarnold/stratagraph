@@ -112,6 +112,86 @@ everything as **unchanged** rather than appending duplicates. You can re-run it
 after upgrading StrataGraph to refresh the managed content without losing your own
 edits around it.
 
+## Global vs repo install
+
+By default, `strata init claude` installs the kit into the **current repository**
+(repo scope). That is the right choice for most teams: the files are committed,
+shared with everyone, and the identity line is pinned to this specific repo.
+
+When you work across many repos and want a single personal install that covers
+all of them, use **global scope** instead:
+
+```bash
+strata init claude --global     # same as --scope user
+strata init claude --scope user # explicit form
+```
+
+A repo-scoped install uses `--scope project` (the default; that flag is optional):
+
+```bash
+strata init claude              # default: repo scope
+strata init claude --scope project  # same, explicit
+```
+
+### What each scope writes
+
+**Repo scope** (`--scope project`, the default) writes into the repo:
+
+| File | Location |
+|---|---|
+| `.mcp.json` | Repo root |
+| `CLAUDE.md`, `AGENTS.md` | Repo root |
+| `.claude/skills/strata/…` | Repo root |
+| `.claude/settings.json` | Repo root |
+
+These files are committed and shared with the team. The steering block carries
+a per-repo identity line naming this repo's node count and planes.
+
+**Global scope** (`--global` / `--scope user`) writes into your home directory:
+
+| File | Location |
+|---|---|
+| MCP server registration | `~/.claude.json` (managed by `claude mcp add`, never hand-edited) |
+| `~/.claude/settings.json` | Hooks (merged in, same merge-safe writer) |
+| `~/.claude/skills/strata/…` | Skills (same four SKILL.md files) |
+| `~/.claude/CLAUDE.md` | Generic steering block (no per-repo identity line) |
+
+No global `AGENTS.md` is written (Claude Code does not read a global one).
+
+### How the global MCP server resolves the current repo
+
+The global MCP server (`strata mcp`, registered with `claude mcp add --scope user`)
+resolves the active project from `$CLAUDE_PROJECT_DIR` at request time, so a
+single server entry serves whichever repo you have open, in single-repo or estate
+mode depending on that repo's `.strata/` marker.
+
+### How the hooks self-activate
+
+The globally-installed hooks guard on `.strata/`: they are silent and a no-op in
+any directory that has not been indexed by StrataGraph. The SessionStart nudge is
+also silenced globally outside Strata repos, so they produce no noise in
+unrelated projects.
+
+### Prerequisite: `claude` CLI must be on PATH
+
+The global install registers the MCP server by shelling out to the official
+`claude` CLI (`claude mcp add strata --scope user -- strata mcp`). If `claude`
+is not on PATH, the global install aborts before writing anything (all-or-nothing).
+This is already satisfied if you use Claude Code normally.
+
+### Which scope to use (precedence note)
+
+Claude Code runs **both** project-level and user-level (global) hooks. Do not
+install a repo-scoped kit and a global kit in the same repo, or you get duplicate
+blast injections and double reindexes on every edit.
+
+Pick one:
+
+- **Global** (`--global`): install once, covers every repo, private to you.
+  Good for personal machines where you open many repos.
+- **Repo** (default): committed, shared with the team, identity pinned.
+  Good for projects where every contributor should have the kit automatically.
+
 ## Index first, then restart once
 
 The kit needs a graph to serve. If you have not indexed yet, the summary tells

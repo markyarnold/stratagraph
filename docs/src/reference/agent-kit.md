@@ -10,9 +10,12 @@ For the command flags, see [CLI → init](cli.md#init).
 ## Invocation
 
 ```
-strata init            # list supported agents
-strata init claude     # install the Claude Code kit into the current dir
-strata init kiro       # install the Kiro kit
+strata init                          # list supported agents
+strata init claude                   # install the Claude Code kit (repo scope)
+strata init claude --global          # install into ~/.claude (global scope)
+strata init claude --scope user      # same as --global
+strata init claude --scope project   # same as the default (repo scope)
+strata init kiro                     # install the Kiro kit
 strata init <agent> --path <DIR> --yes
 ```
 
@@ -64,9 +67,22 @@ carries the marker token `strata-hook` (in a trailing comment). On re-run,
 `upsert_hook` drops any prior entry containing the token and appends the current
 one, never duplicating, never disturbing foreign hooks (which lack the token).
 
-## `strata init claude`
+## Install scopes
 
-Writes eight files (`claude::install`):
+`strata init claude` supports two scopes, selected by `--global` / `--scope`.
+
+| Flag | Scope | Installs into |
+|---|---|---|
+| (none) / `--scope project` | Repo (default) | The current repository root |
+| `--global` / `--scope user` | Global (user-wide) | `~/.claude` |
+
+Pick one scope per repo. Claude Code runs both project-level and user-level
+hooks, so installing both in the same repo causes duplicate blast injections and
+double reindexes. See [getting-started: Global vs repo install](../getting-started/agent-kit.md#global-vs-repo-install).
+
+## `strata init claude` (repo scope)
+
+Writes eight files (`claude::install`, scope `Project`):
 
 | File                                                        | Writer                 | Contents                                 |
 | ----------------------------------------------------------- | ---------------------- | ---------------------------------------- |
@@ -146,6 +162,71 @@ silent-when-clean.
 - **Matcher:** `""` (empty, matches every session start).
 - **Behaviour:** prints one guidance line **only** when the graph DB is missing
   (`StrataGraph: no index yet — run `strata index .` …`); silent otherwise.
+
+## `strata init claude --global` (global scope)
+
+Writes into `~/.claude` (`claude::install`, scope `User`). The target map
+differs from the repo scope:
+
+| Target | Writer | Contents |
+|---|---|---|
+| `~/.claude.json` (MCP registration) | `claude mcp add --scope user` (CLI subprocess) | Registers `strata` as a user-scoped MCP server; `~/.claude.json` is managed by Claude Code, never hand-edited by this tool. |
+| `~/.claude/settings.json` | `edit_json` (same merge-safe writer) | The three scoped hooks, merged in. |
+| `~/.claude/skills/strata/strata-guide/SKILL.md` | `write_owned` | Skill: which tool to use. |
+| `~/.claude/skills/strata/strata-exploring/SKILL.md` | `write_owned` | Skill: understand architecture. |
+| `~/.claude/skills/strata/strata-impact-analysis/SKILL.md` | `write_owned` | Skill: blast radius. |
+| `~/.claude/skills/strata/strata-contracts-and-infra/SKILL.md` | `write_owned` | Skill: producers/consumers/dead surface. |
+| `~/.claude/CLAUDE.md` | `upsert_managed_block` | Generic steering block (no per-repo identity line). |
+
+No `AGENTS.md` is written globally (Claude Code does not read a global one).
+No `.mcp.json` is written (the MCP server is registered via `claude mcp add`,
+not a per-project JSON file).
+
+### MCP registration (global)
+
+The global MCP server is registered by running:
+
+```
+claude mcp add strata --scope user -- strata mcp
+```
+
+This delegates ownership of `~/.claude.json` to Claude Code. StrataGraph never
+hand-edits that file. If `claude` is not on PATH, the global install aborts
+before writing any file (all-or-nothing).
+
+The registered server command is `strata mcp` with no explicit `--db` or
+`--workspace`. At request time the server resolves the active project from
+`$CLAUDE_PROJECT_DIR` (set by Claude Code to the open project directory),
+selects estate or single-repo mode from the repo's `.strata/` marker, and
+serves the appropriate graph. One global server entry therefore covers every
+repo you open.
+
+### Steering block (global)
+
+The `~/.claude/CLAUDE.md` block is the same managed content as the repo-scope
+block (same markers, same merge-safety), with one difference: there is no
+per-repo identity line. The block states the impact-before-edit rules, the
+confidence-band trust policy, the dead-surface rule, and the skill-routing
+table, all in generic terms applicable to any repo.
+
+### Hooks (global)
+
+The same three hooks are written into `~/.claude/settings.json`:
+
+- **PreToolUse (pre-edit blast):** guards on `.strata/graph.duckdb` in the
+  current directory; silent and a no-op in any repo that has not been indexed.
+- **PostToolUse (stay-fresh reindex):** silent when `.strata/` is absent; only
+  triggers an incremental reindex in indexed repos.
+- **SessionStart (index guidance):** silenced outside Strata repos (guards on
+  `.strata/`); no noise in unrelated projects.
+
+The same `strata-hook` marker is used, so a re-run is fully idempotent.
+
+### Prerequisite: `claude` CLI on PATH
+
+The `claude` CLI must be on PATH before running `strata init claude --global`.
+If it is absent, the command aborts before writing anything. This is already
+satisfied when using Claude Code normally.
 
 ## `strata init kiro`
 
