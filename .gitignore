@@ -1,0 +1,143 @@
+# ---------------------------------------------------------------------------
+# OS / Editor
+# ---------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ---------------------------------------------------------------------------
+# Environment / Secrets
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+credentials
+.aws/
+secrets.json
+
+# ---------------------------------------------------------------------------
+# Logs / Temp
+# ---------------------------------------------------------------------------
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# ---------------------------------------------------------------------------
+# AWS SAM
+# ---------------------------------------------------------------------------
+.aws-sam/
+samconfig.toml.bak
+packaged.yaml
+packaged.yml
+# SAM build/output artifacts
+.aws-sam/build/
+.aws-sam/cache/
+.aws-sam/deps/
+
+# ---------------------------------------------------------------------------
+# Terraform / Terragrunt
+# ---------------------------------------------------------------------------
+# Local .terraform directories
+**/.terraform/*
+.terraform.lock.hcl
+# Terraform state
+*.tfstate
+*.tfstate.*
+# Crash log files
+crash.log
+crash.*.log
+# Variable files that may contain secrets
+*.tfvars
+*.tfvars.json
+!example.tfvars
+# Plan output files
+*.tfplan
+plan.out
+# CLI config / override files
+.terraformrc
+terraform.rc
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Terragrunt cache
+.terragrunt-cache/
+**/.terragrunt-cache/
+
+# ---------------------------------------------------------------------------
+# Node / JavaScript / TypeScript
+# ---------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dist/
+build/
+.cache/
+coverage/
+*.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# ---------------------------------------------------------------------------
+# Build / Packaging artifacts
+# ---------------------------------------------------------------------------
+*.zip
+*.tar.gz
+*.jar
+out/
+target/
+
+# ---------------------------------------------------------------------------
+# GitNexus index (local knowledge graph cache)
+# ---------------------------------------------------------------------------
+.gitnexus/
+
+# ---------------------------------------------------------------------------
+# Strata index (default local store the CLI/desktop app writes to)
+# ---------------------------------------------------------------------------
+.strata/
+
+# Playwright MCP snapshots (tooling artifact)
+.playwright-mcp/
+
+# ---------------------------------------------------------------------------
+# Internal design specs / plans + subagent-driven-dev scratch (kept local; never shipped)
+# ---------------------------------------------------------------------------
+docs/superpowers/
+.superpowers/

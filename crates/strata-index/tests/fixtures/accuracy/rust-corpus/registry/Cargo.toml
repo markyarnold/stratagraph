@@ -1,0 +1,13 @@
+# An EMPTY [workspace] keeps this corpus project out of the parent strata
+# workspace (so `cargo metadata` / `rust-analyzer scip .` succeed). No `target/`
+# is committed (see the corpus .gitignore).
+[workspace]
+
+[package]
+name = "registry"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+name = "registry"
+path = "src/lib.rs"

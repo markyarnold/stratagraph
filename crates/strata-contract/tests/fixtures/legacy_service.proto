@@ -1,0 +1,16 @@
+// A proto2 service — proves the adapter handles proto2 as well as proto3.
+syntax = "proto2";
+
+package legacy;
+
+message DoRequest {
+  required string id = 1;
+}
+
+message DoResponse {
+  optional string result = 1;
+}
+
+service LegacyService {
+  rpc Do(DoRequest) returns (DoResponse);
+}

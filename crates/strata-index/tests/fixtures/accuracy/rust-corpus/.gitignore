@@ -1,0 +1,6 @@
+# `rust-analyzer scip .` (and any stray `cargo` invocation) writes a `target/`
+# build dir into each corpus project. It is a generated artifact and must NEVER
+# be committed — the committed hermetic artifact is `index.scip`. Cargo.lock is
+# likewise a generated artifact for these dependency-free corpus crates.
+target/
+Cargo.lock

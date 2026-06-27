@@ -1,0 +1,11 @@
+{
+  "nodes": [
+    { "uid": "ts|app|src/a.ts|a|()", "name": "a" },
+    { "uid": "ts|app|src/b.ts|b|()", "name": "b" },
+    { "uid": "ts|app|src/c.ts|c|()", "name": "c" }
+  ],
+  "edges": [
+    { "src": "ts|app|src/a.ts|a|()", "dst": "ts|app|src/b.ts|b|()", "confidence": 0.9, "ambiguous": false },
+    { "src": "ts|app|src/b.ts|b|()", "dst": "ts|app|src/c.ts|c|()", "confidence": 0.8, "ambiguous": true }
+  ]
+}

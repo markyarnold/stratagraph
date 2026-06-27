@@ -1,0 +1,36 @@
+[package]
+name = "strata-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "StrataGraph desktop app: open a code graph, search, inspect context, run impact."
+
+# The Tauri app is a binary. A `lib` target is also produced so the thin,
+# testable command functions (`open`/`tool`/`subgraph`) can be unit-tested
+# without launching a window (the GUI cannot be driven in this harness).
+[lib]
+name = "strata_desktop_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "strata-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Engine crates, reused in-process. The GUI must never disagree with MCP/CLI,
+# so `tool` delegates to `strata_mcp::call_tool` (one dispatch path).
+strata-core = { path = "../../../crates/strata-core" }
+strata-store = { path = "../../../crates/strata-store" }
+strata-index = { path = "../../../crates/strata-index" }
+strata-mcp = { path = "../../../crates/strata-mcp" }
+
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

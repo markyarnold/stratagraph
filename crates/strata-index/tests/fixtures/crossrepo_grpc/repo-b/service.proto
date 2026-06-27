@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package shop.orders.v1;
+
+message GetOrderRequest {
+  string id = 1;
+}
+
+message GetOrderResponse {
+  string id = 1;
+  double total = 2;
+}
+
+service OrderService {
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+}

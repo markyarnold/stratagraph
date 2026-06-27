@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Real-world-shaped SAM + AppSync template (distilled from a production
+  8k-line real-world template; NO client code). Exercises the parser-robustness
+  fixes: block-scalar tags (!Sub |), condition intrinsics (!If/!Equals/!Not),
+  flow-collection tags (!Join ["", [...]]), and an unknown future tag.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+  SharedBus:
+    Type: String
+    Default: default
+
+Conditions:
+  # !Equals / !Not in a Conditions block — these used to be absent from the
+  # normalizer tag set, so the whole parse died on the first one.
+  IsProd: !Equals [!Ref Stage, "prod"]
+  IsNotProd: !Not [!Equals [!Ref Stage, "prod"]]
+
+Resources:
+  # ── Serverless function #1: a same-template Role via !GetAtt. ──
+  PolicyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      CodeUri: functions/policy-operations/
+      Role: !GetAtt PolicyRole.Arn
+      Environment:
+        Variables:
+          # !If [Cond, A, B] in a value position: condition-wrapped, must grade
+          # Unresolved — NEVER an invented Resource through the condition.
+          BUS_NAME: !If [IsProd, !Ref SharedBus, !Ref AWS::NoValue]
+          # A flow-collection !Join — its outer tag is rewritten; nested !Ref/
+          # !GetAtt inside the flow are stripped to bare strings (documented).
+          TABLE_ARN: !Join ["", ["arn:aws:dynamodb:::table/", !Ref Stage]]
+
+  # ── Serverless function #2: distinct handler/role. ──
+  AuditFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: audit.handler
+      Runtime: python3.12
+      CodeUri: functions/audit/
+      Role: !GetAtt PolicyRole.Arn
+
+  # ── IAM role carrying an INLINE POLICY via a block-scalar !Sub. ──
+  # This is the shape that killed the whole parse: `PolicyDocument: !Sub |`
+  # was rewritten to `{"Fn::Sub": "|"}`, orphaning the indented body below.
+  PolicyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: inline
+          PolicyDocument: !Sub |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "dynamodb:GetItem",
+                  "Resource": "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/policies-${Stage}"
+                }
+              ]
+            }
+
+  # ── AppSync API/datasource/resolver chain (the money-link spine). ──
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: !Sub "policy-api-${Stage}"
+      AuthenticationType: API_KEY
+
+  PolicyDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: PolicyDataSource
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt PolicyFunction.Arn
+
+  GetPolicyStatsResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: getPolicyStats
+      DataSourceName: !GetAtt PolicyDS.Name
+      # Another block-scalar tag, this time on a resolver template field.
+      RequestMappingTemplate: !Sub |
+        {
+          "version": "2017-02-28",
+          "operation": "Invoke",
+          "payload": { "field": "getPolicyStats", "stage": "${Stage}" }
+        }
+
+  ListContentPoliciesResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: listContentPolicies
+      # DataSourceName wrapped in !If: condition-wrapped reference. The grader
+      # must NEVER reach through the condition to invent Resource("PolicyDS");
+      # it grades Unresolved (a fact we cannot pin without evaluating the cond).
+      DataSourceName: !If [IsProd, !GetAtt PolicyDS.Name, !GetAtt PolicyDS.Name]
+
+  # ── An unknown / future short-form tag must NEVER kill the parse. ──
+  # The catch-all strips the tag and keeps the value (here a Generic resource).
+  EventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !SomeFutureTag policy-events

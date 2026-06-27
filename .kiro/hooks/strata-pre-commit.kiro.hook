@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Strata Pre-Commit Scope Check",
+  "description": "Before committing, runs detect_changes for the per-plane changed symbols, blast radius, and risk.",
+  "version": "1",
+  "when": {
+    "type": "preToolUse",
+    "toolTypes": [
+      ".*git_add_or_commit.*"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "STOP: Strata pre-commit check. Before committing, run the detect_changes tool (pass staged:true if you have staged a partial commit). It git-diffs your work, derives the changed symbols PER PLANE (code; contract producers/consumers; infra), aggregates the blast radius across the graph, and returns the overall risk level (LOW/MEDIUM/HIGH/CRITICAL) with reasons. Report its affected set and risk, and proceed with the commit ONLY if that scope matches your intent. If risk is HIGH/CRITICAL, crosses a repo boundary, or touches contract surface consumed elsewhere, pause for user direction first."
+  }
+}

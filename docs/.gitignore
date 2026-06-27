@@ -1,0 +1,2 @@
+# mdBook build output (the site is built from src/ by CI / `mdbook build`)
+book/

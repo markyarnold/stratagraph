@@ -1,0 +1,16 @@
+# The user service GraphQL schema (the contract). The Terraform AppSync resolvers
+# in main.tf PRODUCES these root fields. `ghostField` is deliberately ABSENT — the
+# config's resolver for it must therefore stay unlinked (honesty).
+
+type User {
+  id: ID!
+  name: String!
+}
+
+type Query {
+  getUser(id: ID!): User
+}
+
+type Mutation {
+  createUser(name: String!): User
+}

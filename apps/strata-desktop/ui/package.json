@@ -1,0 +1,31 @@
+{
+  "name": "strata-desktop-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev --config ../src-tauri/tauri.conf.json",
+    "tauri:build": "tauri build --config ../src-tauri/tauri.conf.json"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "graphology": "0.26.0",
+    "graphology-layout": "0.6.1",
+    "graphology-layout-forceatlas2": "0.10.1",
+    "graphology-types": "0.24.8",
+    "sigma": "3.0.3"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "^5",
+    "vite": "^5",
+    "vitest": "3.2.6"
+  }
+}

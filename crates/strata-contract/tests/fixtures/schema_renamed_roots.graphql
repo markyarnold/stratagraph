@@ -1,0 +1,15 @@
+# An explicit `schema {}` block renames the root operation types. The canonical
+# extracted keys must still be Query.ping / Mutation.doIt (the operation KIND),
+# not RootQ.ping / RootM.doIt — consumer documents only know the kind.
+schema {
+  query: RootQ
+  mutation: RootM
+}
+
+type RootQ {
+  ping: String
+}
+
+type RootM {
+  doIt: Boolean
+}

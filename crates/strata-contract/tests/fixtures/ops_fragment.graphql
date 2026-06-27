@@ -1,0 +1,21 @@
+# Root-level fragment spread + a root meta field. The operation `Q`'s only root
+# selection is `...RootFields` — a fragment spread. We must NOT guess which
+# concrete fields that resolves to; it is counted in `unresolved_root_spreads`.
+# The second operation has a real root field plus `__typename`, an introspection
+# meta field that must be skipped (it is not a contract operation).
+query Q {
+  ...RootFields
+}
+
+fragment RootFields on Query {
+  getUser(id: "1") {
+    name
+  }
+}
+
+query WithMeta {
+  __typename
+  listUsers {
+    id
+  }
+}

@@ -1,0 +1,38 @@
+# The gRPC estate dedup demo (Slice 17, D4a). Three repos:
+#
+# - repo-a and repo-b host ONE real gRPC API (the order service). They each carry
+#   a byte-identical `service.proto` and positively declare the SAME api id
+#   `orders`, so their shared `shop.orders.v1.OrderService.GetOrder` rpc collapses
+#   to ONE canonical ApiOperation node (the opt-in merge, B6 identity). Without the
+#   shared declaration the default api_id is the repo name and they would NOT
+#   merge (the safe default).
+#
+# - repo-collide carries BOTH a gRPC `collide.proto` whose key is `Query.getOrder`
+#   (a package-less service named `Query`) AND a GraphQL `schema.graphql` whose
+#   field key is also `Query.getOrder`. They share the key STRING but differ in
+#   format, so the `(api_id, format, key)` identity keeps them on TWO distinct
+#   canonical nodes (an ApiOperation for gRPC, a GraphqlField for GraphQL) — the
+#   format-discriminator proof.
+
+[workspace]
+name = "grpc-estate"
+
+[[repos]]
+name = "repo-a"
+path = "repo-a"
+
+[[repos.apis]]
+id = "orders"
+spec = "service.proto"
+
+[[repos]]
+name = "repo-b"
+path = "repo-b"
+
+[[repos.apis]]
+id = "orders"
+spec = "service.proto"
+
+[[repos]]
+name = "repo-collide"
+path = "repo-collide"

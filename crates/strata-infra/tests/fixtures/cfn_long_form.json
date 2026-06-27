@@ -1,0 +1,76 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "Policy operations service — JSON long-form intrinsics.",
+  "Parameters": {
+    "Stage": { "Type": "String", "Default": "dev" }
+  },
+  "Resources": {
+    "PolicyFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Handler": "app.lambda_handler",
+        "Runtime": "python3.12",
+        "CodeUri": "functions/policy-operations/",
+        "Role": { "Fn::GetAtt": ["PolicyRole", "Arn"] }
+      }
+    },
+    "PolicyRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "lambda.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        }
+      }
+    },
+    "Api": {
+      "Type": "AWS::AppSync::GraphQLApi",
+      "Properties": {
+        "Name": { "Fn::Sub": "policy-api-${Stage}" },
+        "AuthenticationType": "API_KEY"
+      }
+    },
+    "PolicyDS": {
+      "Type": "AWS::AppSync::DataSource",
+      "Properties": {
+        "ApiId": { "Fn::GetAtt": ["Api", "ApiId"] },
+        "Name": "PolicyDataSource",
+        "Type": "AWS_LAMBDA",
+        "LambdaConfig": {
+          "LambdaFunctionArn": { "Fn::GetAtt": ["PolicyFunction", "Arn"] }
+        }
+      }
+    },
+    "GetPolicyStatsResolver": {
+      "Type": "AWS::AppSync::Resolver",
+      "Properties": {
+        "ApiId": { "Fn::GetAtt": ["Api", "ApiId"] },
+        "TypeName": "Query",
+        "FieldName": "getPolicyStats",
+        "DataSourceName": { "Fn::GetAtt": ["PolicyDS", "Name"] }
+      }
+    },
+    "ListContentPoliciesResolver": {
+      "Type": "AWS::AppSync::Resolver",
+      "Properties": {
+        "ApiId": { "Fn::GetAtt": ["Api", "ApiId"] },
+        "TypeName": "Query",
+        "FieldName": "listContentPolicies",
+        "DataSourceName": { "Fn::GetAtt": ["PolicyDS", "Name"] }
+      }
+    },
+    "EventQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": { "Fn::Sub": "policy-events-${Stage}" }
+      }
+    }
+  }
+}

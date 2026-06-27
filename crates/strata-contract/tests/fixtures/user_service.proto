@@ -1,0 +1,38 @@
+// A proto3 gRPC service with unary, server-streaming, and bidi-streaming rpcs,
+// plus message and enum defs the service should NOT emit as operations.
+syntax = "proto3";
+
+package acme.users.v1;
+
+import "google/protobuf/empty.proto";
+
+message GetUserRequest {
+  string id = 1;
+}
+
+message GetUserResponse {
+  string id = 1;
+  string name = 2;
+}
+
+message ListUsersRequest {
+  int32 page_size = 1;
+}
+
+message UserEvent {
+  string kind = 1;
+}
+
+enum UserKind {
+  USER_KIND_UNSPECIFIED = 0;
+  USER_KIND_ADMIN = 1;
+}
+
+service UserService {
+  // Unary.
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  // Server-streaming.
+  rpc ListUsers(ListUsersRequest) returns (stream GetUserResponse);
+  // Bidirectional streaming.
+  rpc Watch(stream GetUserRequest) returns (stream UserEvent);
+}

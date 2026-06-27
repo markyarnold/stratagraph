@@ -1,0 +1,11 @@
+{
+  "name": "policy-operations",
+  "version": "1.4.0",
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "axios": "^1.7.0"
+  }
+}

@@ -1,0 +1,24 @@
+# An AWS AppSync schema: root fields carry `@aws_*` directives. The adapter must
+# tolerate these directives (parse cleanly) and extract the fields normally.
+type Query {
+  getUser(id: ID!): User @aws_auth(cognito_groups: ["admin"])
+  listUsers: [User] @aws_api_key
+}
+
+type Mutation {
+  createUser(input: UserInput!): User @aws_cognito_user_pools
+}
+
+type Subscription {
+  onCreateUser: User
+    @aws_subscribe(mutations: ["createUser"])
+}
+
+type User @aws_api_key {
+  id: ID!
+  name: String
+}
+
+input UserInput {
+  name: String!
+}

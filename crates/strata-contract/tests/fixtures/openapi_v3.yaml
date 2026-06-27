@@ -1,0 +1,28 @@
+openapi: 3.0.3
+info:
+  title: Users API
+  version: 1.0.0
+paths:
+  /users/{id}:
+    get:
+      operationId: getUser
+      summary: Fetch one user
+      responses:
+        '200':
+          description: ok
+    put:
+      operationId: updateUser
+      responses:
+        '200':
+          description: ok
+  /users:
+    get:
+      operationId: listUsers
+      responses:
+        '200':
+          description: ok
+    post:
+      operationId: createUser
+      responses:
+        '201':
+          description: created

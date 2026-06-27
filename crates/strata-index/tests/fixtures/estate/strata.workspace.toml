@@ -1,0 +1,10 @@
+[workspace]
+name = "test-estate"
+
+[[repos]]
+name = "repo-a"
+path = "repo-a"
+
+[[repos]]
+name = "repo-b"
+path = "repo-b"

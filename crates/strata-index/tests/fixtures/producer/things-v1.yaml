@@ -1,0 +1,11 @@
+openapi: 3.0.3
+info:
+  title: Things API v1
+  version: 1.0.0
+paths:
+  /things/{id}:
+    get:
+      operationId: getThingV1
+      responses:
+        '200':
+          description: ok

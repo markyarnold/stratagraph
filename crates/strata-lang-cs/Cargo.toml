@@ -1,0 +1,16 @@
+[package]
+name = "strata-lang-cs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+strata-core = { path = "../strata-core" }
+# Core stays the workspace-shared version; the C# grammar is the ONLY new dep.
+# De-risk verdict (see docs/accuracy/cs-extraction.md): tree-sitter-c-sharp 0.23.5
+# generates an ABI-15 parser that loads cleanly into tree-sitter 0.25.10
+# (`set_language` Ok, clean parse) — the crate's 0.23 semver is the grammar's own
+# version, not its ABI. Pinned exactly so a future grammar bump is a deliberate,
+# reviewed change rather than a silent float.
+tree-sitter = "0.25.10"
+tree-sitter-c-sharp = "=0.23.5"

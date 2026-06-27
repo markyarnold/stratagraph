@@ -1,0 +1,13 @@
+openapi: 3.0.3
+info:
+  title: Broken Spec
+  version: 1.0.0
+paths:
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      responses:
+        '200':
+          description: ok
+        # malformed below: unterminated flow sequence, invalid YAML
+        bad: [unterminated, "missing close

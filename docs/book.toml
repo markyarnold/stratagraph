@@ -1,0 +1,23 @@
+[book]
+title = "Strata — Cross-Plane Code Intelligence"
+description = "Honest, cross-boundary impact analysis across code, contract, infrastructure, and data planes."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+mathjax-support = false
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30

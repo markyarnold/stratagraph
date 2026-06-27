@@ -1,0 +1,13 @@
+# Tauri / Rust build artifacts
+src-tauri/target/
+src-tauri/gen/
+
+# Node / Vite (UI)
+ui/node_modules/
+ui/dist/
+ui/.vite/
+ui/*.tsbuildinfo
+
+# Bundled app output (never commit binaries)
+**/*.app/
+**/*.dmg

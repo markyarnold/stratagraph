@@ -1,0 +1,15 @@
+# An EMPTY [workspace] makes this corpus project its own independent cargo
+# workspace, so it is NOT pulled into the parent strata workspace (which would
+# fail `cargo metadata`, and `rust-analyzer scip .` needs metadata to succeed).
+# This is cargo's recommended way to embed a self-contained project inside a
+# larger repo. No `target/` is committed (see the corpus .gitignore).
+[workspace]
+
+[package]
+name = "shapes"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+name = "shapes"
+path = "src/lib.rs"

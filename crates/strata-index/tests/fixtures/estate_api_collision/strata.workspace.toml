@@ -1,0 +1,39 @@
+[workspace]
+name = "collision-estate"
+
+# Two UNRELATED API pairs that share an operation key — the B6 false-merge case.
+#
+# GraphQL pair: repo-user and repo-billing each declare `Query.getUser` in their
+# OWN, unrelated schema (a user-service field vs a billing-service field that
+# happen to share the canonical key string). repo-frontend consumes `getUser`.
+#
+# OpenAPI pair: repo-svc-a and repo-svc-b each declare `GET /health`
+# (operationId `health`) in their OWN spec. repo-uptime probes `/health`.
+#
+# NO `[[repos.apis]]` here: default api_id = repo_name, so the two halves of each
+# pair must NEVER merge. (The dedup_graphql fixture demonstrates the opt-in MERGE
+# path, where two repos positively declare the SAME api id.)
+
+[[repos]]
+name = "repo-user"
+path = "repo-user"
+
+[[repos]]
+name = "repo-billing"
+path = "repo-billing"
+
+[[repos]]
+name = "repo-frontend"
+path = "repo-frontend"
+
+[[repos]]
+name = "repo-svc-a"
+path = "repo-svc-a"
+
+[[repos]]
+name = "repo-svc-b"
+path = "repo-svc-b"
+
+[[repos]]
+name = "repo-uptime"
+path = "repo-uptime"

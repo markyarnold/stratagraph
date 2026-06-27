@@ -1,0 +1,15 @@
+# The user service GraphQL schema (the contract). repo-a's AppSync template
+# PRODUCES these root fields; repo-b (no schema) consumes them cross-repo.
+
+type User {
+  id: ID!
+  name: String!
+}
+
+type Query {
+  getUser(id: ID!): User
+}
+
+type Mutation {
+  createUser(name: String!): User
+}

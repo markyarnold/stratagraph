@@ -1,0 +1,26 @@
+# The OPT-IN MERGE demo (B6 fix). repo-x and repo-y are two repos that host ONE
+# real GraphQL API (the user service). They positively declare the SAME api id
+# `user` (each pointing at its own copy of the schema), so their shared
+# `Query.getUser` key collapses to ONE canonical GraphqlField node — the explicit
+# unification path. Without these `[[repos.apis]]` declarations the default
+# api_id is the repo name and the two would NOT merge (the safe default, which
+# estate_api_collision exercises with two UNRELATED same-key schemas).
+
+[workspace]
+name = "dedup-gql-estate"
+
+[[repos]]
+name = "repo-x"
+path = "repo-x"
+
+[[repos.apis]]
+id = "user"
+spec = "schema.graphql"
+
+[[repos]]
+name = "repo-y"
+path = "repo-y"
+
+[[repos.apis]]
+id = "user"
+spec = "schema.graphql"

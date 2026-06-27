@@ -1,0 +1,24 @@
+[package]
+name = "strata-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "strata"
+path = "src/main.rs"
+
+[lib]
+name = "strata_cli"
+path = "src/lib.rs"
+
+[dependencies]
+strata-core = { path = "../strata-core" }
+strata-store = { path = "../strata-store" }
+strata-index = { path = "../strata-index" }
+strata-mcp = { path = "../strata-mcp" }
+clap = { version = "4", features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

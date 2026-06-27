@@ -1,0 +1,17 @@
+// A package-LESS proto whose service is named `Query` and rpc `getOrder`, so its
+// gRPC key is `Query.getOrder` — the SAME key string as the GraphQL field in
+// schema.graphql. They differ only in format, proving the format discriminator
+// keeps them on distinct canonical nodes.
+syntax = "proto3";
+
+message GetOrderRequest {
+  string id = 1;
+}
+
+message GetOrderResponse {
+  string id = 1;
+}
+
+service Query {
+  rpc getOrder(GetOrderRequest) returns (GetOrderResponse);
+}

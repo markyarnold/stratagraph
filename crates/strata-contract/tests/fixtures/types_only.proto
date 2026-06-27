@@ -1,0 +1,16 @@
+// A proto3 file with only messages and an enum — NO service. The adapter must
+// `detects` this as proto (it is a valid .proto) but extract ZERO operations
+// (honest: there are no rpcs here).
+syntax = "proto3";
+
+package acme.types.v1;
+
+message Widget {
+  string id = 1;
+  int32 size = 2;
+}
+
+enum Color {
+  COLOR_UNSPECIFIED = 0;
+  COLOR_RED = 1;
+}

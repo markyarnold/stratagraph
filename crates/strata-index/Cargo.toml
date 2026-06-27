@@ -1,0 +1,39 @@
+[package]
+name = "strata-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+strata-core = { path = "../strata-core" }
+strata-store = { path = "../strata-store" }
+strata-lang-ts = { path = "../strata-lang-ts" }
+strata-lang-py = { path = "../strata-lang-py" }
+strata-lang-cs = { path = "../strata-lang-cs" }
+strata-lang-rust = { path = "../strata-lang-rust" }
+strata-scip = { path = "../strata-scip" }
+strata-contract = { path = "../strata-contract" }
+strata-infra = { path = "../strata-infra" }
+strata-data = { path = "../strata-data" }
+ignore = "0.4"
+blake3 = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"
+thiserror = "1"
+# `rename` re-parses each graph-implicated file with the file's own grammar to
+# collect identifier tokens. These are the SAME grammar crate versions the
+# strata-lang-{ts,py,cs,rust} adapters pin; strata-index uses the public grammar
+# crates directly. Every grammar is `=`-pinned (a deliberate, reviewed bump only):
+# a tree-sitter minor can change the parse tree / node kinds the analyzers match
+# against, so an accidental float could silently shift extraction. Bump these in
+# lockstep with the lang crates after re-checking the accuracy corpora.
+tree-sitter = "0.25.10"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-python = "=0.25.0"
+tree-sitter-c-sharp = "=0.23.5"
+tree-sitter-rust = "=0.24.2"
+
+[dev-dependencies]
+tempfile = "3"

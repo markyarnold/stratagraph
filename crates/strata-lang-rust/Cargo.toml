@@ -1,0 +1,18 @@
+[package]
+name = "strata-lang-rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+strata-core = { path = "../strata-core" }
+# Core stays the workspace-shared version; the Rust grammar is the ONLY new dep.
+# De-risk verdict (see docs/accuracy/rust-extraction.md): tree-sitter-rust 0.24.2
+# generates a parser that loads cleanly into tree-sitter 0.25.10 (`set_language`
+# Ok, `has_error == false` over a free fn / struct / enum / union / trait+sigs /
+# impl Type / impl Trait for Type / mod / use-with-aliases-groups-globs / calls /
+# macro). The crate's 0.24 semver is the grammar's own version, not its ABI.
+# Pinned exactly so a future grammar bump is a deliberate, reviewed change rather
+# than a silent float (the same discipline as the C#/TS/Python grammar pins).
+tree-sitter = "0.25.10"
+tree-sitter-rust = "=0.24.2"

@@ -1,0 +1,25 @@
+# The OPT-IN MERGE demo (B6 fix). repo-x and repo-y are two repos that host ONE
+# real API (the user service). They positively declare the SAME api id `user`
+# (each pointing at its own copy of the spec), so their shared `getUser` key
+# collapses to ONE canonical node — the explicit unification path. Without these
+# `[[repos.apis]]` declarations the default api_id is the repo name and the two
+# would NOT merge (see estate_api_collision for that safe default).
+
+[workspace]
+name = "dedup-estate"
+
+[[repos]]
+name = "repo-x"
+path = "repo-x"
+
+[[repos.apis]]
+id = "user"
+spec = "openapi.yaml"
+
+[[repos]]
+name = "repo-y"
+path = "repo-y"
+
+[[repos.apis]]
+id = "user"
+spec = "openapi.yaml"

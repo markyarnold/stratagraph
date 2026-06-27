@@ -1,0 +1,19 @@
+# A CodeBuild buildspec — NOT a CloudFormation template. It mentions neither a
+# `Resources` map nor `AWS::` types, so `CfnSamAdapter::detects` must reject it
+# (test 6: no cross-plane contamination). Present in the fixture to prove the
+# infra detection does not over-claim arbitrary YAML.
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+  build:
+    commands:
+      - npm ci
+      - npm run build
+      - npm test
+
+artifacts:
+  files:
+    - "**/*"

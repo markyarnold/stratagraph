@@ -1,0 +1,17 @@
+openapi: 3.0.3
+info:
+  title: Producer Service API
+  version: 1.0.0
+paths:
+  /users/{id}:
+    get:
+      operationId: getUser
+      responses:
+        '200':
+          description: ok
+  /users:
+    post:
+      operationId: createUser
+      responses:
+        '201':
+          description: created

@@ -1,0 +1,15 @@
+# An executable operation document (the consumer side): one named query and one
+# named mutation, each selecting a single root field. This is NOT a schema — it
+# carries no type-system definitions — so `GraphqlAdapter::detects` returns false
+# for it, while `parse_operations` reads the root fields it consumes.
+query GetUser {
+  getUser(id: "1") {
+    name
+  }
+}
+
+mutation MakeUser {
+  createUser(input: {}) {
+    id
+  }
+}

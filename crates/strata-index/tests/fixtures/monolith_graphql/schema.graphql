@@ -1,0 +1,21 @@
+# The user service GraphQL schema (the contract).
+# Root fields become GraphqlField operations: Query.getUser, Query.listUsers,
+# Mutation.createUser.
+
+type User {
+  id: ID!
+  name: String!
+}
+
+input UserInput {
+  name: String!
+}
+
+type Query {
+  getUser(id: ID!): User
+  listUsers: [User!]!
+}
+
+type Mutation {
+  createUser(input: UserInput!): User
+}

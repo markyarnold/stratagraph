@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Reference-grading edge cases (parameter / import / Sub recovery).
+
+Parameters:
+  DataSourceParam:
+    Type: String
+  SharedRoleArnExport:
+    Type: String
+
+Resources:
+  # A real same-template function, so the Sub below can recover its id.
+  PolicyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      CodeUri: functions/policy-operations/
+      # Role via cross-stack ImportValue -> Unresolved (not a same-template id).
+      Role: !ImportValue SharedRoleArnExport
+
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: edge-cases-api
+      AuthenticationType: API_KEY
+
+  EdgeResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: getThing
+      # DataSourceName is a Ref to a PARAMETER (not a resource) -> Unresolved.
+      DataSourceName: !Ref DataSourceParam
+
+  SubResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: getViaSub
+      # Sub interpolating a same-template resource -> Inferred("PolicyFunction").
+      DataSourceName: !Sub "${PolicyFunction.Arn}/extra"

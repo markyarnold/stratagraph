@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "name": "Strata Post-Commit Reindex",
+  "description": "After a git commit, re-runs strata index to keep the on-disk graph fresh.",
+  "version": "1",
+  "when": {
+    "type": "postToolUse",
+    "toolTypes": [
+      ".*git_add_or_commit.*"
+    ]
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "strata index .",
+    "timeout": 120
+  }
+}

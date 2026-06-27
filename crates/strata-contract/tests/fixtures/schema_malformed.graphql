@@ -1,0 +1,11 @@
+# A genuine syntax error: the `Query` type's field block is never closed (no
+# matching `}`), so the parser must report an error and the adapter must return
+# ContractError::Parse rather than silently extracting from a broken tree.
+type Query {
+  getUser(id: ID!): User
+  listUsers: [User]
+
+type User {
+  id: ID!
+  name: String
+}

@@ -1,0 +1,14 @@
+{
+  "name": "strata-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Build orchestration for the StrataGraph desktop app. The Tauri CLI runs from THIS directory so it sees `src-tauri/` as a subfolder; the UI (Vite + TS) lives in `ui/` and is installed/built there.",
+  "scripts": {
+    "postinstall": "npm --prefix ui install",
+    "ui:build": "npm --prefix ui run build",
+    "ui:dev": "npm --prefix ui run dev",
+    "tauri": "ui/node_modules/.bin/tauri",
+    "dev": "ui/node_modules/.bin/tauri dev",
+    "build": "ui/node_modules/.bin/tauri build"
+  }
+}

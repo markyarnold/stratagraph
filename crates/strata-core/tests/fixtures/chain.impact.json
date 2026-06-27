@@ -1,0 +1,7 @@
+{
+  "target": "ts|app|src/c.ts|c|()",
+  "affected": [
+    { "uid": "ts|app|src/b.ts|b|()", "name": "b", "depth": 1, "confidence": 0.8, "ambiguous": true },
+    { "uid": "ts|app|src/a.ts|a|()", "name": "a", "depth": 2, "confidence": 0.72, "ambiguous": true }
+  ]
+}

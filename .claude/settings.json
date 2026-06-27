@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'd=\"$CLAUDE_PROJECT_DIR\"; db=\"$d/.strata/graph.duckdb\"; [ -f \"$db\" ] || exit 0; input=$(cat); if command -v jq >/dev/null 2>&1; then f=$(printf \"%s\" \"$input\" | jq -r \".tool_input.file_path // empty\"); [ -n \"$f\" ] || exit 0; blast=$(strata blast \"$f\" --db \"$db\" --format agent 2>/dev/null) || exit 0; [ -n \"$blast\" ] || exit 0; jq -n --arg c \"$blast\" \"{hookSpecificOutput:{hookEventName:\\\"PreToolUse\\\",additionalContext:\\$c}}\"; exit 0; else printf \"%s\" \"{\\\"hookSpecificOutput\\\":{\\\"hookEventName\\\":\\\"PreToolUse\\\",\\\"additionalContext\\\":\\\"Strata pre-edit: run impact/context (or strata blast <file>) on the symbols in this file BEFORE editing, and report the blast radius. Treat confidence < 0.40 or ambiguous as UNKNOWN. PAUSE if risk is HIGH/CRITICAL or crosses a repo boundary. (install jq for the auto-computed blast radius.)\\\"}}\"; exit 0; fi' # strata-hook"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'd=\"$CLAUDE_PROJECT_DIR\"; [ -d \"$d/.strata\" ] || exit 0; (strata index \"$d\" --db \"$d/.strata/graph.duckdb\" >/dev/null 2>&1 &); exit 0' # strata-hook"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'd=\"$CLAUDE_PROJECT_DIR\"; [ -f \"$d/.strata/graph.duckdb\" ] && exit 0; echo \"Strata: no index yet, run \\`strata index .\\` to enable cross-plane impact analysis.\"' # strata-hook"
+          }
+        ]
+      }
+    ]
+  }
+}

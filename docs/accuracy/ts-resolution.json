@@ -1,0 +1,22 @@
+{
+  "_comment": "Machine-readable companion to ts-resolution.md. The accuracy_gate report_matches_committed_doc test asserts these numbers equal the live differential over the committed corpus, so the published report cannot silently drift. Regenerate with: cargo test -p strata-index --test accuracy_gate -- --nocapture print_corpus_report",
+  "corpus": ["resolve", "methods", "reexports", "inheritance", "async_hof", "dynamic"],
+  "covered_sites": 52,
+  "uncovered_sites": 4,
+  "overall": { "precision": 0.68, "recall": 0.62 },
+  "per_class": [
+    { "class": "BareSingle",      "sites": 20, "precision": 1.00, "recall": 0.55, "calibrated": true },
+    { "class": "BareMulti",       "sites": 1,  "precision": 0.50, "recall": 1.00, "calibrated": false },
+    { "class": "ThisMethod",      "sites": 8,  "precision": 1.00, "recall": 0.50, "calibrated": true },
+    { "class": "UnknownReceiver", "sites": 23, "precision": 0.53, "recall": 0.70, "calibrated": true }
+  ],
+  "_by_band_comment": "Per-confidence-band calibration (§4.1): does an edge in band B resolve correctly at the rate B claims? precision is edge-level (confirmed/(confirmed+denied)) over SCIP-adjudicable edges; null = undefined (no adjudicable edges, never a vacuous 1.0). unadjudicable = sites in the band SCIP cannot ground-truth, excluded from precision. RESOLVED/EXTRACTED carry no heuristic edges (the heuristic never claims compiler/AST grade).",
+  "by_band": [
+    { "band": "RESOLVED",  "sites": 0,  "confirmed": 0,  "denied": 0,  "precision": null, "unadjudicable": 0 },
+    { "band": "EXTRACTED", "sites": 0,  "confirmed": 0,  "denied": 0,  "precision": null, "unadjudicable": 0 },
+    { "band": "INFERRED",  "sites": 28, "confirmed": 15, "denied": 0,  "precision": 1.00, "unadjudicable": 0 },
+    { "band": "AMBIGUOUS", "sites": 24, "confirmed": 17, "denied": 15, "precision": 0.53, "unadjudicable": 4 }
+  ],
+  "will_break_threshold": 0.40,
+  "_will_break_comment": "§15.6 resolved by measurement (2026-06-12): the default impact 'will break' confidence cutoff = the lowest band whose MEASURED precision crosses the will-break bar. INFERRED measured 1.00, AMBIGUOUS 0.53, so the boundary sits at the INFERRED band floor (0.40 per §4.1). Edges >= 0.40 are labelled 'will break'; below (AMBIGUOUS) are 'may be affected, review'. impact stays recall-biased by default (surfaces everything); this governs the LABEL only."
+}

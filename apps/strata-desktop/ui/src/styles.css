@@ -1,0 +1,558 @@
+/* StrataGraph desktop — a small hand-rolled stylesheet (no framework, no CSS lib). */
+
+:root {
+  --bg: #14171c;
+  --bg-raised: #1b1f26;
+  --bg-input: #11141a;
+  --border: #2a2f38;
+  --border-strong: #3a414d;
+  --text: #e6e9ef;
+  --text-muted: #8a93a3;
+  --accent: #4ea1ff;
+  --accent-dim: #2d5f99;
+  --ok: #4cc38a;
+  --bad: #e5707e;
+  --warn: #e0b341;
+  --chip-bg: #232936;
+  --radius: 6px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+button {
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+button:hover {
+  border-color: var(--accent-dim);
+}
+button:active {
+  background: var(--bg-input);
+}
+
+/* Primary action: Open Project… */
+button.btn-primary {
+  background: var(--accent-dim);
+  color: var(--text);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+button.btn-primary:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button.btn-primary:active {
+  background: var(--accent-dim);
+}
+
+/* Secondary actions: Open Workspace… / Open Graph… */
+button.btn-secondary {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+/* Advanced (furthest-right): slightly muted label */
+button.btn-advanced {
+  opacity: 0.7;
+}
+button.btn-advanced:hover {
+  opacity: 1;
+}
+
+input[type="search"],
+input[type="number"] {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+input:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+input:disabled {
+  opacity: 0.5;
+}
+
+/* ── Top bar ───────────────────────────────────────────────────────────────*/
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+.actions {
+  display: flex;
+  gap: 8px;
+}
+.summary {
+  margin-left: auto;
+  font-size: 12px;
+  text-align: right;
+  max-width: 55%;
+  line-height: 1.4;
+}
+.summary .repo-ok {
+  color: var(--ok);
+}
+.summary .repo-bad {
+  color: var(--bad);
+}
+
+/* ── Banner ────────────────────────────────────────────────────────────────*/
+.banner {
+  padding: 8px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.banner.error {
+  background: #3a1d22;
+  color: var(--bad);
+}
+.banner.info {
+  background: #1d2c3a;
+  color: var(--accent);
+}
+/* Inline action button inside the banner (e.g. Index Now). */
+.banner .banner-action {
+  margin-left: 8px;
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--text);
+  vertical-align: baseline;
+}
+.banner .banner-action:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Indexing note in the summary slot (indeterminate — no progress bar). */
+.summary .indexing-note {
+  color: var(--warn);
+}
+
+/* ── Layout ────────────────────────────────────────────────────────────────*/
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) 1fr;
+  min-height: 0;
+}
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.pane-left {
+  border-right: 1px solid var(--border);
+}
+
+/* ── Search + results ──────────────────────────────────────────────────────*/
+.search-row {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.search-row input {
+  width: 100%;
+}
+.results-meta {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+.result {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.result:hover {
+  background: var(--bg-raised);
+}
+.result.selected {
+  background: #1e2a3a;
+}
+.result .name {
+  font-weight: 600;
+}
+.result .path {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
+
+/* Kind chip (node kind). */
+.chip {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: var(--chip-bg);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+/* ── Right pane: selection + tabs ──────────────────────────────────────────*/
+.selection {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.selection .sel-name {
+  font-weight: 700;
+  color: var(--text);
+}
+.selection .sel-path {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--bg);
+  color: var(--text-muted);
+  padding: 6px 14px;
+}
+.tab.active {
+  background: var(--bg-raised);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.tab-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+/* ── Context tables ────────────────────────────────────────────────────────*/
+.bucket {
+  margin-bottom: 18px;
+}
+.bucket h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.bucket .empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th,
+td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: baseline;
+}
+th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+tbody tr.clickable {
+  cursor: pointer;
+}
+tbody tr.clickable:hover {
+  background: var(--bg-raised);
+}
+td.col-path {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Ambiguous / low-confidence rows rendered visually distinct (dashed + muted),
+   so the user sees recall-biased guesses at a glance. */
+tr.ambiguous td,
+tr.lowconf td {
+  color: var(--text-muted);
+}
+tr.ambiguous td {
+  border-bottom-style: dashed;
+}
+tr.ambiguous .name::after {
+  content: " ~ambiguous";
+  font-size: 10px;
+  color: var(--warn);
+}
+
+.conf-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The §15.6 will-break verdict column: "WILL BREAK" is the headline signal so it
+   stands out; "may affect" stays muted like the recall-biased rows. */
+.verdict.will-break {
+  color: var(--warn);
+  font-weight: 600;
+}
+.verdict.may-affect {
+  color: var(--text-muted);
+}
+
+/* ── Impact controls ───────────────────────────────────────────────────────*/
+.impact-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.impact-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.impact-controls input[type="number"] {
+  width: 64px;
+}
+.impact-controls .checkbox {
+  gap: 6px;
+}
+.impact-summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+/* ── Explain (the evidence chain, Track E1) ────────────────────────────────*/
+/* The per-row Explain affordance and the inline chain panel it toggles open. */
+.explain-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+/* The detail row beneath an affected row, holding its evidence-chain panel. */
+tr.explain-detail[hidden] {
+  display: none;
+}
+.explain-panel {
+  padding: 8px 10px;
+  margin: 4px 0;
+  background: var(--bg-input);
+  border-left: 2px solid var(--accent-dim);
+  border-radius: 4px;
+}
+.explain-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+.explain-hop {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  padding: 1px 0;
+}
+/* An AMBIGUOUS hop reuses the impact table's amber/dashed encoding so the
+   recall-biased guess reads the same everywhere it surfaces. */
+.explain-hop.ambiguous-hop {
+  color: var(--warn);
+  border-bottom: 1px dashed var(--warn);
+}
+.explain-hop.ambiguous-hop::after {
+  content: "  ~ambiguous";
+  font-size: 10px;
+  color: var(--warn);
+}
+/* The honest not-in-blast-radius note (an unreachable affected node). */
+.explain-unreachable {
+  border-left-color: var(--border-strong);
+}
+.explain-reason {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── Graph view (Sigma WebGL) ──────────────────────────────────────────────*/
+/* The graph panel is a column: toolbar, legend, then a flex-filling stage. It
+   overrides the default tab-panel scroll so the canvas owns the space. */
+.tab-graph {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px;
+  overflow: hidden;
+}
+.tab-graph[hidden] {
+  display: none;
+}
+
+.graph-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+.graph-modes {
+  display: flex;
+  gap: 2px;
+}
+.graph-mode {
+  font-size: 12px;
+  padding: 4px 12px;
+  color: var(--text-muted);
+}
+.graph-mode.active {
+  color: var(--text);
+  border-color: var(--accent-dim);
+  background: var(--bg-input);
+}
+.graph-depth,
+.graph-planes label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.graph-planes {
+  display: flex;
+  gap: 12px;
+}
+select#graph-depth {
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.graph-truncated {
+  font-size: 11px;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+
+/* Legend: plane / ambiguous-edge / target swatches. */
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.graph-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.graph-legend .legend-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  display: inline-block;
+  border: 1px solid var(--border-strong);
+}
+
+/* Stage: the Sigma canvas fills this absolutely-positioned wrapper. */
+.graph-stage-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 320px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.graph-stage {
+  position: absolute;
+  inset: 0;
+}
+.graph-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+  font-size: 13px;
+  pointer-events: none;
+}
+.graph-hint[hidden] {
+  display: none;
+}

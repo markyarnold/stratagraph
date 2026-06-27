@@ -1,0 +1,20 @@
+# Multiple operations in one document: two named queries and one anonymous
+# query (`{ … }` with no `query` keyword and no name). All three operations'
+# root fields must be reported.
+query GetUser {
+  getUser(id: "1") {
+    name
+  }
+}
+
+query GetUsers {
+  listUsers {
+    id
+  }
+}
+
+{
+  listUsers {
+    id
+  }
+}

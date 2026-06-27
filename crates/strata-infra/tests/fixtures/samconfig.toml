@@ -1,0 +1,12 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "policy-operations"
+s3_prefix = "policy-operations"
+region = "eu-west-1"
+capabilities = "CAPABILITY_IAM"
+image_repositories = []
+
+[default.build.parameters]
+cached = true
+parallel = true

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "strata": {
+      "command": "strata",
+      "args": [
+        "mcp",
+        "--db",
+        ".strata/graph.duckdb"
+      ]
+    }
+  }
+}

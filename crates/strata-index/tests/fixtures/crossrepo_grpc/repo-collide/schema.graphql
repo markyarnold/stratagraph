@@ -1,0 +1,11 @@
+# A GraphQL schema whose root field key is `Query.getOrder` — the SAME key string
+# as the package-less gRPC service in collide.proto. The format discriminator must
+# keep the GraphqlField and the gRPC ApiOperation on TWO distinct canonical nodes.
+type Query {
+  getOrder(id: ID!): Order
+}
+
+type Order {
+  id: ID!
+  total: Float
+}

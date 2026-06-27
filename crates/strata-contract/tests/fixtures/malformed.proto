@@ -1,0 +1,10 @@
+// A structurally invalid .proto — the rpc input list is unterminated. The
+// adapter must return ContractError::Parse (a surfaced diagnostic), never panic
+// and never a partial-garbage operation.
+syntax = "proto3";
+
+package broken;
+
+service Foo {
+  rpc Missing( returns (X);
+}

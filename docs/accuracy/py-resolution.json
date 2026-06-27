@@ -1,0 +1,17 @@
+{
+  "_comment": "Machine-readable companion to py-resolution.md. The py_accuracy_gate report_matches_committed_doc test asserts these numbers equal the live differential (resolve_differential_graph over the committed Python corpus), so the published report cannot silently drift. Regenerate the figures with: cargo test -p strata-index --test py_accuracy_gate -- --nocapture print_py_corpus_report. Regenerate the committed index.scip with: STRATA_SCIP_LIVE=1 cargo test -p strata-index --test gen_scip -- --ignored generate_py",
+  "language": "python",
+  "ground_truth": "scip-python",
+  "scip_python_version": "0.6.6",
+  "corpus": ["shop", "geometry", "pipeline"],
+  "covered_sites": 34,
+  "uncovered_sites": 11,
+  "overall": { "precision": 0.79, "recall": 0.88 },
+  "_by_band_comment": "Per-confidence-band calibration (design §4.1): does an edge in band B resolve correctly at the rate B claims? precision is edge-level (confirmed/(confirmed+denied)) over SCIP-adjudicable edges; null = undefined (no adjudicable edges, never a vacuous 1.0). unadjudicable = sites in the band SCIP cannot ground-truth (e.g. an untyped-receiver fan-out scip-python cannot resolve, a constructor/import the heuristic emits no edge for), excluded from precision. RESOLVED carries no heuristic edge (the heuristic never claims compiler/SCIP grade). Unlike TS, the Python linker DOES emit EXTRACTED-band edges (a same-module bare call to a local def is a deterministic fact).",
+  "by_band": [
+    { "band": "RESOLVED",  "sites": 0,  "confirmed": 0,  "denied": 0, "precision": null, "unadjudicable": 0 },
+    { "band": "EXTRACTED", "sites": 9,  "confirmed": 9,  "denied": 0, "precision": 1.00, "unadjudicable": 0 },
+    { "band": "INFERRED",  "sites": 15, "confirmed": 11, "denied": 0, "precision": 1.00, "unadjudicable": 5 },
+    { "band": "AMBIGUOUS", "sites": 10, "confirmed": 10, "denied": 8, "precision": 0.56, "unadjudicable": 6 }
+  ]
+}

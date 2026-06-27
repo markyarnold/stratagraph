@@ -1,0 +1,19 @@
+[package]
+name = "strata-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+strata-core = { path = "../strata-core" }
+# `detect_changes` and `rename` are engines in strata-index; the ctx-aware
+# dispatch (`call_tool_ctx`) serializes their reports/edits. This is an
+# intra-workspace path dependency (no cycle: strata-index does not depend on
+# strata-mcp), not a new third-party crate.
+strata-index = { path = "../strata-index" }
+serde_json = { workspace = true }
+thiserror = "1"
+
+[dev-dependencies]
+# The detect_changes dispatch test drives a real tempdir git repo.
+tempfile = "3"

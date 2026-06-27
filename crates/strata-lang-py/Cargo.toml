@@ -1,0 +1,13 @@
+[package]
+name = "strata-lang-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+strata-core = { path = "../strata-core" }
+# Grammar is `=`-pinned (deliberate, reviewed bumps only): a tree-sitter minor can
+# change the parse tree the analyzer matches against, so a float could silently
+# shift extraction. Keep in lockstep with strata-index and re-check the corpora.
+tree-sitter = "0.25.10"
+tree-sitter-python = "=0.25.0"

@@ -1,0 +1,34 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  InvokeRole:
+    Type: AWS::IAM::Role
+  LogsRole:
+    Type: AWS::IAM::Role
+  ExecRole:
+    Type: AWS::IAM::Role
+  FnRole:
+    Type: AWS::IAM::Role
+  OpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.handler
+      CodeUri: src/
+      Role: !GetAtt FnRole.Arn
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: api
+      LogConfig:
+        CloudWatchLogsRoleArn: !GetAtt LogsRole.Arn
+  OpDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: OpDS
+      Type: AWS_LAMBDA
+      ServiceRoleArn: !GetAtt InvokeRole.Arn
+  Pipeline:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      RoleArn: !GetAtt ExecRole.Arn

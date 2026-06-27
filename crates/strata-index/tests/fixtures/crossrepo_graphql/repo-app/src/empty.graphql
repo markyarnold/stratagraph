@@ -1,0 +1,2 @@
+# This file is comments only — no schema, no operation.
+# R2 benign skip: indexing must succeed and it must yield no links and no panic.

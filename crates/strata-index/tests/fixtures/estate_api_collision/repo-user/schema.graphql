@@ -1,0 +1,12 @@
+# The USER service. Its `Query.getUser` returns a real application user.
+# Completely unrelated to repo-billing's `Query.getUser` — they only share the
+# canonical key string.
+
+type User {
+  id: ID!
+  name: String!
+}
+
+type Query {
+  getUser(id: ID!): User
+}

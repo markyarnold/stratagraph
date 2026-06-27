@@ -1,0 +1,3 @@
+This file is named like a proto but is plain prose. It mentions the word service
+and the word message in passing, yet it is not a protobuf definition at all and
+must not be detected as one.

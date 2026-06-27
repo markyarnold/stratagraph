@@ -1,0 +1,16 @@
+[package]
+name = "strata-scip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scip = "0.8"
+# `scip` is built on the `protobuf` runtime and pins `=3.7.2`; we depend on it
+# directly only to bring `protobuf::Message` into scope for `Index::parse_from_bytes`
+# (the `scip` crate exposes no read/parse helper of its own).
+protobuf = "=3.7.2"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"

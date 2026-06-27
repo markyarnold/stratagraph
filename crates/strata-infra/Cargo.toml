@@ -1,0 +1,41 @@
+[package]
+name = "strata-infra"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Maintained YAML 1.2 parser — the same crate strata-contract uses. NOT
+# serde_yaml (deprecated) / serde_yml (a deprecated shim). It yields an untyped
+# `Yaml` value we convert to `serde_json::Value` so there is one downstream
+# walker shared with the JSON path.
+#
+# DE-RISK NOTE (CFN short-form tags): yaml-rust2 0.11's HIGH-LEVEL loader
+# (`YamlLoader`) discards CFN application tags — `!Ref X` would collapse to the
+# bare scalar `"X"`, indistinguishable from a literal. Its LOWER-LEVEL event API
+# (`parser::Parser` driving a `MarkedEventReceiver`) does carry each tag, though:
+# `Event::Scalar(value, style, anchor, Option<Tag>)` and the
+# `SequenceStart`/`MappingStart` events expose `Tag { handle: "!", suffix: "Ref" }`
+# (verified against this exact version). We therefore parse at the event level and
+# convert CFN tags to long-form maps DURING construction (see `cfn.rs`,
+# `CfnEventLoader`). After that, YAML and JSON both present intrinsics as ordinary
+# `{"Ref": …}` / `{"Fn::GetAtt": …}` maps to the single downstream walker.
+yaml-rust2 = "0.11"
+# HCL parser for the Terraform/Terragrunt plane (Track D1, Slice 14). Imported as
+# `hcl`. DE-RISK (2026-06-13, pinned 0.19.7): proven against distilled Terragrunt
+# AND `.tf` shapes — it parses BOTH into a walkable structural AST
+# (`hcl::structure::{Body, Block, Structure}`) WITHOUT choking on HCL2 function
+# syntax. `resource`/`data`/`module`/`variable`/`locals` arrive as `Block`s with
+# `identifier()` + `labels()`; nested blocks (`lambda_config`) are preserved;
+# Terragrunt's `find_in_parent_folders()` / `read_terragrunt_config(…)` survive as
+# `Expression::FuncCall` nodes (NOT errors); a resource reference
+# `aws_iam_role.x.arn` is an `Expression::Traversal` whose head `Variable` + first
+# `GetAttr` recover the `type.name` address; `${…}` interpolation is a
+# `TemplateExpr` we walk via `hcl::Template::from_expr`. We do NOT evaluate
+# functions/variables — only the static structure (scope §7), so unresolved
+# expressions stay honest (Inferred/Unresolved), never invented. Pinned exactly
+# because the slice depends on this AST shape (`=0.19.7`).
+hcl-rs = "=0.19.7"
+thiserror = "1"

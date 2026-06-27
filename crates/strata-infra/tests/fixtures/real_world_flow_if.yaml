@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Real-world-shaped SAM + AppSync template (distilled from a production 8,324-line
+  template; NO client code). Exercises the LATEST tag shape the line-based
+  textual normalizer could not handle — and which event-level parsing now does:
+
+    A short-form `!If` opening a MULTI-LINE FLOW sequence whose members are
+    themselves tagged (`!Ref`), one of them a QUOTED pseudo-parameter
+    (`!Ref "AWS::NoValue"`), with a TRAILING COMMA before the closing `]`:
+
+        !If [
+          Cond,
+          !Ref A,
+          !Ref "AWS::NoValue",
+        ]
+
+    The normalizer choked on this with "expected ',' or ']'" (it stripped the
+    outer `!If` and left the inner tags + trailing comma for yaml-rust2, whose
+    high-level loader then mis-scanned the multi-line flow). The event API parses
+    it cleanly: the inner `!Ref`s convert to `{"Ref": …}` members of the
+    `{"Fn::If": […]}` map, the quoted `"AWS::NoValue"` is kept verbatim, and the
+    trailing comma is absorbed by the scanner.
+
+  Both a MULTI-LINE flow `!If` and an INLINE one-line `!If` appear. Inner
+  structure must be correct; any condition-wrapped reference on a graded field
+  must grade Unresolved — never a Resource invented by reaching through the `!If`.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+
+Resources:
+  # ── Serverless function: same-template Role via !GetAtt (normal wiring). ──
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      CodeUri: functions/api/
+      Role: !GetAtt ApiRole.Arn
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  # ── AppSync chain (the money-link spine), all normal wiring. ──
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: !Sub "api-${Stage}"
+      AuthenticationType: API_KEY
+
+  ApiDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: ApiDataSource
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        # An INLINE one-line `!If` with inner `!Ref`s and a quoted pseudo-param.
+        # This is a graded field (LambdaFunctionArn); the !If has no grader arm,
+        # so it must resolve Unresolved — never Resource("ApiFunction") reached
+        # through the condition.
+        LambdaFunctionArn: !If [HasInline, !Ref ApiFunction, !Ref "AWS::NoValue"]
+
+  # A resolver whose DataSourceName is the MULTI-LINE FLOW `!If` with a trailing
+  # comma (THE headline shape). After the fix this parses to a proper
+  # `{"Fn::If": ["Cond", {"Ref":"ApiDS"}, {"Ref":"AWS::NoValue"}]}` map; the
+  # grader must NEVER reach through the condition to invent Resource("ApiDS") —
+  # it grades Unresolved.
+  ListThingsResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: listThings
+      DataSourceName: !If [
+        HasFlow,
+        !Ref ApiDS,
+        !Ref "AWS::NoValue",
+      ]
+
+  # A plain `!GetAtt` DataSourceName still links crisply (control case).
+  GetThingResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: getThing
+      DataSourceName: !GetAtt ApiDS.Name

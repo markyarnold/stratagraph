@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Real-world-shaped SAM + AppSync template (distilled from two production
+  templates; NO client code). Exercises the SECOND wave of parser-robustness
+  fixes — tag shapes the line-based normalizer used to CORRUPT:
+
+    1. A short-form tag whose argument is BLOCK-style (the tag sits at the end
+       of its line; the value is the indented block below): `Aliases: !If` and
+       a `- !If` sequence item. The old normalizer wrapped the empty rest into
+       `{"Fn::If": ""}`, turning the key into an inline map and orphaning the
+       block sequence under it ("did not find expected '-' indicator").
+    2. A multi-line FLOW collection after a tag — the `[` opens on the tag's
+       line but closes on a LATER line (`!Join ["",` … `]]`). The old rewrite
+       prepended an unbalanced `{`, so the flow never closed.
+
+  Both must now PARSE; condition-/block-wrapped references must grade
+  Unresolved (never a Resource invented by reaching through them).
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+  DomainName:
+    Type: String
+    Default: example.com
+
+Conditions:
+  HasBedrockKB: !Equals [!Ref Stage, "prod"]
+  HasCustomDomain: !Not [!Equals [!Ref DomainName, ""]]
+
+Resources:
+  # ── Serverless function: same-template Role via !GetAtt (normal wiring). ──
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      CodeUri: functions/api/
+      Role: !GetAtt ApiRole.Arn
+      Environment:
+        Variables:
+          # SHAPE 2: a multi-line flow `!Join ["",` — the `[` opens here and
+          # closes two lines down. The old normalizer added an unbalanced `{`.
+          TABLE_ARN: !Join ["", [
+            "arn:aws:dynamodb:::table/",
+            !Ref Stage ]]
+
+  # ── IAM role whose policy carries SHAPE 1a: a `- !If` at end of line. ──
+  # The conditional list ELEMENT is a block sequence on the following lines.
+  # The old normalizer rewrote `- !If` to `- {"Fn::If": ""}`, orphaning the
+  # block sequence below it.
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: inline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - !If
+                - HasBedrockKB
+                - Effect: Allow
+                  Action: bedrock:InvokeModel
+                  Resource: "*"
+                - !Ref AWS::NoValue
+
+  # ── AppSync chain (the money-link spine), all normal wiring. ──
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: !Sub "api-${Stage}"
+      AuthenticationType: API_KEY
+
+  ApiDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: ApiDataSource
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt ApiFunction.Arn
+
+  GetThingResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: getThing
+      DataSourceName: !GetAtt ApiDS.Name
+
+  # A resolver whose DataSourceName is a BLOCK-style `!If` (SHAPE 1, on a
+  # GRADED field): the `!If` is at end of line, its three arguments are the
+  # block sequence below. After the fix this parses; the grader must NEVER
+  # reach through the condition to invent Resource("ApiDS") — it grades
+  # Unresolved (the `!If` becomes a plain block value with no `Fn::` map).
+  ListThingsResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: listThings
+      DataSourceName: !If
+        - HasBedrockKB
+        - !GetAtt ApiDS.Name
+        - !GetAtt ApiDS.Name
+
+  # ── CloudFront distribution carrying SHAPE 1b: `Aliases: !If` block-arg. ──
+  # The `!If` sits at the end of the line; its three arguments are the block
+  # sequence below. The old normalizer made `Aliases` an inline map and
+  # orphaned that sequence.
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Aliases: !If
+          - HasCustomDomain
+          - [!Ref DomainName]
+          - !Ref AWS::NoValue

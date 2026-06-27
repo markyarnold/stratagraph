@@ -1,0 +1,54 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: User service (SAM + AppSync) — repo-a of the cross-repo infra estate.
+
+Resources:
+  UserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: user.handler
+      Runtime: nodejs20.x
+      CodeUri: src/handlers/
+      Role: !GetAtt UserRole.Arn
+
+  UserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: user-api
+      AuthenticationType: API_KEY
+
+  UserDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: UserDataSource
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt UserFunction.Arn
+
+  GetUserResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: getUser
+      DataSourceName: !GetAtt UserDS.Name
+
+  CreateUserResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Mutation
+      FieldName: createUser
+      DataSourceName: !GetAtt UserDS.Name

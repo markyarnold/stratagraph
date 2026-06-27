@@ -1,0 +1,13 @@
+# The BILLING service. Its `Query.getUser` returns a billing account holder —
+# an entirely different bounded context that happens to reuse the field name.
+# This is the unrelated half of the collision: it must NEVER merge with the
+# user service's `Query.getUser`.
+
+type BillingAccount {
+  id: ID!
+  balanceCents: Int!
+}
+
+type Query {
+  getUser(id: ID!): BillingAccount
+}

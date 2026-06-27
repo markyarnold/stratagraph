@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "apps/strata-desktop/src-tauri"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# `preserve_order` keeps JSON object key order on round-trip, so the init
+# command's deep-merge writer preserves the byte order of foreign keys/servers
+# and re-runs are byte-stable (idempotency).
+serde_json = { version = "1", features = ["preserve_order"] }

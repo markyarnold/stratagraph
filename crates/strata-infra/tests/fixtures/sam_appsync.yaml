@@ -1,0 +1,67 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Policy operations service (dogfood-shaped SAM + AppSync).
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+
+Resources:
+  # Serverless function shorthand: Handler/CodeUri/Role read directly, no
+  # transform expansion.
+  PolicyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      CodeUri: functions/policy-operations/
+      Role: !GetAtt PolicyRole.Arn
+
+  PolicyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: !Sub "policy-api-${Stage}"
+      AuthenticationType: API_KEY
+
+  PolicyDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: PolicyDataSource
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt PolicyFunction.Arn
+
+  GetPolicyStatsResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: getPolicyStats
+      DataSourceName: !GetAtt PolicyDS.Name
+
+  ListContentPoliciesResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: listContentPolicies
+      DataSourceName: !GetAtt PolicyDS.Name
+
+  # An unrelated resource: must classify as Generic (inventory only).
+  EventQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "policy-events-${Stage}"

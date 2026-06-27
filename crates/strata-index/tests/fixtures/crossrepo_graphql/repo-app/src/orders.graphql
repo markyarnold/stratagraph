@@ -1,0 +1,10 @@
+# A standalone GraphQL OPERATION document (not a schema). The doc analyzer makes
+# it a one-GqlDocument AnalyzedFile; the link pass attaches a CONSUMES edge from
+# its Module node to the canonical Query.listUsers in repo-schema (cross-repo).
+
+query ListOrders {
+  listUsers {
+    id
+    name
+  }
+}

@@ -1,0 +1,8 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  BrokenFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.handler
+       CodeUri: bad-indent-here   # over-indented under Properties: invalid YAML
+    Role: !GetAtt [unterminated, flow, sequence

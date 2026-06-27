@@ -1,0 +1,114 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: User service (SAM + AppSync) — the infra-graph integration fixture.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+
+Resources:
+  # Serverless function: Handler/CodeUri/Role read directly (no transform
+  # expansion). `user.handler` + `src/handlers/` resolves to src/handlers/user.ts,
+  # so this Lambda RUNS that module. Role grades to the same-template UserRole.
+  UserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: user.handler
+      Runtime: nodejs20.x
+      CodeUri: src/handlers/
+      Role: !GetAtt UserRole.Arn
+
+  UserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  Api:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: !Sub "user-api-${Stage}"
+      AuthenticationType: API_KEY
+
+  UserDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: UserDataSource
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt UserFunction.Arn
+
+  # Money link: Query.getUser is in the schema → PRODUCES it. The whole
+  # resolver→datasource→lambda chain is Resource-graded, so the Lambda sources the
+  # edge (Extracted 0.95).
+  GetUserResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: getUser
+      DataSourceName: !GetAtt UserDS.Name
+
+  CreateUserResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Mutation
+      FieldName: createUser
+      DataSourceName: !GetAtt UserDS.Name
+
+  # Honesty: `ghostField` is NOT declared in schema.graphql → this resolver names
+  # no GraphqlField and must stay UNLINKED (no PRODUCES edge, counted).
+  GhostResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: ghostField
+      DataSourceName: !GetAtt UserDS.Name
+
+  # A Python handler: `app.handler` + `functions/py-op/` resolves to the indexed
+  # functions/py-op/app.py, so with the Python code plane (Slice 9) this Lambda
+  # RUNS that Python module (Extracted 0.95) — the EARNED flip (it used to be
+  # pinned UNRESOLVED before the plane existed).
+  PyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.handler
+      Runtime: python3.12
+      CodeUri: functions/py-op/
+      Role: !GetAtt UserRole.Arn
+
+  # PyFunction's own AppSync chain: it backs `Query.listUsers`. This makes the
+  # MODULE PROOF concrete — impact(functions/py-op/app.py) → PyFunction (Runs) →
+  # Query.listUsers (PRODUCES) → its consumer (CONSUMES). The chain is wholly
+  # Resource-graded, so the Lambda sources the money link (Extracted 0.95).
+  PyDS:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: PyDataSource
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt PyFunction.Arn
+
+  ListUsersResolver:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: listUsers
+      DataSourceName: !GetAtt PyDS.Name
+
+  # An unrelated resource: classifies as a Generic CloudResource (inventory only).
+  EventQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "user-events-${Stage}"

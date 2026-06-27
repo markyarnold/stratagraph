@@ -1,0 +1,11 @@
+openapi: 3.0.3
+info:
+  title: Health API
+  version: 1.0.0
+paths:
+  /users/{id}:
+    get:
+      summary: Fetch one user, but with no operationId declared
+      responses:
+        '200':
+          description: ok

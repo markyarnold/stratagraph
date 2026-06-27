@@ -1,0 +1,17 @@
+# The user service GraphQL schema (the contract). The AppSync resolvers in
+# template.yaml PRODUCES these root fields. `ghostField` is deliberately ABSENT —
+# the template's resolver for it must therefore stay unlinked (honesty).
+
+type User {
+  id: ID!
+  name: String!
+}
+
+type Query {
+  getUser(id: ID!): User
+  listUsers: [User]
+}
+
+type Mutation {
+  createUser(name: String!): User
+}

@@ -1,0 +1,17 @@
+{
+  "_comment": "Machine-readable companion to rust-resolution.md. The rust_accuracy_gate report_matches_committed_doc test asserts these numbers equal the live differential (resolve_differential_graph over the committed Rust corpus), so the published report cannot silently drift. Regenerate the figures with: cargo test -p strata-index --test rust_accuracy_gate -- --nocapture print_rust_corpus_report. Regenerate the committed index.scip with: STRATA_SCIP_LIVE=1 cargo test -p strata-index --test gen_scip -- --ignored generate_rust",
+  "language": "rust",
+  "ground_truth": "rust-analyzer scip",
+  "rust_analyzer_version": "1.96.0 (ac68faa2 2026-05-25)",
+  "corpus": ["shapes", "registry"],
+  "covered_sites": 30,
+  "uncovered_sites": 3,
+  "overall": { "precision": 0.75, "recall": 1.00 },
+  "_by_band_comment": "Per-confidence-band calibration (design §4.1): does an edge in band B resolve correctly at the rate B claims? precision is edge-level (confirmed/(confirmed+denied)) over SCIP-adjudicable edges; null = undefined (no adjudicable edges, never a vacuous 1.0). unadjudicable = sites in the band rust-analyzer cannot ground-truth (a .clone()/.len() on a std type, a Default::default-routed constructor), excluded from precision. RESOLVED carries no heuristic edge (the heuristic never claims rust-analyzer/compiler grade). Like Python, the Rust linker emits EXTRACTED-band edges for a same-file call. Resolving rust-analyzer impl-method monikers relies on the Track C1 shim in scip_merge::symbol_name_from_moniker.",
+  "by_band": [
+    { "band": "RESOLVED",  "sites": 0,  "confirmed": 0,  "denied": 0,  "precision": null, "unadjudicable": 0 },
+    { "band": "EXTRACTED", "sites": 11, "confirmed": 11, "denied": 0,  "precision": 1.00, "unadjudicable": 0 },
+    { "band": "INFERRED",  "sites": 10, "confirmed": 10, "denied": 0,  "precision": 1.00, "unadjudicable": 1 },
+    { "band": "AMBIGUOUS", "sites": 9,  "confirmed": 9,  "denied": 10, "precision": 0.47, "unadjudicable": 2 }
+  ]
+}

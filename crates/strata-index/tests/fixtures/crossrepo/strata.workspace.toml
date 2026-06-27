@@ -1,0 +1,10 @@
+[workspace]
+name = "shop-estate"
+
+[[repos]]
+name = "repo-producer"
+path = "repo-producer"
+
+[[repos]]
+name = "repo-consumer"
+path = "repo-consumer"

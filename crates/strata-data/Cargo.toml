@@ -1,0 +1,23 @@
+[package]
+name = "strata-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+# Mature, multi-dialect Rust SQL parser. Imported as `sqlparser`. DE-RISK
+# (2026-06-13, pinned =0.62.0): proven against distilled Postgres DDL — it parses
+# CREATE TABLE (typed columns, NOT NULL, inline PRIMARY KEY, inline REFERENCES),
+# table-level PRIMARY KEY / FOREIGN KEY constraints, and ALTER TABLE ADD/DROP/
+# RENAME COLUMN into a WALKABLE `Statement` AST, and a multi-statement migration
+# with CREATE EXTENSION / CREATE INDEX / INSERT / a dollar-quoted FUNCTION body
+# interleaved does NOT fail the whole file — those arrive as other `Statement`
+# variants we skip. A genuinely malformed statement is a `ParserError` (Result),
+# never a panic. We parse with `PostgreSqlDialect` (the AWS RDS dogfood target);
+# Postgres-specific column types (SERIAL/JSONB/TEXT[]/NUMERIC(p,s)/UUID) render
+# losslessly via `Display`. Pinned exactly because the slice depends on this AST
+# shape (`Statement::CreateTable`/`AlterTable`, `TableConstraint`,
+# `AlterTableOperation`, `ColumnOption`).
+sqlparser = "=0.62.0"
+thiserror = "1"

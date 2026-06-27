@@ -1,0 +1,17 @@
+# The SAFE-DEFAULT (no opt-in) counterpart to `dedup`. repo-x and repo-y each
+# declare `getUser` (GET /users/{id}) in their own spec and DO NOT declare an api
+# id, so the default api_id is the repo name. The two keys therefore namespace
+# apart into TWO canonical operation nodes — repos never merge a shared key
+# without a positive declaration (B6 fix). This is a v1 manifest (no
+# `[[repos.apis]]`).
+
+[workspace]
+name = "dedup-undeclared-estate"
+
+[[repos]]
+name = "repo-x"
+path = "repo-x"
+
+[[repos]]
+name = "repo-y"
+path = "repo-y"

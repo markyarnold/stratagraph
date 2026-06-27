@@ -1,0 +1,10 @@
+[workspace]
+name = "gql-estate"
+
+[[repos]]
+name = "repo-schema"
+path = "repo-schema"
+
+[[repos]]
+name = "repo-app"
+path = "repo-app"

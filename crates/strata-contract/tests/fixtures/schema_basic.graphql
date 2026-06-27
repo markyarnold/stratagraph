@@ -1,0 +1,23 @@
+"""
+A minimal GraphQL schema with default root operation types (no explicit
+`schema {}` block, so Query/Mutation are the roots by GraphQL's default rules).
+"""
+type Query {
+  getUser(id: ID!): User
+  listUsers: [User]
+}
+
+type Mutation {
+  createUser(input: UserInput!): User
+}
+
+type User {
+  id: ID!
+  name: String
+  email: String
+}
+
+input UserInput {
+  name: String!
+  email: String
+}

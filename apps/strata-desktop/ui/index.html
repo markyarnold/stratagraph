@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StrataGraph</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Top bar: open actions + loaded-graph summary. -->
+      <header class="topbar">
+        <div class="brand">StrataGraph</div>
+        <div class="actions">
+          <button id="open-project" class="btn-primary" type="button">Open Project Folder…</button>
+          <button id="open-workspace" type="button" class="btn-secondary btn-advanced">Open Multi-Repo Estate…</button>
+          <button id="open-graph" type="button" class="btn-secondary btn-advanced">Open Graph File…</button>
+          <button id="reindex" type="button" class="btn-secondary" disabled title="Rebuild the loaded graph from disk">Reindex</button>
+        </div>
+        <div id="summary" class="summary muted">
+          Open your <strong>project folder</strong> — StrataGraph finds the index
+          (<code>.strata/graph.duckdb</code>) inside. Several separate repos?
+          Use <em>Open Multi-Repo Estate…</em> with a <code>strata.workspace.toml</code>.
+        </div>
+      </header>
+
+      <!-- Error / status banner (hidden until there is something to say). -->
+      <div id="banner" class="banner" hidden></div>
+
+      <main class="layout">
+        <!-- Left: search + results. -->
+        <section class="pane pane-left">
+          <div class="search-row">
+            <input
+              id="search"
+              type="search"
+              placeholder="Search symbols, fields, resources…"
+              autocomplete="off"
+              spellcheck="false"
+              disabled
+            />
+          </div>
+          <div id="results-meta" class="results-meta muted"></div>
+          <ul id="results" class="results"></ul>
+        </section>
+
+        <!-- Right: tabs (Context | Impact) over the selected node. -->
+        <section class="pane pane-right">
+          <div id="selection" class="selection muted">
+            Select a result to inspect it.
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-tab="context" type="button">
+              Context
+            </button>
+            <button class="tab" data-tab="impact" type="button">Impact</button>
+            <button class="tab" data-tab="graph" type="button">Graph</button>
+          </div>
+
+          <!-- Context tab -->
+          <div id="tab-context" class="tab-panel">
+            <div id="context-body" class="context-body muted">
+              No selection.
+            </div>
+          </div>
+
+          <!-- Impact tab -->
+          <div id="tab-impact" class="tab-panel" hidden>
+            <div class="impact-controls">
+              <label>
+                Depth
+                <input
+                  id="impact-depth"
+                  type="number"
+                  min="0"
+                  max="10"
+                  value="5"
+                />
+              </label>
+              <label>
+                Min confidence
+                <input
+                  id="impact-minconf"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value="0"
+                />
+              </label>
+              <label class="checkbox">
+                <input id="impact-contracts" type="checkbox" checked />
+                Include contracts
+              </label>
+              <label class="checkbox">
+                <input id="impact-infra" type="checkbox" checked />
+                Include infra
+              </label>
+              <button id="impact-run" type="button">Run impact</button>
+            </div>
+            <div id="impact-body" class="impact-body muted">No selection.</div>
+          </div>
+
+          <!-- Graph tab (WebGL neighbourhood / impact blast radius) -->
+          <div id="tab-graph" class="tab-panel tab-graph" hidden>
+            <div class="graph-toolbar">
+              <div class="graph-modes" role="group" aria-label="Graph mode">
+                <button
+                  id="graph-mode-neighborhood"
+                  class="graph-mode active"
+                  type="button"
+                >
+                  Neighbourhood
+                </button>
+                <button id="graph-mode-impact" class="graph-mode" type="button">
+                  Impact
+                </button>
+              </div>
+
+              <label class="graph-depth">
+                Depth
+                <select id="graph-depth">
+                  <option value="1">1</option>
+                  <option value="2" selected>2</option>
+                  <option value="3">3</option>
+                </select>
+              </label>
+
+              <div class="graph-planes" aria-label="Plane filter">
+                <label><input type="checkbox" id="plane-code" checked /> code</label>
+                <label
+                  ><input type="checkbox" id="plane-contract" checked /> contract</label
+                >
+                <label><input type="checkbox" id="plane-infra" checked /> infra</label>
+                <label><input type="checkbox" id="plane-data" checked /> data</label>
+              </div>
+
+              <button id="graph-refresh" class="graph-refresh" type="button">
+                Refresh
+              </button>
+              <span id="graph-truncated" class="graph-truncated" hidden></span>
+            </div>
+
+            <div id="graph-legend" class="graph-legend"></div>
+
+            <div class="graph-stage-wrap">
+              <div id="graph-stage" class="graph-stage"></div>
+              <div id="graph-hint" class="graph-hint muted">
+                Select a node, then choose Neighbourhood or Impact to render its
+                graph.
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
