@@ -362,4 +362,16 @@ mod tests {
             .iter()
             .all(|r| r.outcome == writers::Outcome::Unchanged));
     }
+
+    #[test]
+    fn user_scope_is_unsupported_for_kiro() {
+        let tmp = TempDir::new().unwrap();
+        let result = install(tmp.path(), &ctx_db(), KiroVersion::Old, crate::init::InstallScope::User);
+        assert!(result.is_err(), "kiro install with User scope must return Err");
+        // No kiro files should have been written.
+        assert!(
+            !tmp.path().join(".kiro").exists(),
+            "no .kiro directory should be created when scope is User"
+        );
+    }
 }
