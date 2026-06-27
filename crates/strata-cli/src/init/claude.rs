@@ -7,9 +7,9 @@
 //!   or `~/.claude/CLAUDE.md` with the generic identity block (user scope);
 //! * `.claude/skills/strata/<slug>/SKILL.md` — the four task-routed skills;
 //! * `.claude/settings.json` — scoped, silent-when-clean hooks (R1/R2), each
-//!   carrying the `strata-hook` marker token for structural idempotency.
-//!   User scope uses a `.strata`-guarded SessionStart so global installs are
-//!   silent in repos that have not been indexed with StrataGraph.
+//!   carrying the `strata-hook` marker token for structural idempotency;
+//!   PreToolUse/PostToolUse are shared across scopes, but SessionStart is the
+//!   `.strata`-guarded variant for user scope (silent in non-StrataGraph repos).
 
 use std::path::Path;
 
@@ -83,7 +83,7 @@ pub fn install_files(root: &Path, ctx: &RepoContext, scope: InstallScope) -> Res
     // 4. .claude/settings.json — scoped silent-when-clean hooks.
     //    SessionStart variant differs by scope; Pre/PostToolUse are identical.
     let settings_path = root.join(".claude/settings.json");
-    let outcome = writers::edit_json(&settings_path, |root| install_hooks_for(root, scope))?;
+    let outcome = writers::edit_json(&settings_path, |settings| install_hooks_for(settings, scope))?;
     reports.push(FileReport::new(".claude/settings.json", outcome));
 
     Ok(reports)
@@ -449,13 +449,30 @@ mod tests {
         assert!(!steering.contains("indexed by StrataGraph as"));
 
         // SessionStart is the guarded variant (silent in non-Strata repos).
+        // Parse the JSON and locate the StrataGraph SessionStart entry by the
+        // strata-hook marker so we assert on the specific command, not just any
+        // substring that happens to appear elsewhere in the file.
         let settings = std::fs::read_to_string(claude.join("settings.json")).unwrap();
-        assert!(settings.contains(r#"[ -d \"$d/.strata\" ]"#) || settings.contains("-d \"$d/.strata\""),
-            "global SessionStart must guard on the .strata dir: {settings}");
+        let v: serde_json::Value = serde_json::from_str(&settings).unwrap();
+        let ss_arr = v["hooks"]["SessionStart"]
+            .as_array()
+            .expect("SessionStart must be an array");
+        let ss_cmd = ss_arr
+            .iter()
+            .find_map(|group| {
+                group["hooks"].as_array()?.iter().find_map(|h| {
+                    let cmd = h["command"].as_str()?;
+                    if cmd.contains(HOOK_MARKER) { Some(cmd) } else { None }
+                })
+            })
+            .expect("StrataGraph SessionStart hook (by strata-hook marker) must be present");
+        assert!(
+            ss_cmd.contains(r#"[ -d "$d/.strata" ] || exit 0"#),
+            "user-scope SessionStart must be the .strata-guarded variant, got: {ss_cmd}"
+        );
 
         // All files in the report were created.
         assert!(!reports.is_empty());
-        let _ = reports; // suppress unused warning
     }
 
     #[test]
