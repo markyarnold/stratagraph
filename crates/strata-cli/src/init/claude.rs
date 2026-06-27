@@ -61,7 +61,7 @@ pub fn register_user_mcp(
     if !out.status.success() {
         return Err(WriteError::Command {
             detail: format!(
-                "`claude mcp add` failed: {}",
+                "`claude mcp add`: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             ),
         });
