@@ -269,7 +269,13 @@ mod tests {
     #[test]
     fn old_version_writes_legacy_kiro_hook_shape() {
         let tmp = TempDir::new().unwrap();
-        let reports = install(tmp.path(), &ctx_db(), KiroVersion::Old, crate::init::InstallScope::Project).unwrap();
+        let reports = install(
+            tmp.path(),
+            &ctx_db(),
+            KiroVersion::Old,
+            crate::init::InstallScope::Project,
+        )
+        .unwrap();
         for rel in [
             ".kiro/settings/mcp.json",
             ".kiro/steering/strata.md",
@@ -309,7 +315,13 @@ mod tests {
     #[test]
     fn new_version_writes_v1_json_envelope() {
         let tmp = TempDir::new().unwrap();
-        install(tmp.path(), &ctx_db(), KiroVersion::New, crate::init::InstallScope::Project).unwrap();
+        install(
+            tmp.path(),
+            &ctx_db(),
+            KiroVersion::New,
+            crate::init::InstallScope::Project,
+        )
+        .unwrap();
         for rel in [
             ".kiro/hooks/strata-pre-edit.json",
             ".kiro/hooks/strata-pre-commit.json",
@@ -336,10 +348,22 @@ mod tests {
     #[test]
     fn switching_version_removes_the_other_formats_hooks() {
         let tmp = TempDir::new().unwrap();
-        install(tmp.path(), &ctx_db(), KiroVersion::New, crate::init::InstallScope::Project).unwrap();
+        install(
+            tmp.path(),
+            &ctx_db(),
+            KiroVersion::New,
+            crate::init::InstallScope::Project,
+        )
+        .unwrap();
         assert!(tmp.path().join(".kiro/hooks/strata-pre-edit.json").exists());
         // Switch to old: the stale .json hooks are removed, .kiro.hook written.
-        install(tmp.path(), &ctx_db(), KiroVersion::Old, crate::init::InstallScope::Project).unwrap();
+        install(
+            tmp.path(),
+            &ctx_db(),
+            KiroVersion::Old,
+            crate::init::InstallScope::Project,
+        )
+        .unwrap();
         assert!(
             !tmp.path().join(".kiro/hooks/strata-pre-edit.json").exists(),
             "stale .json hook must be removed when switching to old"
@@ -353,11 +377,23 @@ mod tests {
     #[test]
     fn mcp_settings_register_strata_and_second_run_unchanged() {
         let tmp = TempDir::new().unwrap();
-        install(tmp.path(), &ctx_db(), KiroVersion::Old, crate::init::InstallScope::Project).unwrap();
+        install(
+            tmp.path(),
+            &ctx_db(),
+            KiroVersion::Old,
+            crate::init::InstallScope::Project,
+        )
+        .unwrap();
         let v = read_json(&tmp.path().join(".kiro/settings/mcp.json"));
         assert_eq!(v["mcpServers"]["strata"]["command"], "strata");
 
-        let second = install(tmp.path(), &ctx_db(), KiroVersion::Old, crate::init::InstallScope::Project).unwrap();
+        let second = install(
+            tmp.path(),
+            &ctx_db(),
+            KiroVersion::Old,
+            crate::init::InstallScope::Project,
+        )
+        .unwrap();
         assert!(second
             .iter()
             .all(|r| r.outcome == writers::Outcome::Unchanged));
@@ -366,8 +402,16 @@ mod tests {
     #[test]
     fn user_scope_is_unsupported_for_kiro() {
         let tmp = TempDir::new().unwrap();
-        let result = install(tmp.path(), &ctx_db(), KiroVersion::Old, crate::init::InstallScope::User);
-        assert!(result.is_err(), "kiro install with User scope must return Err");
+        let result = install(
+            tmp.path(),
+            &ctx_db(),
+            KiroVersion::Old,
+            crate::init::InstallScope::User,
+        );
+        assert!(
+            result.is_err(),
+            "kiro install with User scope must return Err"
+        );
         // No kiro files should have been written.
         assert!(
             !tmp.path().join(".kiro").exists(),

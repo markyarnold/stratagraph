@@ -31,23 +31,33 @@ fn claude_runner(args: &[&str]) -> std::io::Result<std::process::Output> {
 pub fn register_user_mcp(
     run: impl Fn(&[&str]) -> std::io::Result<std::process::Output>,
 ) -> Result<(), WriteError> {
-    let not_found = |_| WriteError::Command {
+    let not_found = |_| {
+        WriteError::Command {
         detail: "the `claude` CLI was not found on PATH; install Claude Code (you are installing its kit) and re-run".into(),
+    }
     };
     // Best-effort remove (ignore its exit status); a NotFound here = claude absent.
     match run(&["mcp", "remove", "strata", "--scope", "user"]) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_found(e)),
-        Err(e) => return Err(WriteError::Command { detail: e.to_string() }),
+        Err(e) => {
+            return Err(WriteError::Command {
+                detail: e.to_string(),
+            })
+        }
     }
-    let out = run(&["mcp", "add", "strata", "--scope", "user", "--", "strata", "mcp"])
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                not_found(e)
-            } else {
-                WriteError::Command { detail: e.to_string() }
+    let out = run(&[
+        "mcp", "add", "strata", "--scope", "user", "--", "strata", "mcp",
+    ])
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            not_found(e)
+        } else {
+            WriteError::Command {
+                detail: e.to_string(),
             }
-        })?;
+        }
+    })?;
     if !out.status.success() {
         return Err(WriteError::Command {
             detail: format!(
@@ -65,11 +75,21 @@ pub fn register_user_mcp(
 /// written (abort-before-files): if the `claude` CLI is absent or the add fails,
 /// no files are written and the error is returned. For `InstallScope::Project`,
 /// `install_files` is called directly (which writes `.mcp.json` as before).
-pub fn install(root: &Path, ctx: &RepoContext, scope: InstallScope) -> Result<Vec<FileReport>, WriteError> {
+pub fn install(
+    root: &Path,
+    ctx: &RepoContext,
+    scope: InstallScope,
+) -> Result<Vec<FileReport>, WriteError> {
     if scope == InstallScope::User {
         register_user_mcp(claude_runner)?;
         let mut reports = install_files(root, ctx, scope)?;
-        reports.insert(0, FileReport::new("claude mcp add strata (user scope)", super::writers::Outcome::Updated));
+        reports.insert(
+            0,
+            FileReport::new(
+                "claude mcp add strata (user scope)",
+                super::writers::Outcome::Updated,
+            ),
+        );
         return Ok(reports);
     }
     install_files(root, ctx, scope)
@@ -93,7 +113,11 @@ pub fn install(root: &Path, ctx: &RepoContext, scope: InstallScope) -> Result<Ve
 ///   - `.claude/CLAUDE.md` — managed steering block with generic identity;
 ///   - `.claude/skills/strata/<slug>/SKILL.md` — four task-routed skills;
 ///   - `.claude/settings.json` — hooks with `.strata`-guarded SessionStart.
-pub fn install_files(root: &Path, ctx: &RepoContext, scope: InstallScope) -> Result<Vec<FileReport>, WriteError> {
+pub fn install_files(
+    root: &Path,
+    ctx: &RepoContext,
+    scope: InstallScope,
+) -> Result<Vec<FileReport>, WriteError> {
     let mut reports = Vec::new();
 
     match scope {
@@ -101,7 +125,8 @@ pub fn install_files(root: &Path, ctx: &RepoContext, scope: InstallScope) -> Res
             // 1. .mcp.json — merge-add mcpServers.strata (project only).
             let mcp_path = root.join(".mcp.json");
             let server = mcp_server_value(&ctx.mcp_args);
-            let outcome = writers::merge_json(&mcp_path, &json!({ "mcpServers": { "strata": server } }))?;
+            let outcome =
+                writers::merge_json(&mcp_path, &json!({ "mcpServers": { "strata": server } }))?;
             reports.push(FileReport::new(".mcp.json", outcome));
 
             // 2. CLAUDE.md + AGENTS.md — per-repo identity steering block.
@@ -131,7 +156,9 @@ pub fn install_files(root: &Path, ctx: &RepoContext, scope: InstallScope) -> Res
     // 4. .claude/settings.json — scoped silent-when-clean hooks.
     //    SessionStart variant differs by scope; Pre/PostToolUse are identical.
     let settings_path = root.join(".claude/settings.json");
-    let outcome = writers::edit_json(&settings_path, |settings| install_hooks_for(settings, scope))?;
+    let outcome = writers::edit_json(&settings_path, |settings| {
+        install_hooks_for(settings, scope)
+    })?;
     reports.push(FileReport::new(".claude/settings.json", outcome));
 
     Ok(reports)
@@ -481,13 +508,25 @@ mod tests {
     #[test]
     fn user_scope_writes_global_artifacts_and_no_mcp_json() {
         let home = TempDir::new().unwrap();
-        let ctx = RepoContext { mcp_args: vec![], identity: Identity::Global };
+        let ctx = RepoContext {
+            mcp_args: vec![],
+            identity: Identity::Global,
+        };
         let reports = install_files(home.path(), &ctx, crate::init::InstallScope::User).unwrap();
 
         let claude = home.path().join(".claude");
-        assert!(claude.join("CLAUDE.md").exists(), "global steering at ~/.claude/CLAUDE.md");
-        assert!(!home.path().join(".mcp.json").exists(), "no .mcp.json for global");
-        assert!(!home.path().join("CLAUDE.md").exists(), "no ~/CLAUDE.md (home root)");
+        assert!(
+            claude.join("CLAUDE.md").exists(),
+            "global steering at ~/.claude/CLAUDE.md"
+        );
+        assert!(
+            !home.path().join(".mcp.json").exists(),
+            "no .mcp.json for global"
+        );
+        assert!(
+            !home.path().join("CLAUDE.md").exists(),
+            "no ~/CLAUDE.md (home root)"
+        );
         assert!(claude.join("settings.json").exists());
         assert!(claude.join("skills/strata/strata-guide/SKILL.md").exists());
 
@@ -510,7 +549,11 @@ mod tests {
             .find_map(|group| {
                 group["hooks"].as_array()?.iter().find_map(|h| {
                     let cmd = h["command"].as_str()?;
-                    if cmd.contains(HOOK_MARKER) { Some(cmd) } else { None }
+                    if cmd.contains(HOOK_MARKER) {
+                        Some(cmd)
+                    } else {
+                        None
+                    }
                 })
             })
             .expect("StrataGraph SessionStart hook (by strata-hook marker) must be present");
@@ -552,7 +595,9 @@ mod tests {
         let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(vec![]));
         let c = calls.clone();
         let run = move |args: &[&str]| {
-            c.lock().unwrap().push(args.iter().map(|s| s.to_string()).collect());
+            c.lock()
+                .unwrap()
+                .push(args.iter().map(|s| s.to_string()).collect());
             Ok(ok_output())
         };
         register_user_mcp(run).unwrap();
@@ -570,7 +615,10 @@ mod tests {
         let run = |_: &[&str]| Err(std::io::Error::from(std::io::ErrorKind::NotFound));
         let err = register_user_mcp(run).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("claude") && msg.to_lowercase().contains("not"), "got: {msg}");
+        assert!(
+            msg.contains("claude") && msg.to_lowercase().contains("not"),
+            "got: {msg}"
+        );
     }
 
     #[cfg(unix)]
@@ -581,7 +629,11 @@ mod tests {
         let run = move |_: &[&str]| {
             let mut k = n.lock().unwrap();
             *k += 1;
-            if *k == 1 { Ok(ok_output()) } else { Ok(fail_output("boom")) }
+            if *k == 1 {
+                Ok(ok_output())
+            } else {
+                Ok(fail_output("boom"))
+            }
         };
         let err = register_user_mcp(run).unwrap_err();
         assert!(err.to_string().contains("boom"));

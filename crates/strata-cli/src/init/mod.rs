@@ -308,10 +308,22 @@ mod tests {
 
     #[test]
     fn install_scope_parses_flags() {
-        assert_eq!(InstallScope::from_flags(true, None).unwrap(), InstallScope::User);
-        assert_eq!(InstallScope::from_flags(false, Some("user")).unwrap(), InstallScope::User);
-        assert_eq!(InstallScope::from_flags(false, Some("project")).unwrap(), InstallScope::Project);
-        assert_eq!(InstallScope::from_flags(false, None).unwrap(), InstallScope::Project);
+        assert_eq!(
+            InstallScope::from_flags(true, None).unwrap(),
+            InstallScope::User
+        );
+        assert_eq!(
+            InstallScope::from_flags(false, Some("user")).unwrap(),
+            InstallScope::User
+        );
+        assert_eq!(
+            InstallScope::from_flags(false, Some("project")).unwrap(),
+            InstallScope::Project
+        );
+        assert_eq!(
+            InstallScope::from_flags(false, None).unwrap(),
+            InstallScope::Project
+        );
         // Conflict: --global with --scope project is an error.
         assert!(InstallScope::from_flags(true, Some("project")).is_err());
         // Unknown scope value is an error.

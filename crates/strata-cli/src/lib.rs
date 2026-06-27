@@ -2792,7 +2792,11 @@ mod tests {
         use std::path::{Path, PathBuf};
         // --repo wins over everything.
         assert_eq!(
-            resolve_mcp_cwd(Some(Path::new("/r")), Some("/env"), Some(PathBuf::from("/cwd"))),
+            resolve_mcp_cwd(
+                Some(Path::new("/r")),
+                Some("/env"),
+                Some(PathBuf::from("/cwd"))
+            ),
             Some(PathBuf::from("/r"))
         );
         // CLAUDE_PROJECT_DIR wins over cwd when --repo is absent.

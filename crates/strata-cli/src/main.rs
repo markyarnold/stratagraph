@@ -306,9 +306,7 @@ fn run_init(
     let root: PathBuf = match scope {
         init::InstallScope::Project => path.to_path_buf(),
         init::InstallScope::User => dirs::home_dir().ok_or_else(|| {
-            CliError::Other(
-                "could not resolve your home directory for a --global install".into(),
-            )
+            CliError::Other("could not resolve your home directory for a --global install".into())
         })?,
     };
 
@@ -549,7 +547,14 @@ fn main() -> ExitCode {
             kiro_version,
             global,
             scope,
-        } => run_init(agent.as_deref(), &path, yes, &kiro_version, global, scope.as_deref()),
+        } => run_init(
+            agent.as_deref(),
+            &path,
+            yes,
+            &kiro_version,
+            global,
+            scope.as_deref(),
+        ),
     };
 
     match result {
