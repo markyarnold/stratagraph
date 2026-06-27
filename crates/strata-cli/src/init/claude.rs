@@ -16,7 +16,7 @@ use super::writers::{self, hooks_event_array, upsert_hook, WriteError, HOOK_MARK
 use super::{FileReport, RepoContext};
 
 /// Install the Claude Code kit under `root`, returning a [`FileReport`] per file.
-pub fn install(root: &Path, ctx: &RepoContext) -> Result<Vec<FileReport>, WriteError> {
+pub fn install(root: &Path, ctx: &RepoContext, _scope: crate::init::InstallScope) -> Result<Vec<FileReport>, WriteError> {
     let mut reports = Vec::new();
 
     // 1. .mcp.json — merge-add mcpServers.strata.
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn install_writes_all_claude_artifacts() {
         let tmp = TempDir::new().unwrap();
-        let reports = install(tmp.path(), &ctx_db()).unwrap();
+        let reports = install(tmp.path(), &ctx_db(), crate::init::InstallScope::Project).unwrap();
 
         // Every expected file exists on disk.
         for rel in [
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn mcp_json_registers_strata_server_with_detected_args() {
         let tmp = TempDir::new().unwrap();
-        install(tmp.path(), &ctx_db()).unwrap();
+        install(tmp.path(), &ctx_db(), crate::init::InstallScope::Project).unwrap();
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(tmp.path().join(".mcp.json")).unwrap())
                 .unwrap();
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn hooks_carry_marker_and_are_scoped() {
         let tmp = TempDir::new().unwrap();
-        install(tmp.path(), &ctx_db()).unwrap();
+        install(tmp.path(), &ctx_db(), crate::init::InstallScope::Project).unwrap();
         let v: Value = serde_json::from_str(
             &std::fs::read_to_string(tmp.path().join(".claude/settings.json")).unwrap(),
         )
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn pre_tool_use_hook_is_scoped_marked_and_computes_blast() {
         let tmp = TempDir::new().unwrap();
-        install(tmp.path(), &ctx_db()).unwrap();
+        install(tmp.path(), &ctx_db(), crate::init::InstallScope::Project).unwrap();
         let v: Value = serde_json::from_str(
             &std::fs::read_to_string(tmp.path().join(".claude/settings.json")).unwrap(),
         )
@@ -371,8 +371,8 @@ mod tests {
     #[test]
     fn second_install_is_all_unchanged() {
         let tmp = TempDir::new().unwrap();
-        install(tmp.path(), &ctx_db()).unwrap();
-        let second = install(tmp.path(), &ctx_db()).unwrap();
+        install(tmp.path(), &ctx_db(), crate::init::InstallScope::Project).unwrap();
+        let second = install(tmp.path(), &ctx_db(), crate::init::InstallScope::Project).unwrap();
         assert!(
             second.iter().all(|r| r.outcome == Outcome::Unchanged),
             "idempotent re-run, got {second:?}"
@@ -395,7 +395,7 @@ mod tests {
         )
         .unwrap();
 
-        install(tmp.path(), &ctx_db()).unwrap();
+        install(tmp.path(), &ctx_db(), crate::init::InstallScope::Project).unwrap();
 
         let mcp: Value =
             serde_json::from_str(&std::fs::read_to_string(tmp.path().join(".mcp.json")).unwrap())

@@ -18,6 +18,7 @@ strata-store = { path = "../strata-store" }
 strata-index = { path = "../strata-index" }
 strata-mcp = { path = "../strata-mcp" }
 clap = { version = "4", features = ["derive"] }
+dirs = "5"
 serde_json = { workspace = true }
 
 [dev-dependencies]

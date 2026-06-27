@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use dirs;
 
 use strata_cli::init::{self, Agent, KiroVersion};
 use strata_cli::{
@@ -256,20 +257,29 @@ enum Command {
         /// `new` (`.json`, the schema Kiro's newer version introduced).
         #[arg(long, value_name = "VERSION", default_value = "old")]
         kiro_version: String,
+        /// Install into your user-level ~/.claude so the kit applies to every repo.
+        #[arg(long, default_value_t = false)]
+        global: bool,
+        /// Install scope: `project` (default, this repo) or `user` (~/.claude, all repos).
+        #[arg(long, value_name = "SCOPE")]
+        scope: Option<String>,
     },
 }
 
-/// Handle `strata init [<agent>] [--path DIR] [--yes]`.
+/// Handle `strata init [<agent>] [--path DIR] [--yes] [--global] [--scope …]`.
 ///
 /// * no agent → list the supported agents (an `Ok` listing, exit 0);
 /// * unknown agent → an actionable error naming the supported agents;
-/// * known agent → optionally index first (when `--yes` and no graph exists yet,
-///   so the steering identity line carries real counts), then write the kit.
+/// * known agent → optionally index first (when `--yes` and scope is Project and
+///   no graph exists yet, so the steering identity line carries real counts),
+///   then write the kit.
 fn run_init(
     agent: Option<&str>,
     path: &Path,
     yes: bool,
     kiro_version: &str,
+    global: bool,
+    scope: Option<&str>,
 ) -> Result<Option<String>, CliError> {
     let agent = match agent {
         None => {
@@ -293,18 +303,30 @@ fn run_init(
         ))
     })?;
 
-    // With --yes and no index yet, build it first so the identity line is real.
-    if yes {
-        let manifest = path.join(init::WORKSPACE_MANIFEST);
-        let db = path.join(strata_cli::DEFAULT_DB);
+    let scope = init::InstallScope::from_flags(global, scope).map_err(CliError::Other)?;
+    let root: PathBuf = match scope {
+        init::InstallScope::Project => path.to_path_buf(),
+        init::InstallScope::User => dirs::home_dir().ok_or_else(|| {
+            CliError::Other(
+                "could not resolve your home directory for a --global install".into(),
+            )
+        })?,
+    };
+
+    // With --yes and project scope and no index yet, build it first so the
+    // identity line is real. Gated on Project scope: a global install has no
+    // repo to index.
+    if yes && scope == init::InstallScope::Project {
+        let manifest = root.join(init::WORKSPACE_MANIFEST);
+        let db = root.join(strata_cli::DEFAULT_DB);
         if !manifest.exists() && !db.exists() {
-            // Single-repo index into the default DB location under `path`.
+            // Single-repo index into the default DB location under `root`.
             // Auto-index on `init` never opts into vendored bundles.
-            cmd_index(path, &db, false)?;
+            cmd_index(&root, &db, false)?;
         }
     }
 
-    init::run(agent, path, yes, kiro_version)
+    init::run(agent, &root, yes, kiro_version, scope)
         .map(Some)
         .map_err(|e| CliError::Other(e.to_string()))
 }
@@ -526,7 +548,9 @@ fn main() -> ExitCode {
             path,
             yes,
             kiro_version,
-        } => run_init(agent.as_deref(), &path, yes, &kiro_version),
+            global,
+            scope,
+        } => run_init(agent.as_deref(), &path, yes, &kiro_version, global, scope.as_deref()),
     };
 
     match result {
