@@ -19,11 +19,59 @@ use super::content::{self, Identity};
 use super::writers::{self, hooks_event_array, upsert_hook, WriteError, HOOK_MARKER};
 use super::{FileReport, InstallScope, RepoContext};
 
+/// The production runner: exec `claude` with `args`, capturing output.
+fn claude_runner(args: &[&str]) -> std::io::Result<std::process::Output> {
+    std::process::Command::new("claude").args(args).output()
+}
+
+/// Register the user-scope MCP server via the official CLI (we never hand-edit
+/// ~/.claude.json). Idempotent: remove any prior `strata` user server, then add.
+/// `run` is injected for testability. The first call doubles as the presence
+/// check: a NotFound spawn error means the `claude` CLI is absent.
+pub fn register_user_mcp(
+    run: impl Fn(&[&str]) -> std::io::Result<std::process::Output>,
+) -> Result<(), WriteError> {
+    let not_found = |_| WriteError::Command {
+        detail: "the `claude` CLI was not found on PATH; install Claude Code (you are installing its kit) and re-run".into(),
+    };
+    // Best-effort remove (ignore its exit status); a NotFound here = claude absent.
+    match run(&["mcp", "remove", "strata", "--scope", "user"]) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_found(e)),
+        Err(e) => return Err(WriteError::Command { detail: e.to_string() }),
+    }
+    let out = run(&["mcp", "add", "strata", "--scope", "user", "--", "strata", "mcp"])
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                not_found(e)
+            } else {
+                WriteError::Command { detail: e.to_string() }
+            }
+        })?;
+    if !out.status.success() {
+        return Err(WriteError::Command {
+            detail: format!(
+                "`claude mcp add` failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Install the Claude Code kit under `root`, returning a [`FileReport`] per file.
 ///
-/// Task 5 will extend this to shell out for the MCP registration (user scope).
-/// For now `install` delegates entirely to [`install_files`].
+/// For `InstallScope::User`, `register_user_mcp` is called BEFORE any file is
+/// written (abort-before-files): if the `claude` CLI is absent or the add fails,
+/// no files are written and the error is returned. For `InstallScope::Project`,
+/// `install_files` is called directly (which writes `.mcp.json` as before).
 pub fn install(root: &Path, ctx: &RepoContext, scope: InstallScope) -> Result<Vec<FileReport>, WriteError> {
+    if scope == InstallScope::User {
+        register_user_mcp(claude_runner)?;
+        let mut reports = install_files(root, ctx, scope)?;
+        reports.insert(0, FileReport::new("claude mcp add strata (user scope)", super::writers::Outcome::Updated));
+        return Ok(reports);
+    }
     install_files(root, ctx, scope)
 }
 
@@ -474,6 +522,72 @@ mod tests {
         // All files in the report were created.
         assert!(!reports.is_empty());
     }
+
+    // ── register_user_mcp (Task 5) ───────────────────────────────────────────
+
+    #[cfg(unix)]
+    fn ok_output() -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: vec![],
+            stderr: vec![],
+        }
+    }
+
+    #[cfg(unix)]
+    fn fail_output(stderr: &str) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(256),
+            stdout: vec![],
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_user_mcp_runs_remove_then_add_with_exact_args() {
+        use std::sync::{Arc, Mutex};
+        let calls: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(vec![]));
+        let c = calls.clone();
+        let run = move |args: &[&str]| {
+            c.lock().unwrap().push(args.iter().map(|s| s.to_string()).collect());
+            Ok(ok_output())
+        };
+        register_user_mcp(run).unwrap();
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls[0], vec!["mcp", "remove", "strata", "--scope", "user"]);
+        assert_eq!(
+            calls[1],
+            vec!["mcp", "add", "strata", "--scope", "user", "--", "strata", "mcp"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_user_mcp_claude_absent_is_a_clear_error() {
+        let run = |_: &[&str]| Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let err = register_user_mcp(run).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("claude") && msg.to_lowercase().contains("not"), "got: {msg}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_user_mcp_add_failure_surfaces_stderr() {
+        use std::sync::{Arc, Mutex};
+        let n = Arc::new(Mutex::new(0));
+        let run = move |_: &[&str]| {
+            let mut k = n.lock().unwrap();
+            *k += 1;
+            if *k == 1 { Ok(ok_output()) } else { Ok(fail_output("boom")) }
+        };
+        let err = register_user_mcp(run).unwrap_err();
+        assert!(err.to_string().contains("boom"));
+    }
+
+    // ── existing idempotency tests ───────────────────────────────────────────
 
     #[test]
     fn second_install_is_all_unchanged() {

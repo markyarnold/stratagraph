@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use dirs;
 
 use strata_cli::init::{self, Agent, KiroVersion};
 use strata_cli::{

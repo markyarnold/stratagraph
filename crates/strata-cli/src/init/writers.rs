@@ -49,6 +49,8 @@ pub enum WriteError {
     MalformedJson { path: String, detail: String },
     /// An underlying filesystem error.
     Io { path: String, detail: String },
+    /// A shell-out to an external command failed (e.g. `claude mcp add`).
+    Command { detail: String },
 }
 
 impl fmt::Display for WriteError {
@@ -59,6 +61,7 @@ impl fmt::Display for WriteError {
                 "{path} contains invalid JSON ({detail}); fix or remove it, then re-run `strata init` (left untouched)"
             ),
             WriteError::Io { path, detail } => write!(f, "could not write {path}: {detail}"),
+            WriteError::Command { detail } => write!(f, "claude command failed: {detail}"),
         }
     }
 }
