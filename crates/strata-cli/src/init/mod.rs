@@ -293,6 +293,11 @@ fn render_summary(agent: Agent, root: &Path, ctx: &RepoContext, reports: &[FileR
                 "Next: restart your agent session so the MCP server picks up the kit, then ask \"what breaks if I change X?\".\n",
             );
         }
+        Identity::Global => {
+            out.push_str(
+                "Next: the MCP server will resolve your current repo's graph at runtime. If you're not in a StrataGraph-indexed repo yet, run `strata index .` first.\n",
+            );
+        }
     }
     out
 }
