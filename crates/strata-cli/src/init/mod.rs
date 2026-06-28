@@ -209,6 +209,39 @@ fn workspace_name(manifest: &Path) -> Option<String> {
     Some(parsed.workspace.name)
 }
 
+/// Where the kit is installed: a single repo (default) or the user's `~/.claude`
+/// (applies to every repo). Selected by `--global` / `--scope` on `init`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallScope {
+    Project,
+    User,
+}
+
+impl InstallScope {
+    /// Resolve the scope from the two CLI inputs. `--global` is the headline
+    /// boolean; `--scope project|user` is the explicit form. They must agree.
+    pub fn from_flags(global: bool, scope: Option<&str>) -> Result<InstallScope, String> {
+        let from_scope = match scope {
+            None => None,
+            Some("user") => Some(InstallScope::User),
+            Some("project") => Some(InstallScope::Project),
+            Some(other) => {
+                return Err(format!(
+                    "unknown --scope `{other}`; supported: project, user"
+                ))
+            }
+        };
+        match (global, from_scope) {
+            (true, Some(InstallScope::Project)) => {
+                Err("--global conflicts with --scope project; pick one".to_string())
+            }
+            (true, _) => Ok(InstallScope::User),
+            (false, Some(s)) => Ok(s),
+            (false, None) => Ok(InstallScope::Project),
+        }
+    }
+}
+
 /// `strata init <agent> [--yes]` — the command entrypoint.
 ///
 /// Detects the repo context, runs the agent's installer, and returns the
@@ -221,12 +254,13 @@ pub fn run(
     root: &Path,
     _yes: bool,
     kiro_version: KiroVersion,
+    scope: InstallScope,
 ) -> Result<String, WriteError> {
     let ctx = detect_context(root, load_identity);
     let reports = match agent {
-        Agent::Claude => claude::install(root, &ctx)?,
+        Agent::Claude => claude::install(root, &ctx, scope)?,
         // `kiro_version` selects the hook-file format; it is ignored for Claude.
-        Agent::Kiro => kiro::install(root, &ctx, kiro_version)?,
+        Agent::Kiro => kiro::install(root, &ctx, kiro_version, scope)?,
     };
     Ok(render_summary(agent, root, &ctx, &reports))
 }
@@ -259,6 +293,11 @@ fn render_summary(agent: Agent, root: &Path, ctx: &RepoContext, reports: &[FileR
                 "Next: restart your agent session so the MCP server picks up the kit, then ask \"what breaks if I change X?\".\n",
             );
         }
+        Identity::Global => {
+            out.push_str(
+                "Next: the MCP server will resolve your current repo's graph at runtime. If you're not in a StrataGraph-indexed repo yet, run `strata index .` first.\n",
+            );
+        }
     }
     out
 }
@@ -266,6 +305,30 @@ fn render_summary(agent: Agent, root: &Path, ctx: &RepoContext, reports: &[FileR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_scope_parses_flags() {
+        assert_eq!(
+            InstallScope::from_flags(true, None).unwrap(),
+            InstallScope::User
+        );
+        assert_eq!(
+            InstallScope::from_flags(false, Some("user")).unwrap(),
+            InstallScope::User
+        );
+        assert_eq!(
+            InstallScope::from_flags(false, Some("project")).unwrap(),
+            InstallScope::Project
+        );
+        assert_eq!(
+            InstallScope::from_flags(false, None).unwrap(),
+            InstallScope::Project
+        );
+        // Conflict: --global with --scope project is an error.
+        assert!(InstallScope::from_flags(true, Some("project")).is_err());
+        // Unknown scope value is an error.
+        assert!(InstallScope::from_flags(false, Some("bogus")).is_err());
+    }
 
     #[test]
     fn agent_parse_known_and_unknown() {

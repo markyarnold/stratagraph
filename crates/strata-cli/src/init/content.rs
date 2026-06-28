@@ -31,6 +31,8 @@ pub enum Identity {
     /// No index yet — the artifacts are written with an honest placeholder and a
     /// pointer to `strata index`.
     NotIndexed,
+    /// User-scope (global) install: no single repo, so a generic line.
+    Global,
 }
 
 impl Identity {
@@ -60,6 +62,9 @@ impl Identity {
             }
             Identity::NotIndexed => {
                 "This repository is **not yet indexed** by StrataGraph. Run `strata index .` so the MCP tools below have a graph to serve. Until then, blast-radius answers are unavailable and you MUST NOT claim certainty about what depends on a symbol.".to_string()
+            }
+            Identity::Global => {
+                "This agent kit is installed globally by StrataGraph. It resolves the current repo at runtime; if a repo is not indexed yet, run `strata index .` first, and until then do not claim certainty about what depends on a symbol.".to_string()
             }
         }
     }
@@ -511,5 +516,14 @@ mod tests {
                 || body.contains("nothing depends on this"),
             "the impact skill must tie this to the never-say-nothing-depends guarantee:\n{body}"
         );
+    }
+
+    #[test]
+    fn global_identity_line_is_generic_with_no_counts() {
+        let line = Identity::Global.line();
+        assert!(line.contains("resolves the current repo"), "got: {line}");
+        // Never embeds per-repo counts in a global block.
+        assert!(!line.contains("nodes"));
+        assert!(!line.contains("indexed by StrataGraph as"));
     }
 }
