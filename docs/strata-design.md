@@ -20,7 +20,7 @@
 10. [Collaboration layer](#10-collaboration-layer)
 11. [MCP tool and resource surface](#11-mcp-tool-and-resource-surface)
 12. [Security, privacy and governance](#12-security-privacy-and-governance)
-13. [Open source model and licensing](#13-open-source-model-and-licensing)
+13. [Source model and licensing](#13-source-model-and-licensing)
 14. [Phased roadmap](#14-phased-roadmap)
 15. [Decisions and remaining open questions](#15-decisions-and-remaining-open-questions)
 - [Appendix A: feature parity and incorporation](#appendix-a-feature-parity-and-incorporation)
@@ -237,7 +237,7 @@ The decision is shaped by the Kùzu shutdown of October 2025: the embedded engin
 
 **The database is a substrate, chosen for reliability not graphiness: DuckDB.** It is among the most reliable, fastest and best maintained embedded databases available, MIT licensed, in process, single file, columnar (ideal for the scan and aggregate parts of impact and search), with first class Rust bindings, full text search, and an HNSW vector extension so hybrid search needs no second store. The graph persists as vertex and edge tables and is loaded into the Rust engine for traversal. DuckPGQ, the SQL/PGQ extension from the DuckDB research group, benchmarks competitively against Neo4j and is offered as a standards based query escape hatch, but as a maturing community extension it stays off the reliability critical path. SQL/PGQ being part of the SQL:2023 standard makes it a durable bet.
 
-**Hosted service: FalkorDB** behind the same storage trait for multi tenant scale, with openCypher. Run as a managed service, so its SSPL licence is fine there, but it is never bundled into the Apache OSS local build. Neo4j Enterprise is the alternative; avoid Neo4j Community on the managed-service side for licensing reasons.
+**Hosted service: FalkorDB** behind the same storage trait for multi tenant scale, with openCypher. Run as a managed service, so its SSPL licence is fine there, but it is never bundled into the source-available local build. Neo4j Enterprise is the alternative; avoid Neo4j Community on the managed-service side for licensing reasons.
 
 One `GraphStore` trait, multiple backends, correctness owned in the core. Bomb proof here means no single database can strand us.
 
@@ -298,16 +298,16 @@ Resources: estate overview, per repo context and staleness, clusters, processes,
 
 - Local mode makes no network calls, the graph stays on disk.
 - The optional model pass transmits only what the user opts into, under their own provider key.
-- Hosted governance is what a CTO would buy a managed option for: SSO, SCIM, RBAC, audit log, and a historical graph for time travel ("what did the impact look like before this refactor"). The capabilities are open source; the managed option would sell operating them.
+- Hosted governance is what a CTO would buy a managed option for: SSO, SCIM, RBAC, audit log, and a historical graph for time travel ("what did the impact look like before this refactor"). The capabilities are source available; the managed option would sell operating them.
 - Signed release artefacts and supply chain attestation from day one.
 
-## 13. Open source model and licensing
+## 13. Source model and licensing
 
-The whole project is licensed **Apache 2.0** to build trust and maximise adoption. There is no crippled core and no paid tier: everything in this repository is open source and self-hostable.
+The whole project is **source available** under the Functional Source License (FSL-1.1-ALv2): readable, free for any non-competing use, and each release becomes Apache 2.0 two years after it ships. The licence is chosen to build trust and maximise adoption while keeping a future hosted option viable. There is no crippled core and no paid tier: the entire suite is in this repository and self-hostable.
 
-**The full engine, open source:** single repo and multi-repo estate graphs, all deterministic extraction tiers including data and infrastructure, the MCP server, hooks and skills, the CLI, the desktop app, local visualisation, and the commit the graph team workflow. Generous on purpose, because adoption is the moat. The org-wide capabilities below ship here too as they are built, also Apache 2.0.
+**The full engine, source available:** single repo and multi-repo estate graphs, all deterministic extraction tiers including data and infrastructure, the MCP server, hooks and skills, the CLI, the desktop app, local visualisation, and the commit the graph team workflow. Generous on purpose, because adoption is the moat. The org-wide capabilities below ship here too as they are built, under the same terms.
 
-**Optional future managed hosting:** a managed always fresh org wide graph at scale, continuous CI indexing, the PR review bot, real time collaboration and comments, query log and CloudTrail driven linking, the historical graph, SSO, SCIM, RBAC, audit, SLA and support. If offered, this is sold as operation and convenience for teams that would rather not run it themselves, never as a crippled core: the code stays open. The reason to pay would be operational, not access to the features.
+**Optional future managed hosting:** a managed always fresh org wide graph at scale, continuous CI indexing, the PR review bot, real time collaboration and comments, query log and CloudTrail driven linking, the historical graph, SSO, SCIM, RBAC, audit, SLA and support. If offered, this is sold as operation and convenience for teams that would rather not run it themselves, never as a crippled core: the source stays available. The reason to pay would be operational, not access to the features.
 
 ## 14. Phased roadmap
 

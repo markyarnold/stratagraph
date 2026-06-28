@@ -5,8 +5,9 @@ made under, the sign-off we require, and the workflow.
 
 ## License of contributions
 
-StrataGraph is open source under the Apache License 2.0 (see [LICENSE.md](LICENSE.md)).
-By contributing, you agree that your contributions are licensed under the same terms.
+StrataGraph is source available under the Functional Source License (FSL-1.1-ALv2)
+(see [LICENSE.md](LICENSE.md)). By contributing, you agree that your contributions are
+licensed under the same terms.
 We use the DCO (below) rather than a CLA, so you retain copyright in your contribution.
 
 ## Developer Certificate of Origin (DCO)
@@ -35,11 +36,12 @@ a sign-off cannot be merged.
 ## What lives in this repository
 
 This repository is the **full StrataGraph engine and suite**: the CLI, the MCP
-server, the desktop app, the agent kit, and multi-repo estates, all open source.
-Roadmap capabilities (org-scale hosted estates, history, collaboration, governance)
-will land here too, also open source. A managed/hosted service may be offered
-commercially in future; see [docs/commercialisation/](docs/commercialisation/README.md).
-That would sell operation, not code: everything in this repository stays Apache-2.0.
+server, the desktop app, the agent kit, and multi-repo estates, all source available
+under the FSL. Roadmap capabilities (org-scale hosted estates, history, collaboration,
+governance) will land here too, under the same terms; each release becomes Apache 2.0
+two years after it ships. A managed/hosted service may be offered commercially in
+future; see [docs/commercialisation/](docs/commercialisation/README.md). That would
+sell operation, not code.
 
 ## Code of conduct
 
