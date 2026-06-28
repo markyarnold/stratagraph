@@ -1,18 +1,19 @@
 # Trademarks and brand
 
-This document covers brand use under the open-source license and records a
+This document covers brand use under the source-available license and records a
 preliminary trademark freedom-to-operate assessment. **It is not legal advice.**
 
 The product is named **StrataGraph** (domain `stratagraph.dev`).
 
 ## Brand-use policy
 
-The Apache License 2.0 ([LICENSE.md](LICENSE.md)) grants broad rights to
-the **code**. It does not grant rights to the **name or brand**:
+The Functional Source License ([LICENSE.md](LICENSE.md)) grants broad rights to
+the **code** for any non-competing purpose. It does not grant rights to the **name or
+brand**:
 
 - "StrataGraph", `stratagraph`, and the StrataGraph logo are trademarks of the
   licensor.
-- You may fork and redistribute the source under Apache-2.0, but you may not use
+- You may fork and redistribute the source under the FSL, but you may not use
   the marks to name or promote your fork or any derivative as if it were the
   official project. Name your fork something else.
 - Only official, project-signed releases may use the marks.

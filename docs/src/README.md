@@ -56,4 +56,4 @@ StrataGraph runs fully offline as a single binary: a [CLI](reference/cli.md), an
 
 ## License
 
-StrataGraph is open source under the Apache License 2.0. The whole suite is here and free to use, modify, self-host, and redistribute, including multi-repository estates. A managed/hosted service may be offered commercially in future for teams that would rather not self-host; that sells operation, not the code.
+StrataGraph is source available under the Functional Source License (FSL-1.1-ALv2). The whole suite is here and free to read, run, modify, self-host and redistribute for any non-competing purpose, including multi-repository estates, and each release becomes Apache 2.0 two years after it ships. A managed/hosted service may be offered commercially in future for teams that would rather not self-host; that sells operation, not the code.

@@ -63,6 +63,6 @@ The agent kit installs first-class integrations for **Claude Code and Kiro** tod
 Two larger directions are scoped in the design but well beyond the near-term sequence:
 
 - **GitNexus-parity analytics** (Appendix A): hybrid search (BM25 + semantic + reciprocal rank fusion), Leiden community detection, process/flow detection, and wiki generation from the graph.
-- **Org-scale collaboration**: a continuously-fresh org graph built in CI, a PR bot that posts blast radius and flags high-risk shared-contract changes, and shared/saved impact analyses. These ship here as open source as they are built; a managed, hosted option may follow later for teams that would rather not run it themselves.
+- **Org-scale collaboration**: a continuously-fresh org graph built in CI, a PR bot that posts blast radius and flags high-risk shared-contract changes, and shared/saved impact analyses. These ship here under the same source-available terms as they are built; a managed, hosted option may follow later for teams that would rather not run it themselves.
 
 For where each of these sits in the committed order, and the open questions still being resolved, see §14 and §15 of [`docs/strata-design.md`](../../strata-design.md). For exactly what the shipped capabilities can and cannot do today, see [Honest limitations](../accuracy/limitations.md) and [Languages and coverage](../concepts/coverage.md).

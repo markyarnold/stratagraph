@@ -76,8 +76,8 @@ Active development. Merged: code plane for TypeScript/JavaScript (Tree-sitter + 
 
 ## License
 
-StrataGraph is **open source under the Apache License 2.0** ([LICENSE.md](LICENSE.md)). The whole suite is here and free to use, modify, self-host, and redistribute: the `strata` binary and all its tools, the MCP server, the desktop app, the agent kit, and multi-repo estates (`--workspace`). Roadmap capabilities (org-scale hosted estates, history, collaboration, governance) will land here too, also open source.
+StrataGraph is **source available** under the [Functional Source License v1.1, Apache 2.0 Future License (FSL-1.1-ALv2)](LICENSE.md). The whole suite is here: the `strata` binary and all its tools, the MCP server, the desktop app, the agent kit, and multi-repo estates (`--workspace`). You may read, run, modify, self-host and redistribute it for any purpose other than competing with us, and **two years after each release that release converts to Apache 2.0**. Roadmap capabilities (org-scale hosted estates, history, collaboration, governance) will land here under the same terms.
 
-A managed/hosted service may be offered commercially in future, for teams that would rather not self-host. That sells operation and convenience, not the code: everything in this repository stays Apache-2.0. See [docs/commercialisation/](docs/commercialisation/README.md).
+A managed/hosted service may be offered commercially in future, for teams that would rather not self-host. The license keeps that option open while the source stays readable and free for any non-competing use. See [docs/commercialisation/](docs/commercialisation/README.md).
 
 "StrataGraph" and the logo are trademarks; forks may not use them to identify themselves (see [TRADEMARK.md](TRADEMARK.md)). Contributions are welcome under the DCO (see [CONTRIBUTING.md](CONTRIBUTING.md)).

@@ -6,7 +6,7 @@ If you want the full design rationale (the planes, the confidence model, the pha
 
 ## The crate map
 
-The workspace is declared in the root `Cargo.toml` as `members = ["crates/*", "apps/strata-desktop/src-tauri"]`. Every crate shares one version and the Apache-2.0 license through `[workspace.package]`, which matches the project license (see [the license statement](../README.md#license)).
+The workspace is declared in the root `Cargo.toml` as `members = ["crates/*", "apps/strata-desktop/src-tauri"]`. Every crate shares one version and the FSL license through `[workspace.package]`, which matches the project license (see [the license statement](../README.md#license)).
 
 | Crate | Owns | Depends on |
 |---|---|---|
