@@ -583,7 +583,7 @@ fn index_impl(
     let (units, mut tg_diagnostics) = extract_repo_terragrunt(repo_path, Arc::clone(&vendored))?;
     let terragrunt = infra::build_terragrunt_plane(&mut graph, repo_name, &units);
     infra_diagnostics.append(&mut tg_diagnostics);
-    let infra_diagnostics = cap_diagnostics(infra_diagnostics);
+    let infra_diagnostics = cap_diagnostics(infra_diagnostics, "infra template failure(s)");
 
     // ── Data plane (Slice 16, D3): detect `.sql` schema files, build the
     // Table/Column nodes + HasColumn/ForeignKey edges, AND (M2) the code→table
@@ -617,7 +617,7 @@ fn index_impl(
     // `build_data_plane` only sees the schemas that parsed; the failures are counted
     // here from the diagnostics collected during extraction (mirrors infra).
     data_link.schemas_failed = data_diagnostics.len();
-    let data_diagnostics = cap_diagnostics(data_diagnostics);
+    let data_diagnostics = cap_diagnostics(data_diagnostics, "data schema failure(s)");
 
     let stats = IndexStats {
         // Includes TS/JS sources, the GraphQL operation documents that became
@@ -1336,17 +1336,42 @@ fn collect_code_orm<'a>(
     out
 }
 
-/// Cap a per-template diagnostics vec at [`MAX_INFRA_DIAGNOSTICS`], appending a
-/// single `… and N more …` summary line when truncated. The exact failure count
-/// always lives in [`InfraLinkCoverage::templates_failed`](strata_infra) /
-/// [`IndexStats::infra_link`]; this only bounds the printed text.
-fn cap_diagnostics(mut diagnostics: Vec<String>) -> Vec<String> {
+/// Cap a per-plane diagnostics vec at [`MAX_INFRA_DIAGNOSTICS`], appending a single
+/// `… and N more {noun}` summary line when truncated. `noun` names the plane's
+/// failures so the summary matches the lines above it — `"infra template failure(s)"`
+/// for the infra plane, `"data schema failure(s)"` for the data plane. The exact
+/// failure count always lives in the plane's coverage stats; this only bounds the
+/// printed text.
+fn cap_diagnostics(mut diagnostics: Vec<String>, noun: &str) -> Vec<String> {
     if diagnostics.len() > MAX_INFRA_DIAGNOSTICS {
         let extra = diagnostics.len() - MAX_INFRA_DIAGNOSTICS;
         diagnostics.truncate(MAX_INFRA_DIAGNOSTICS);
-        diagnostics.push(format!("… and {extra} more infra template failure(s)"));
+        diagnostics.push(format!("… and {extra} more {noun}"));
     }
     diagnostics
+}
+
+#[cfg(test)]
+mod cap_diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn cap_diagnostics_labels_the_truncation_with_the_given_noun() {
+        let many: Vec<String> = (0..MAX_INFRA_DIAGNOSTICS + 5)
+            .map(|i| format!("[data] FAILED file{i}.sql"))
+            .collect();
+        let capped = cap_diagnostics(many, "data schema failure(s)");
+        assert_eq!(
+            capped.len(),
+            MAX_INFRA_DIAGNOSTICS + 1,
+            "truncated to the cap + one summary line"
+        );
+        assert_eq!(
+            capped.last().unwrap(),
+            "… and 5 more data schema failure(s)",
+            "the summary uses the caller's plane noun, not a hardcoded 'infra'"
+        );
+    }
 }
 
 /// Walk `repo_path` (gitignore-aware) collecting candidate spec files by the

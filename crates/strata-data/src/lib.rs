@@ -39,7 +39,7 @@ use sqlparser::ast::{
     ObjectName, Query, SetExpr, Statement, TableConstraint, TableFactor, TableObject,
     TableWithJoins,
 };
-use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::dialect::{ClickHouseDialect, PostgreSqlDialect};
 use sqlparser::parser::Parser;
 use thiserror::Error;
 
@@ -377,9 +377,9 @@ impl SqlSchemaAdapter {
             // A split segment that is blank/comment-only carries no statement — it
             // is not a skip (nothing was dropped), just empty. `parse_sql` returns
             // an empty Vec for it.
-            match Parser::parse_sql(&PostgreSqlDialect {}, &stmt_sql) {
-                Ok(parsed) => statements.extend(parsed),
-                Err(_) => skipped += 1,
+            match parse_statement_lenient(&stmt_sql) {
+                Some(parsed) => statements.extend(parsed),
+                None => skipped += 1,
             }
         }
 
@@ -401,6 +401,116 @@ impl SqlSchemaAdapter {
         model.skipped_statements = skipped;
         Ok(model)
     }
+}
+
+/// Parse one split statement into AST statements, in order of preference:
+/// 1. the **PostgreSQL** dialect (primary — every statement that parsed before still
+///    parses here, identically, so this is a pure superset: no regression);
+/// 2. the **ClickHouse** dialect (recovers e.g. `CREATE MATERIALIZED VIEW … TO …`);
+/// 3. for a `CREATE TABLE` whose ClickHouse engine/settings tail (`ENGINE = …`,
+///    `PARTITION BY`, `TTL`, `SETTINGS`, `ON CLUSTER …`) defeats *both* dialects, a
+///    recovery that re-parses just the balanced column-list prefix `CREATE TABLE x (…)`.
+///
+/// Returns `None` only when none of these parse it, so the caller counts it as a skip
+/// (exactly as before for genuinely unparseable statements). **Honest by construction**
+/// (R1/R5): the recovered prefix is accepted *only* when it re-parses to a real
+/// [`Statement::CreateTable`] — sqlparser still validates it — and the recovery drops
+/// only the engine/settings tail, never a column, so a recovered table is the declared
+/// one, never a guess. A blank/comment-only segment parses to an empty `Vec` under (1),
+/// returned as `Some(vec![])` so it is not miscounted as a skip.
+fn parse_statement_lenient(stmt_sql: &str) -> Option<Vec<Statement>> {
+    if let Ok(parsed) = Parser::parse_sql(&PostgreSqlDialect {}, stmt_sql) {
+        return Some(parsed);
+    }
+    if let Ok(parsed) = Parser::parse_sql(&ClickHouseDialect {}, stmt_sql) {
+        return Some(parsed);
+    }
+    let prefix = recover_create_table_prefix(stmt_sql)?;
+    match Parser::parse_sql(&PostgreSqlDialect {}, prefix) {
+        Ok(parsed)
+            if parsed
+                .iter()
+                .any(|s| matches!(s, Statement::CreateTable(_))) =>
+        {
+            Some(parsed)
+        }
+        _ => None,
+    }
+}
+
+/// For a statement carrying a top-level parenthesised list — a `CREATE TABLE name
+/// (… columns …) <tail>` — return the slice up to and including the **balanced close**
+/// of that first top-level `(…)`, i.e. `CREATE TABLE name (… columns …)`, so it can be
+/// re-parsed without a ClickHouse-specific engine/settings tail that sqlparser rejects.
+///
+/// The scan is string- and comment-aware (single `'…'` with `''` and `\` escapes, `"…"`
+/// and `` `…` `` quoted identifiers, `-- …` line and `/* … */` block comments) and
+/// paren-depth aware, so a `(` inside a string/comment, or a nested type like
+/// `Decimal(10, 2)` / `Map(String, String)`, never mis-terminates the list. Returns
+/// `None` if no balanced top-level `(…)` is found. The caller is responsible for only
+/// *using* the result when it re-parses to a `CreateTable` (this function does not
+/// itself decide the statement kind).
+fn recover_create_table_prefix(stmt: &str) -> Option<&str> {
+    let b = stmt.as_bytes();
+    let mut i = 0;
+    let mut depth: i32 = 0;
+    let mut opened = false;
+    while i < b.len() {
+        match b[i] {
+            // Single-quoted string: honour `\` escapes and the doubled `''` literal.
+            b'\'' => {
+                i += 1;
+                while i < b.len() {
+                    match b[i] {
+                        b'\\' => i += 2,
+                        b'\'' if i + 1 < b.len() && b[i + 1] == b'\'' => i += 2,
+                        b'\'' => break,
+                        _ => i += 1,
+                    }
+                }
+            }
+            // Double-quoted / backtick-quoted identifiers: inert until the close.
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += 1;
+                }
+            }
+            b'`' => {
+                i += 1;
+                while i < b.len() && b[i] != b'`' {
+                    i += 1;
+                }
+            }
+            // Line comment to end of line.
+            b'-' if i + 1 < b.len() && b[i + 1] == b'-' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            // Block comment to the closing `*/`.
+            b'/' if i + 1 < b.len() && b[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1; // sit on the '/'; the loop's `i += 1` steps past it
+            }
+            b'(' => {
+                depth += 1;
+                opened = true;
+            }
+            b')' => {
+                depth -= 1;
+                if opened && depth == 0 {
+                    return Some(&stmt[..=i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Split SQL `content` into its top-level statements, separated by `;`, returning
@@ -936,6 +1046,89 @@ mod tests {
                 ref_column: "id".into(),
             }],
             "inline REFERENCES is recorded as a foreign key"
+        );
+    }
+
+    // ── ClickHouse: recover a CREATE TABLE whose ClickHouse tail defeats sqlparser ──
+
+    #[test]
+    fn clickhouse_create_table_with_engine_tail_recovers_its_columns() {
+        // ENGINE / PARTITION BY / TTL / SETTINGS and ClickHouse types defeat BOTH the
+        // Postgres and ClickHouse dialects. The column-list recovery should still yield
+        // the table + columns (the engine/settings tail is not graph-relevant), with
+        // nested-paren types (Decimal(10,2), Map(String,String)) preserved intact.
+        let m = extract(concat!(
+            "CREATE TABLE events (\n",
+            "  id UInt64,\n",
+            "  amount Decimal(10, 2),\n",
+            "  tags Map(String, String),\n",
+            "  created_at DateTime64(3)\n",
+            ") ENGINE = MergeTree\n",
+            "PARTITION BY toYYYYMM(created_at)\n",
+            "ORDER BY (created_at, id)\n",
+            "TTL created_at + INTERVAL 90 DAY\n",
+            "SETTINGS index_granularity = 8192;\n",
+        ));
+        let events = table(&m, "events");
+        let names: Vec<&str> = events.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["id", "amount", "tags", "created_at"],
+            "ClickHouse CREATE TABLE columns recovered from the column-list prefix"
+        );
+    }
+
+    #[test]
+    fn clickhouse_kafka_engine_table_recovers_columns() {
+        // A Kafka-engine table (ENGINE = Kafka SETTINGS …) also defeats both dialects;
+        // the same column-list recovery applies — its declared columns are the schema.
+        let m = extract(concat!(
+            "CREATE TABLE kafka_in (id UInt64, msg String) ENGINE = Kafka\n",
+            "SETTINGS kafka_broker_list = 'h:9092', kafka_topic_list = 't', kafka_format = 'JSONEachRow';\n",
+        ));
+        let names: Vec<&str> = table(&m, "kafka_in")
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["id", "msg"]);
+    }
+
+    #[test]
+    fn unrecoverable_clickhouse_statement_is_skipped_never_invents_a_table() {
+        // A recoverable table sits beside a CREATE USER (no column list, parses under no
+        // dialect). The table is kept; the user statement is skipped, NOT turned into a
+        // phantom table — honesty (R1/R5) holds through the recovery path.
+        let m = extract(concat!(
+            "CREATE TABLE good (id UInt64) ENGINE = MergeTree ORDER BY id SETTINGS x = 1;\n",
+            "CREATE USER alice IDENTIFIED WITH sha256_password BY 'secret';\n",
+        ));
+        let table_names: Vec<&str> = m.tables.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            table_names,
+            vec!["good"],
+            "only the real table; CREATE USER invents nothing"
+        );
+        assert_eq!(
+            m.skipped_statements, 1,
+            "the unparseable CREATE USER is counted as skipped"
+        );
+    }
+
+    #[test]
+    fn clickhouse_materialized_view_parses_and_is_not_a_skip() {
+        // `CREATE MATERIALIZED VIEW … TO …` fails Postgres but parses under the ClickHouse
+        // dialect, so the file is not a failure and the statement is not skipped; a view is
+        // not a table, so it adds no table node (the co-located table is still extracted).
+        let m = extract(concat!(
+            "CREATE TABLE dest (id UInt64) ENGINE = MergeTree() ORDER BY id;\n",
+            "CREATE MATERIALIZED VIEW mv TO dest AS SELECT id FROM src;\n",
+        ));
+        let table_names: Vec<&str> = m.tables.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(table_names, vec!["dest"]);
+        assert_eq!(
+            m.skipped_statements, 0,
+            "the MV parses under the ClickHouse dialect, not skipped"
         );
     }
 
