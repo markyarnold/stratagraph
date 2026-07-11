@@ -1,15 +1,12 @@
 # Changelog
 
-User-visible changes, newest first. StrataGraph does not yet cut numbered
-releases: everything lands on `develop`, so entries are grouped by date under
-**Unreleased** until the first tagged release, and each entry names the change
-the way you would meet it — a command, a report line, a recovered file. (The
-engine build behind any answer is always visible: `strata --version` and the
-`engine:` line of every index summary print the exact build id.)
+User-visible changes, newest first, grouped by release. Between releases,
+changes merged to `main` appear under **Unreleased**. Each entry names the
+change the way you would meet it — a command, a report line, a recovered file.
+(The engine build behind any answer is always visible: `strata --version` and
+the `engine:` line of every index summary print the exact build id.)
 
-## Unreleased — on `develop`
-
-### 2026-07-12
+## 0.2.0 — 2026-07-12
 
 **Data plane: ClickHouse support.** `.sql` files are no longer Postgres-only.
 A recovery ladder handles ClickHouse DDL: the ClickHouse dialect as a fallback,
@@ -63,18 +60,6 @@ replaced by a **post-edit** reindex riding the write tools; re-running
 `detect_changes` and `rename` work from the app the way they do from the CLI
 (views for them arrive with the UI overhaul).
 
-### 2026-06-27
-
-**Global agent-kit install.** `strata init claude --global` installs the Claude
-kit once into `~/.claude` (MCP registration via `claude mcp add`, guarded
-session hooks, skills, generic steering) so it applies to every repository you
-open. The per-repo install is unchanged.
-
-**Estate-aware agent kit.** Indexing an estate writes a membership marker into
-each member repo, so `blast`, `detect-changes`, `rename` and the MCP server
-auto-resolve the estate from any member — the pre-edit hook surfaces cross-repo
-dependents with no flags.
-
 ## 0.1.0 — 2026-06-28 — initial public release
 
 The first public, source-available release (FSL-1.1-ALv2; each release converts
@@ -85,3 +70,9 @@ vertical (SAM/CloudFormation, Terraform, Terragrunt) with IAM grants; the SQL
 data plane; calibrated per-edge confidence with measured accuracy reports; the
 `strata` CLI, the MCP server with hot reload, the desktop app, and the
 one-command agent kits for Claude Code and Kiro.
+
+The launch build includes the **estate-aware agent kit** (indexing an estate
+writes a membership marker into each member repo, so `blast`, `detect-changes`,
+`rename` and the MCP server auto-resolve the estate from any member) and the
+**global agent-kit install** (`strata init claude --global` installs the Claude
+kit once into `~/.claude`, applying to every repository you open).

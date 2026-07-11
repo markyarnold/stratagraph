@@ -4382,7 +4382,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "strata-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "dirs 5.0.1",
@@ -4396,7 +4396,7 @@ dependencies = [
 
 [[package]]
 name = "strata-contract"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "apollo-parser",
  "prost-types",
@@ -4410,7 +4410,7 @@ dependencies = [
 
 [[package]]
 name = "strata-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4418,7 +4418,7 @@ dependencies = [
 
 [[package]]
 name = "strata-data"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "sqlparser",
@@ -4427,7 +4427,7 @@ dependencies = [
 
 [[package]]
 name = "strata-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4443,7 +4443,7 @@ dependencies = [
 
 [[package]]
 name = "strata-index"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ignore",
@@ -4472,7 +4472,7 @@ dependencies = [
 
 [[package]]
 name = "strata-infra"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hcl-rs",
  "serde",
@@ -4483,7 +4483,7 @@ dependencies = [
 
 [[package]]
 name = "strata-lang-cs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "strata-core",
  "tree-sitter",
@@ -4492,7 +4492,7 @@ dependencies = [
 
 [[package]]
 name = "strata-lang-py"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "strata-core",
  "tree-sitter",
@@ -4501,7 +4501,7 @@ dependencies = [
 
 [[package]]
 name = "strata-lang-rust"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "strata-core",
  "tree-sitter",
@@ -4510,7 +4510,7 @@ dependencies = [
 
 [[package]]
 name = "strata-lang-ts"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "strata-core",
  "tree-sitter",
@@ -4520,7 +4520,7 @@ dependencies = [
 
 [[package]]
 name = "strata-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "strata-core",
@@ -4531,7 +4531,7 @@ dependencies = [
 
 [[package]]
 name = "strata-scip"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "protobuf",
  "scip",
@@ -4541,7 +4541,7 @@ dependencies = [
 
 [[package]]
 name = "strata-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "duckdb",
  "serde_json",

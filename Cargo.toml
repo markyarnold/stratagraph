@@ -4,7 +4,7 @@ members = ["crates/*", "apps/strata-desktop/src-tauri"]
 
 [workspace.package]
 edition = "2021"
-version = "0.1.0"
+version = "0.2.0"
 # Source available under the Functional Source License (converts to Apache-2.0 two
 # years after each release). Not an OSI/SPDX identifier, so expressed as a LicenseRef;
 # the authoritative text is LICENSE.md at the workspace root.
