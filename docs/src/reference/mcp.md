@@ -226,6 +226,15 @@ level. **Needs the server to know the repo root** (launch with `--db
 
 Output: the serialized `strata_index::ChangeReport`. Reports, never gates.
 
+Each **contract-plane** changed symbol carries a `contract_change` label:
+`"breaking"` (a removed or modified operation key — it breaks consumers) or
+`"additive"` (an added key — new surface has no existing consumers). A breaking
+contract change escalates the risk to CRITICAL with an explicit reason; an
+additive-only contract change is named in the reasons but does not, by itself,
+escalate. The label is operation-level: field-level classification needs
+request/response schema extraction the contract adapters do not do yet, so an
+in-place change surfaces as modified ⇒ breaking (recall-safe).
+
 ### rename
 
 Graph-aware, confidence-tagged multi-file rename: the safe alternative to

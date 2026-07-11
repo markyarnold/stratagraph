@@ -69,6 +69,11 @@ operations simply default to being identified by that repo. The `[[repos.apis]]`
 block is the explicit opt-in for the cross-repo merge: StrataGraph will not silently
 assume two repos share an API.
 
+Manifest validation also rejects **duplicate repo paths** (lexically normalized,
+so `svc` and `./svc` are the same directory): two entries indexing one directory
+would overwrite each other's graph and estate marker, silently losing a declared
+identity — the manifest fails to parse instead, before any damage.
+
 ## Index and serve the estate
 
 Both the indexer and the MCP server take `--workspace` pointing at the manifest:

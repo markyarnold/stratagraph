@@ -138,7 +138,7 @@ Tiered, each tier independent and confidence tagged. Tiers 0 to 4 are determinis
 
 **Tier 2, code resolution.** Precise cross file and cross repo resolution. Where a SCIP indexer or language server exists for a language, use it for ground truth symbol resolution and call graphs (provenance `RESOLVED`). Where it does not, fall back to heuristic resolution clearly tagged `INFERRED`. This hybrid is how StrataGraph beats the incumbents on accuracy: they rely on heuristics throughout, which is why agent blast radius is sometimes wrong.
 
-Initial languages and their precision strategy (three grammars, since TypeScript and JavaScript share one):
+Initial languages and their precision strategy (four grammars, since TypeScript and JavaScript share one; **Rust joined the initial set** in development — Tree-sitter extraction with banded confidence, rust-analyzer precision deferred to A3 like the others):
 
 - **C#:** Roslyn, full compilation model, exact symbol, type and call graph. The most precise of the set, almost entirely `RESOLVED`.
 - **TypeScript and JavaScript:** Tree-sitter for breadth, the TypeScript compiler API for type and symbol resolution, plus Node module resolution (ESM, CommonJS, workspaces). Strong precision.
@@ -281,16 +281,22 @@ Treat the graph as shared infrastructure, not a personal cache.
 
 ## 11. MCP tool and resource surface
 
-Tools (per repo and estate wide):
+Tools (per repo and estate wide). **Shipped today** (the exact seven the server
+advertises):
 
 - `context` (360 degree view of a symbol, table, contract or resource across planes)
 - `impact` (cross plane blast radius with confidence and depth)
-- `query` (hybrid search, process grouped)
-- `detect_changes` (git diff or plan diff mapped to affected nodes across planes)
+- `explain` (the evidence chain behind an impact result: each hop's kind, provenance and running confidence)
+- `query` (lexical search over name / fqn / path; hybrid search is roadmap, below)
+- `blast` (a file's pre-edit blast radius: its symbols, their dependents, and a risk level)
+- `detect_changes` (git diff mapped to affected nodes across planes, with operation-level breaking/additive labels on contract changes)
 - `rename` (graph assisted coordinated rename)
-- `permission_gap` (IAM reconciliation)
-- `schema_impact` (column or table change reach)
-- `cypher` (raw openCypher escape hatch)
+
+**Roadmap** (designed, not yet shipped):
+
+- `permission_gap` (IAM reconciliation — the Grants supply side is built; the demand side and the reconciliation traversal are Track D2)
+- `schema_impact` (column or table change reach — today subsumed by `impact` on a data-plane node at table granularity)
+- `cypher` (raw openCypher escape hatch, kept off the reliability-critical path per §7)
 
 Resources: estate overview, per repo context and staleness, clusters, processes, contracts, schema, infrastructure topology, and the graph schema for query construction.
 
@@ -363,7 +369,7 @@ E1 **UI: path explanation**: click any impact result and see *why* (the evidence
 **Decided.**
 
 1. **Storage.** Owned in memory Rust traversal engine for correctness, DuckDB as the embedded substrate (storage, full text and vector search via HNSW), DuckPGQ as an optional standards based query escape hatch, FalkorDB for the hosted multi tenant service, all behind one `GraphStore` trait. Driven by the Kùzu shutdown: no single graph engine owns our correctness.
-2. **Initial languages.** TypeScript, JavaScript with Node resolution, Python and C#. Precision via Roslyn (C#), the TypeScript compiler (TS and JS) and pyright (Python).
+2. **Initial languages.** TypeScript, JavaScript with Node resolution, Python, C# — and Rust, added during development (`strata-lang-rust`, Tree-sitter, its own measured accuracy report). Precision via the TypeScript compiler/SCIP (shipped), then Roslyn (C#), pyright (Python) and rust-analyzer (Rust) per §15.5.
 3. **IaC ingestion.** SAM `template.yaml` (transform expanded), CloudFormation JSON, and `terraform show -json` plans, supporting Terraform and Terragrunt. OpenTofu later. Resolved plan preferred over raw HCL throughout.
 4. **Reliability stance.** Recall biased blast radius, owned and golden tested traversals, differential testing against compiler ground truth, calibrated confidence, explicit unknowns. Full GitNexus parity and Graphify incorporation are in scope (Appendix A).
 
@@ -380,7 +386,7 @@ E1 **UI: path explanation**: click any impact result and see *why* (the evidence
 
 **GitNexus functionality to match in full**, extended across all planes rather than code only:
 
-- MCP tools: `context`, `impact`, `query`, `detect_changes`, `rename`, `cypher`, `list_repos`, and the group tools (`group_sync`, `group_contracts`, `group_query`, `group_status`, `group_list`).
+- MCP tools: `context`, `impact`, `query`, `detect_changes`, `rename` (all shipped, plus the shipped `explain` and `blast`); `cypher`, `list_repos`, and the group tools (`group_sync`, `group_contracts`, `group_query`, `group_status`, `group_list`) remain parity roadmap.
 - MCP resources: estate and per repo context, clusters, processes, contracts, schema, infrastructure topology, graph schema.
 - MCP prompts: pre commit impact analysis and architecture map generation.
 - Agent skills: Exploring, Debugging, Impact Analysis, Refactoring, plus per area skills generated from detected communities.
