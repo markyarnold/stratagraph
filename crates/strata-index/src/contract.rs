@@ -431,23 +431,34 @@ fn add_consumer_links(
     }
 }
 
-/// Map each operation `(format, key)` to its **local** node UID for this repo.
-/// The first occurrence of an identity wins (matching the producer plane's
-/// idempotent node insertion). Keying on `(format, key)` — not bare `key` — keeps
-/// a GraphQL field and an OpenAPI op that share a key string on distinct nodes.
+/// Map each operation `(format, key)` to **every** local node UID that owns it in
+/// this repo. Keying on `(format, key)` — not bare `key` — keeps a GraphQL field
+/// and an OpenAPI op that share a key string on distinct nodes.
 ///
-/// Returns a single-element `Vec` per key: within ONE repo a `(format, key)` is
-/// always one node, so the per-repo consumer pass never fans out (the unique
-/// case, byte-identical to before). Cross-api fan-out only arises estate-wide,
-/// where a key can be owned by several apis (see `estate::link_estate`).
+/// Within one repo a `(format, key)` is usually one node — the unique case, where
+/// the consumer pass links at the matcher's own tier, byte-identical to before.
+/// But operation nodes are keyed by SPEC PATH ([`operation_uid`]), so two specs in
+/// the same repo declaring the same key (two APIs in a monorepo both declaring
+/// `Query.getUser` or `GET /health`) are two distinct nodes. Collecting ALL owners
+/// here lets [`add_consumer_links`] apply the same `Ambiguous` fan-out the estate
+/// pass uses (the B6 rule) — one flagged 0.35 edge per owning spec — instead of a
+/// first-wins pick that silently bound the consumer to whichever spec sorted
+/// first and left the other invisible to impact.
+///
+/// The same operation repeated within one spec collapses to one UID (same
+/// `(spec_path, key)` ⇒ same [`operation_uid`]), so the fan-out is per owning
+/// spec, never per duplicate declaration.
 fn local_key_to_uid(
     repo_name: &str,
     operations: &[OperationDef],
 ) -> BTreeMap<(ContractFormat, String), Vec<Uid>> {
     let mut map: BTreeMap<(ContractFormat, String), Vec<Uid>> = BTreeMap::new();
     for op in operations {
-        map.entry((op.format, op.key.clone()))
-            .or_insert_with(|| vec![operation_uid(repo_name, op)]);
+        let uid = operation_uid(repo_name, op);
+        let owners = map.entry((op.format, op.key.clone())).or_default();
+        if !owners.contains(&uid) {
+            owners.push(uid);
+        }
     }
     map
 }
