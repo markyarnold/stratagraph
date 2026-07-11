@@ -77,8 +77,10 @@ it, because a contract names the same operation on both sides.
 **Ingests.** Interface artifacts: **OpenAPI/Swagger** (`.yaml`/`.json`),
 **GraphQL SDL** (including AppSync schemas), and **gRPC** `.proto` files. On the
 consumer side it also reads signals from code: outgoing HTTP calls
-(`fetch`/`axios`), ordinary calls whose name matches an `operationId`, and GraphQL
-documents (tagged or untagged) parsed from string literals.
+(`fetch`/`axios`/`got`/`ky`/`superagent` in TS/JS; `requests`/`httpx` and
+`aiohttp`'s module forms in Python), ordinary calls whose name matches an
+`operationId`, and GraphQL documents (tagged or untagged) parsed from string
+literals.
 
 **Creates.**
 

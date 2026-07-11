@@ -481,6 +481,37 @@ fn axios_get_literal() {
 }
 
 #[test]
+fn got_ky_superagent_receivers_are_http_calls() {
+    // The broadened client-receiver set: got/ky/superagent are unambiguous global
+    // client names (never a server route receiver like `app`/`router`).
+    let h = one_http_call("got.get(\"/users/1\");");
+    assert_eq!(h.method.as_deref(), Some("GET"));
+    assert_eq!(h.url, UrlShape::Literal("/users/1".into()));
+
+    let h = one_http_call("ky.post(\"/orders\");");
+    assert_eq!(h.method.as_deref(), Some("POST"));
+
+    let h = one_http_call("superagent.delete(\"/sessions/2\");");
+    assert_eq!(h.method.as_deref(), Some("DELETE"));
+}
+
+#[test]
+fn bare_got_and_ky_calls_default_to_get_like_fetch() {
+    // got(url) / ky(url) are the packages' primary call forms — same semantics as
+    // bare fetch: method from a string-literal opts.method, else GET.
+    let h = one_http_call("got(\"https://api.example.com/users\");");
+    assert_eq!(h.method.as_deref(), Some("GET"));
+    assert_eq!(
+        h.url,
+        UrlShape::Literal("https://api.example.com/users".into())
+    );
+
+    let h = one_http_call("ky(`/users/${id}`, { method: \"PUT\" });");
+    assert_eq!(h.method.as_deref(), Some("PUT"));
+    assert_eq!(h.url, UrlShape::Template("/users/{}".into()));
+}
+
+#[test]
 fn axios_post_member_verb() {
     // axios.post("/users", body) → POST, Literal("/users").
     let h = one_http_call("axios.post(\"/users\", body);");

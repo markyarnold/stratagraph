@@ -711,10 +711,13 @@ const HTTP_CLIENT_VERBS: [&str; 7] = ["get", "post", "put", "delete", "patch", "
 /// Receiver identifiers that denote an HTTP *client* (an outgoing request), used
 /// to disambiguate `axios.get("/x")` (a consumer call) from `app.get("/x", h)`
 /// (a server route) which share the `recv.<verb>(string, …)` shape. Deliberately
-/// minimal: only the unambiguous global `axios`. A custom client instance is not
-/// listed (it would need type info to tell from `app`); such a call is simply not
-/// extracted as an HTTP call rather than risk misreading a route as a request.
-const HTTP_CLIENT_OBJECTS: [&str; 1] = ["axios"];
+/// minimal: only unambiguous global client names — package default-imports that
+/// are never a server route receiver (`app`/`router`). A custom client instance is
+/// not listed (it would need type info to tell from `app`); such a call is simply
+/// not extracted as an HTTP call rather than risk misreading a route as a request.
+/// (`node-fetch` needs no entry: it is imported AS `fetch`, which the bare-call
+/// branch already handles.)
+const HTTP_CLIENT_OBJECTS: [&str; 4] = ["axios", "got", "ky", "superagent"];
 
 /// Extract an outgoing HTTP call from a `call_expression`.
 ///
@@ -734,11 +737,14 @@ fn extract_http_call(node: Node, bytes: &[u8], enclosing_fqn: &str) -> Option<Ht
     let named = named_args(args);
 
     match function.kind() {
-        // Bare call: `fetch(...)` or `axios(config)`.
+        // Bare call: `fetch(...)`/`got(...)`/`ky(...)` or `axios(config)`.
         "identifier" => {
             let name = text(function, bytes);
             match name {
-                "fetch" => {
+                // got/ky's primary call form is `client(url, opts?)` with the same
+                // semantics as bare fetch: method from a literal `opts.method`,
+                // else GET.
+                "fetch" | "got" | "ky" => {
                     let url = url_shape(*named.first()?, bytes);
                     // method from opts.method literal (2nd arg object), else GET.
                     let method = named

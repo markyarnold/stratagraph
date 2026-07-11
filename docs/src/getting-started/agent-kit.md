@@ -59,7 +59,7 @@ For [Kiro](https://kiro.dev), the kit is the same idea in Kiro's native formats:
   steering files, so the block ends with steering cross-references and a list of
   the lifecycle hooks rather than a Claude skill table).
 - **The three lifecycle hooks** (`strata-pre-edit`, `strata-pre-commit`,
-  `strata-post-commit`), written in the format your Kiro version accepts. Kiro
+  `strata-post-edit`), written in the format your Kiro version accepts. Kiro
   changed its hook schema between releases, so `--kiro-version` selects which to
   emit:
   - **`old`** (the default): `.kiro/hooks/strata-*.kiro.hook` files, a

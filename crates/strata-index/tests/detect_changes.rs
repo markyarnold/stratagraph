@@ -11,7 +11,9 @@ use std::path::Path;
 use std::process::Command;
 
 use strata_core::Graph;
-use strata_index::{detect_changes, index_repo, ChangeKind, ChangeScope, Plane, RiskLevel};
+use strata_index::{
+    detect_changes, index_repo, ChangeKind, ChangeScope, ContractChange, Plane, RiskLevel,
+};
 use strata_store::{DuckGraphStore, GraphStore};
 use tempfile::TempDir;
 
@@ -231,6 +233,82 @@ fn removed_graphql_field_is_contract_plane_and_critical() {
             .iter()
             .any(|r| r.contains("contract surface") && r.contains("getStats")),
         "the CRITICAL reason must name the contract surface: {:?}",
+        report.risk.reasons
+    );
+}
+
+// ── contract changes carry the operation-level breaking/additive label ──────────
+
+#[test]
+fn removed_graphql_field_is_labeled_breaking() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git_init(dir);
+    write(
+        dir,
+        "schema.graphql",
+        "type Query {\n  getUser: User\n  getStats: Stats\n}\n",
+    );
+    git_commit_all(dir, "baseline");
+    let graph = index(dir);
+    write(dir, "schema.graphql", "type Query {\n  getUser: User\n}\n");
+
+    let report = detect_changes(&graph, dir, ChangeScope::Working).expect("detect");
+    let stats = report
+        .symbols
+        .iter()
+        .find(|s| s.key.contains("getStats"))
+        .expect("getStats changed");
+    assert_eq!(
+        stats.contract_change,
+        Some(ContractChange::Breaking),
+        "a removed operation key breaks its consumers"
+    );
+    assert!(
+        report.risk.reasons.iter().any(|r| r.contains("breaking")),
+        "the CRITICAL reason says BREAKING, not just 'touches': {:?}",
+        report.risk.reasons
+    );
+}
+
+#[test]
+fn added_graphql_field_is_additive_and_not_critical_by_itself() {
+    // Adding new contract surface cannot break an existing consumer — it must be
+    // labeled additive and must NOT, by itself, escalate to CRITICAL (the old
+    // behaviour cried CRITICAL for every contract-plane change, additions included).
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    git_init(dir);
+    write(dir, "schema.graphql", "type Query {\n  getUser: User\n}\n");
+    git_commit_all(dir, "baseline");
+    let graph = index(dir);
+    write(
+        dir,
+        "schema.graphql",
+        "type Query {\n  getUser: User\n  listUsers: [User]\n}\n",
+    );
+
+    let report = detect_changes(&graph, dir, ChangeScope::Working).expect("detect");
+    let added = report
+        .symbols
+        .iter()
+        .find(|s| s.key.contains("listUsers"))
+        .expect("listUsers changed");
+    assert_eq!(added.change, ChangeKind::Added);
+    assert_eq!(
+        added.contract_change,
+        Some(ContractChange::Additive),
+        "new surface is additive"
+    );
+    assert_ne!(
+        report.risk.level,
+        RiskLevel::Critical,
+        "an additive-only contract change must not be CRITICAL by itself: {:?}",
+        report.risk.reasons
+    );
+    assert!(
+        report.risk.reasons.iter().any(|r| r.contains("additive")),
+        "the report still names the additive surface honestly: {:?}",
         report.risk.reasons
     );
 }

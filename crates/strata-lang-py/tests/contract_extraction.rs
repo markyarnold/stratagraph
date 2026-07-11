@@ -159,6 +159,17 @@ fn requests_request_takes_method_from_first_arg() {
 }
 
 #[test]
+fn aiohttp_module_forms_are_http_calls() {
+    // aiohttp's direct module forms. Documented bound: the COMMON aiohttp pattern
+    // (session = aiohttp.ClientSession(); session.get(url)) is a variable receiver
+    // that needs type info — not extracted, never guessed.
+    let h = http_calls("aiohttp.request('GET', '/users/1')\n");
+    assert_eq!(h.len(), 1, "{h:?}");
+    assert_eq!(h[0].method.as_deref(), Some("GET"));
+    assert_eq!(h[0].url, UrlShape::Literal("/users/1".to_string()));
+}
+
+#[test]
 fn dynamic_url_is_opaque() {
     // A bare identifier or a concatenation is neither literal nor template → Dynamic.
     let h = http_calls("requests.get(url)\n");

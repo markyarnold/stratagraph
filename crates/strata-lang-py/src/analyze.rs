@@ -43,7 +43,11 @@ const DJANGO_ROUTE_FNS: [&str; 3] = ["path", "re_path", "url"];
 /// `os.environ.get`, a cache), so requiring a known client receiver avoids a flood
 /// of false consumer links (the conservative cost is a missed call, never an
 /// invented one — mirrors the TS adapter's `axios`-only rule).
-const HTTP_CLIENT_OBJECTS: [&str; 2] = ["requests", "httpx"];
+// aiohttp is listed for its direct module forms (`aiohttp.request('GET', url)`).
+// Documented bound: the COMMON aiohttp pattern (`session = aiohttp.ClientSession()`
+// then `session.get(url)`) is a variable receiver that needs type info — not
+// extracted, never guessed (the same rule that excludes custom client instances).
+const HTTP_CLIENT_OBJECTS: [&str; 3] = ["requests", "httpx", "aiohttp"];
 
 /// HTTP verbs a `requests.<verb>(url)` / `httpx.<verb>(url)` call may use. The
 /// generic `requests.request(method, url)` form is handled separately (its method

@@ -58,7 +58,20 @@ and `\\` do not close it); a `"…"` double-quoted identifier (its own state: a 
 `"it's"` does not flip into string state and `"a;b"` is not split mid-identifier); a
 `$$…$$`/`$tag$…$tag$` dollar-quoted body (matched on the exact opening tag); a `-- …`
 line comment; or a (Postgres-nesting) `/* … */` block comment. Each statement is
-then parsed individually. A statement `sqlparser` cannot parse (a PL/pgSQL
+then parsed individually — first with the PostgreSQL dialect, then a **ClickHouse
+recovery ladder**: the ClickHouse dialect as a whole-statement fallback; a
+column-list recovery for a `CREATE TABLE` whose ClickHouse tail (`ENGINE`,
+`PARTITION BY`, `TTL`, `SETTINGS`, `ON CLUSTER`) defeats both dialects; and a
+normaliser that strips ClickHouse-only column decoration (`CODEC(…)`, column
+`TTL`/`ALIAS`/`MATERIALIZED`/`EPHEMERAL`, inline `INDEX`/`PROJECTION` entries,
+aggregate-state type parameters) before re-parsing. Every recovered statement is
+re-validated by `sqlparser` as a real `CREATE TABLE`, so the declared column set
+is exact and nothing is guessed; a segment led by non-SQL prose retries from its
+embedded `CREATE` (string-aware, so quoted DDL text can never become a phantom
+table). Statements recognized as declaring no static shape (RBAC, index/TTL
+maintenance, teardown, clone/CTAS tables whose shape lives in another table or a
+query, bare `SETTINGS`) are skipped with counts rather than failing their file.
+A statement `sqlparser` still cannot parse (a PL/pgSQL
 `DO $$ … $$` block, a `CREATE FUNCTION` with a dollar-quoted body, a dialect-specific
 statement) is **skipped** (counted in `statements_skipped`), and the surrounding
 `CREATE TABLE`/`ALTER TABLE` statements still build the schema. This mirrors the CFN

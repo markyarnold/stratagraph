@@ -1,0 +1,10 @@
+# A SECOND, unrelated API in the SAME repo that happens to declare the same
+# root-field key `Query.getUser` (the `GET /health` class of collision).
+type BillingAccount {
+  id: ID!
+  balance: Float!
+}
+
+type Query {
+  getUser(id: ID!): BillingAccount
+}

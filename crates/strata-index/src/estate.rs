@@ -76,6 +76,12 @@ pub enum EstateError {
     Manifest(String),
     #[error("duplicate repo name in manifest: {0}")]
     DuplicateRepo(String),
+    #[error(
+        "duplicate repo path in manifest: {0:?} is declared by both {1:?} and {2:?} — two \
+         entries indexing one directory would overwrite each other's graph and estate marker \
+         (last writer wins)"
+    )]
+    DuplicateRepoPath(String, String, String),
     #[error("index error: {0}")]
     Index(#[from] crate::IndexError),
     #[error("io error: {0}")]
@@ -105,7 +111,8 @@ impl WorkspaceManifest {
         Self::parse_str(&text)
     }
 
-    /// Internal validation: non-empty names, unique repo names, slug-safe api ids.
+    /// Internal validation: non-empty names, unique repo names, unique repo
+    /// paths (lexically normalized), slug-safe api ids.
     fn validate(&self) -> Result<(), EstateError> {
         if self.workspace.name.trim().is_empty() {
             return Err(EstateError::Manifest(
@@ -113,6 +120,14 @@ impl WorkspaceManifest {
             ));
         }
         let mut seen: HashSet<String> = HashSet::new();
+        // Normalized path → the first repo that declared it. Two entries naming one
+        // directory would index into the same `.strata/graph.duckdb` and write the
+        // same estate marker (last writer wins), silently losing a declared
+        // identity — rejected here at parse time, before any damage. Lexical
+        // normalization catches `svc` vs `./svc` vs `x/../svc`; symlink aliasing
+        // needs the filesystem and is a documented bound.
+        let mut seen_paths: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for repo in &self.repos {
             if repo.name.trim().is_empty() {
                 return Err(EstateError::Manifest(
@@ -121,6 +136,14 @@ impl WorkspaceManifest {
             }
             if !seen.insert(repo.name.clone()) {
                 return Err(EstateError::DuplicateRepo(repo.name.clone()));
+            }
+            let norm = normalize_repo_path(&repo.path);
+            if let Some(first) = seen_paths.insert(norm.clone(), repo.name.clone()) {
+                return Err(EstateError::DuplicateRepoPath(
+                    norm,
+                    first,
+                    repo.name.clone(),
+                ));
             }
             // Manifest v2: each declared api id must be slug-safe so it composes
             // into the `{api_id}/{format}` canonical UID discriminator. The same
@@ -142,6 +165,34 @@ impl WorkspaceManifest {
             }
         }
         Ok(())
+    }
+}
+
+/// Lexically normalize a manifest repo path for duplicate detection: split on
+/// `/` (and `\`), drop `.` and empty components, resolve `..` against preceding
+/// components where possible. Pure string arithmetic — no filesystem access, so
+/// it is deterministic at parse time; symlink aliasing is a documented bound.
+/// An empty path normalizes to `"."` (the manifest dir), so two empty paths
+/// still collide.
+fn normalize_repo_path(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for comp in p.split(['/', '\\']) {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                if parts.last().is_some_and(|l| *l != "..") {
+                    parts.pop();
+                } else {
+                    parts.push("..");
+                }
+            }
+            c => parts.push(c),
+        }
+    }
+    if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
     }
 }
 
