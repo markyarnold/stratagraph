@@ -441,6 +441,25 @@ impl SqlSchemaAdapter {
 /// declared one, never a guess. A blank/comment-only segment parses to an empty `Vec`
 /// under (1), returned as `Some(vec![])` so it is not miscounted as a skip.
 fn parse_statement_lenient(stmt_sql: &str) -> Option<Vec<Statement>> {
+    if let Some(parsed) = try_recovery_ladder(stmt_sql) {
+        return Some(parsed);
+    }
+    // 5. Prose preamble: a segment that starts with non-SQL text (an un-commented
+    // header line) before an embedded `CREATE TABLE …` — retry the ladder from
+    // the CREATE keyword. The scan is STRING-AWARE, so a "CREATE TABLE" inside a
+    // string literal can never be sliced into a phantom statement, and the
+    // re-parse still validates whatever the slice yields.
+    let idx = embedded_create_index(stmt_sql)?;
+    if idx == 0 {
+        return None; // the ladder already tried exactly this text.
+    }
+    try_recovery_ladder(&stmt_sql[idx..])
+}
+
+/// Tiers 1–4 of the lenient parse (see [`parse_statement_lenient`]): both whole-
+/// statement dialects, then the column-list prefix recovery, then the prefix with
+/// ClickHouse column modifiers stripped.
+fn try_recovery_ladder(stmt_sql: &str) -> Option<Vec<Statement>> {
     if let Ok(parsed) = Parser::parse_sql(&PostgreSqlDialect {}, stmt_sql) {
         return Some(parsed);
     }
@@ -453,6 +472,79 @@ fn parse_statement_lenient(stmt_sql: &str) -> Option<Vec<Statement>> {
     }
     let normalised = strip_clickhouse_column_modifiers(prefix);
     parse_prefix_as_create_table(&normalised)
+}
+
+/// Byte index of the first `CREATE` keyword (word-boundary, case-insensitive)
+/// that sits OUTSIDE any string literal, quoted identifier, or comment and is
+/// followed by a plausible object keyword (`TABLE`, or the `OR`/`TEMPORARY`/
+/// `MATERIALIZED`/`LIVE`/`VIEW` qualifiers) — the anchor for the prose-preamble
+/// retry. `None` when no such keyword exists.
+fn embedded_create_index(stmt: &str) -> Option<usize> {
+    let b = stmt.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' | b'`' => {
+                // Reuse the modifier-stripper's span logic: skip the quoted span.
+                let quote = b[i];
+                i += 1;
+                while i < b.len() {
+                    if b[i] == quote {
+                        if (quote == b'\'' || quote == b'"') && i + 1 < b.len() && b[i + 1] == quote
+                        {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'-' if i + 1 < b.len() && b[i + 1] == b'-' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if i + 1 < b.len() && b[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            _ if is_ident_byte(b[i]) && (i == 0 || !is_ident_byte(b[i - 1])) => {
+                let start = i;
+                let mut j = i;
+                while j < b.len() && is_ident_byte(b[j]) {
+                    j += 1;
+                }
+                if stmt[start..j].eq_ignore_ascii_case("CREATE") {
+                    // Peek the next word.
+                    let mut k = j;
+                    while k < b.len() && b[k].is_ascii_whitespace() {
+                        k += 1;
+                    }
+                    let mut m = k;
+                    while m < b.len() && is_ident_byte(b[m]) {
+                        m += 1;
+                    }
+                    let next = stmt[k..m].to_ascii_uppercase();
+                    if matches!(
+                        next.as_str(),
+                        "TABLE" | "OR" | "TEMPORARY" | "MATERIALIZED" | "LIVE" | "VIEW"
+                    ) {
+                        return Some(start);
+                    }
+                }
+                i = j;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Re-parse a recovered `CREATE TABLE … (…)` prefix under PostgreSQL, then ClickHouse,
@@ -593,6 +685,95 @@ fn strip_clickhouse_column_modifiers(prefix: &str) -> String {
                     j += 1;
                 }
                 let word = prefix[i..j].to_ascii_uppercase();
+                // Whole ENTRY dropping: ClickHouse column lists may carry inline
+                // `INDEX name expr TYPE t GRANULARITY n` / `PROJECTION name (…)`
+                // ENTRIES (not column modifiers). At entry start, when the word is
+                // INDEX/PROJECTION AND the entry matches that shape (an INDEX entry
+                // must contain a TYPE token; a PROJECTION entry a parenthesis — so a
+                // column NAMED `index`/`projection` is never dropped), skip the
+                // whole entry including its separating comma. Neither is a column,
+                // so no column is ever lost.
+                if entry_start && (word == "INDEX" || word == "PROJECTION") {
+                    // Scan to the entry's end: the next `,` or the list-closing `)`
+                    // at this level (strings and nested parens respected).
+                    let mut k = j;
+                    let mut nd = 0i32;
+                    while k < b.len() {
+                        match b[k] {
+                            b'\'' | b'"' | b'`' => k = skip_quoted(b, k, b[k]) - 1,
+                            b'(' => nd += 1,
+                            b')' => {
+                                if nd == 0 {
+                                    break;
+                                }
+                                nd -= 1;
+                            }
+                            b',' if nd == 0 => break,
+                            _ => {}
+                        }
+                        k += 1;
+                    }
+                    let entry = prefix[j..k.min(prefix.len())].to_ascii_uppercase();
+                    let is_index_entry = word == "INDEX"
+                        && entry
+                            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                            .any(|w| w == "TYPE");
+                    let is_projection_entry = word == "PROJECTION" && entry.contains('(');
+                    if is_index_entry || is_projection_entry {
+                        if k < b.len() && b[k] == b',' {
+                            // Consume the trailing comma; the next entry starts fresh.
+                            i = k + 1;
+                            entry_start = true;
+                        } else {
+                            // Last entry: remove the comma already emitted before it.
+                            while out.last().is_some_and(|x| x.is_ascii_whitespace()) {
+                                out.pop();
+                            }
+                            if out.last() == Some(&b',') {
+                                out.pop();
+                            }
+                            i = k;
+                        }
+                        continue;
+                    }
+                    // Not the entry shape (e.g. a column named `index`): fall
+                    // through to ordinary word handling below.
+                }
+                // Aggregate-state TYPES whose args contain a nested call —
+                // `SimpleAggregateFunction(max, DateTime64(3))`,
+                // `AggregateFunction(quantiles(0.5, 0.9), UInt64)` — defeat both
+                // dialects. Coarsen to the bare constructor name (a plain custom
+                // type): the column NAME is untouched, only the aggregate-state
+                // type parameters (no graph meaning) are dropped.
+                if !entry_start
+                    && (word == "AGGREGATEFUNCTION" || word == "SIMPLEAGGREGATEFUNCTION")
+                {
+                    let mut k = j;
+                    while k < b.len() && b[k].is_ascii_whitespace() {
+                        k += 1;
+                    }
+                    if k < b.len() && b[k] == b'(' {
+                        let mut cd = 0i32;
+                        while k < b.len() {
+                            match b[k] {
+                                b'\'' | b'"' | b'`' => k = skip_quoted(b, k, b[k]) - 1,
+                                b'(' => cd += 1,
+                                b')' => {
+                                    cd -= 1;
+                                    if cd == 0 {
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            k += 1;
+                        }
+                        out.extend_from_slice(&b[i..j]);
+                        entry_start = false;
+                        i = (k + 1).min(b.len());
+                        continue;
+                    }
+                }
                 if !entry_start && MODIFIERS.contains(&word.as_str()) {
                     if word == "CODEC" {
                         // CODEC must be followed by a balanced `(…)`; otherwise it is
@@ -715,9 +896,10 @@ fn is_recognized_nontable_statement(stmt: &str) -> bool {
     let words: Vec<&str> = norm.split(' ').collect();
 
     match words.first().copied().unwrap_or("") {
-        // Statement families that never declare a table shape.
+        // Statement families that never declare a table shape. (A bare ClickHouse
+        // `SETTINGS …` statement is session configuration.)
         "GRANT" | "REVOKE" | "OPTIMIZE" | "SYSTEM" | "ATTACH" | "DETACH" | "SET" | "USE"
-        | "TRUNCATE" | "RENAME" => true,
+        | "TRUNCATE" | "RENAME" | "SETTINGS" => true,
         first @ ("CREATE" | "DROP" | "ALTER") => {
             // Skip the qualifiers that can precede the object word.
             let mut idx = 1;
@@ -763,7 +945,18 @@ fn is_recognized_nontable_statement(stmt: &str) -> bool {
                             // is DML, not shape.
                             || (norm.contains(" UPDATE ") && norm.contains(" WHERE "))
                     }
-                    // An unparseable CREATE TABLE is real, unexplained loss.
+                    // CREATE TABLE: the clone (`CREATE TABLE t AS other ENGINE=…`)
+                    // and CTAS (`… AS SELECT …`) forms have NO column list — their
+                    // shape lives in another table or a query, statically
+                    // unmodelable (documented bound). Recognized by the paren-free
+                    // header: the first `(` (if any) comes AFTER the ` AS `. Any
+                    // other unparseable CREATE TABLE is real, unexplained loss and
+                    // still fails its file.
+                    "CREATE" => match (norm.find(" AS "), norm.find('(')) {
+                        (Some(as_pos), Some(paren_pos)) => paren_pos > as_pos,
+                        (Some(_), None) => true,
+                        _ => false,
+                    },
                     _ => false,
                 },
                 _ => false,
@@ -1385,6 +1578,87 @@ mod tests {
     }
 
     // ── ClickHouse column modifiers: CH-dialect prefix + the modifier normaliser ──
+
+    #[test]
+    fn clickhouse_inline_index_entries_are_dropped_columns_kept() {
+        // ClickHouse column lists can carry whole INDEX/PROJECTION ENTRIES (not
+        // column modifiers): `INDEX name expr TYPE minmax GRANULARITY 1`. The
+        // normaliser must drop the ENTRY (with its comma) and keep every column —
+        // including when the index entry is LAST in the list.
+        let m = extract(concat!(
+            "CREATE TABLE cases (\n",
+            "  id String,\n",
+            "  score Nullable(UInt8),\n",
+            "  INDEX idx_score score TYPE minmax GRANULARITY 1,\n",
+            "  created DateTime64(3, 'UTC'),\n",
+            "  INDEX idx_created created TYPE set(0) GRANULARITY 4\n",
+            ") ENGINE = ReplicatedMergeTree('/ch/{shard}/cases', '{replica}')\n",
+            "PARTITION BY toYYYYMM(created) ORDER BY id;\n",
+        ));
+        let names: Vec<&str> = table(&m, "cases")
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["id", "score", "created"]);
+    }
+
+    #[test]
+    fn aggregate_function_types_with_nested_calls_recover() {
+        // AggregateFunction/SimpleAggregateFunction types whose arguments contain a
+        // NESTED call (a parameterized type, a parameterized combinator) defeat both
+        // dialects even in the bare column list. The normaliser coarsens the type to
+        // its constructor name — the column SET stays exact; aggregate-state type
+        // parameters carry no graph meaning (documented bound).
+        let m = extract(concat!(
+            "CREATE TABLE stats (\n",
+            "  day Date,\n",
+            "  peak SimpleAggregateFunction(max, DateTime64(3)),\n",
+            "  quantiles AggregateFunction(quantiles(0.5, 0.9), UInt64)\n",
+            ") ENGINE = AggregatingMergeTree ORDER BY day;\n",
+        ));
+        let names: Vec<&str> = table(&m, "stats")
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["day", "peak", "quantiles"]);
+    }
+
+    #[test]
+    fn prose_preamble_before_create_table_still_recovers() {
+        // A statement segment that begins with non-SQL prose (an un-commented header
+        // line) before CREATE TABLE: the ladder retries from the embedded CREATE.
+        let m = extract(concat!(
+            "Apply on the ops cluster with clickhouse-client\n",
+            "CREATE TABLE alerts (id UUID, level Enum8('warn' = 1, 'crit' = 2)) ",
+            "ENGINE = MergeTree ORDER BY id;\n",
+        ));
+        let names: Vec<&str> = table(&m, "alerts")
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["id", "level"]);
+    }
+
+    #[test]
+    fn clone_and_ctas_tables_are_recognized_not_failures() {
+        // `CREATE TABLE t AS other ENGINE = Distributed(...)` declares a table whose
+        // SHAPE lives elsewhere — statically unmodelable (documented bound). A file of
+        // such statements is Ok-no-tables with skips, never FAILED. Same for bare
+        // SETTINGS statements.
+        let m = extract(concat!(
+            "CREATE TABLE IF NOT EXISTS db.t_dist ON CLUSTER main AS db.t_local\n",
+            "ENGINE = Distributed('main', 'db', 't_local', cityHash64(id));\n",
+            "SETTINGS max_threads = 4;\n",
+        ));
+        assert!(m.tables.is_empty(), "clone form declares no static shape");
+        assert_eq!(
+            m.skipped_statements, 2,
+            "both statements counted as skipped"
+        );
+    }
 
     #[test]
     fn clickhouse_alias_column_with_settings_tail_recovers() {
