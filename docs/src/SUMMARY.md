@@ -57,4 +57,5 @@
 - [Architecture](project/architecture.md)
 - [Contributing](project/contributing.md)
 - [Roadmap](project/roadmap.md)
+- [Changelog](project/changelog.md)
 - [FAQ and troubleshooting](project/faq.md)
