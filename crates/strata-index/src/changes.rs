@@ -101,6 +101,32 @@ pub enum ChangeKind {
     Modified,
 }
 
+/// The **operation-level** breaking/additive classification of a CONTRACT-plane
+/// change: a `Removed`/`Modified` operation key breaks its consumers; an `Added`
+/// one cannot (new surface has no existing consumers). Honest bound: this is
+/// operation-level only — field-level intelligence (a narrowed type, a new
+/// required parameter *inside* an operation) needs request/response schema
+/// extraction the contract adapters do not do yet, so an in-place field change
+/// surfaces as `Modified` ⇒ `Breaking` (recall-safe, never a silent pass).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractChange {
+    Breaking,
+    Additive,
+}
+
+impl ContractChange {
+    /// Classify a changed symbol: contract-plane `Added` → `Additive`,
+    /// contract-plane `Removed`/`Modified` → `Breaking`, other planes → `None`.
+    fn classify(plane: Plane, change: ChangeKind) -> Option<ContractChange> {
+        match (plane, change) {
+            (Plane::Contract, ChangeKind::Added) => Some(ContractChange::Additive),
+            (Plane::Contract, _) => Some(ContractChange::Breaking),
+            _ => None,
+        }
+    }
+}
+
 /// One changed symbol — a plane-tagged, file-scoped fact, identified by its
 /// fully-qualified key (fqn for code; the operation key for contract; the
 /// logical id for infra).
@@ -112,6 +138,25 @@ pub struct ChangedSymbol {
     pub key: String,
     /// The repo-relative file the symbol lives in (the new path for a rename).
     pub file: String,
+    /// Operation-level breaking/additive label — contract plane only, `None`
+    /// elsewhere (see [`ContractChange`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_change: Option<ContractChange>,
+}
+
+impl ChangedSymbol {
+    /// Build a changed symbol, deriving the contract-plane breaking/additive
+    /// label from `(plane, change)` — the single construction path, so the label
+    /// can never drift from the change kind.
+    fn new(plane: Plane, change: ChangeKind, key: String, file: String) -> ChangedSymbol {
+        ChangedSymbol {
+            plane,
+            change,
+            key,
+            file,
+            contract_change: ContractChange::classify(plane, change),
+        }
+    }
 }
 
 /// A node reached by aggregating the blast radius of all removed/modified
@@ -148,7 +193,7 @@ pub enum RiskLevel {
 pub struct Risk {
     pub level: RiskLevel,
     /// Why this level — e.g. `"18 affected"`, or
-    /// `"touches contract surface: Query.getPolicyStats"`.
+    /// `"breaking change to contract surface: Query.getPolicyStats (removed)"`.
     pub reasons: Vec<String>,
 }
 
@@ -597,29 +642,29 @@ fn diff_symbol_maps(
     let mut out = Vec::new();
     for (key, new_sig) in new {
         match old.get(key) {
-            None => out.push(ChangedSymbol {
+            None => out.push(ChangedSymbol::new(
                 plane,
-                change: ChangeKind::Added,
-                key: key.clone(),
-                file: file.to_string(),
-            }),
-            Some(old_sig) if old_sig != new_sig => out.push(ChangedSymbol {
+                ChangeKind::Added,
+                key.clone(),
+                file.to_string(),
+            )),
+            Some(old_sig) if old_sig != new_sig => out.push(ChangedSymbol::new(
                 plane,
-                change: ChangeKind::Modified,
-                key: key.clone(),
-                file: file.to_string(),
-            }),
+                ChangeKind::Modified,
+                key.clone(),
+                file.to_string(),
+            )),
             Some(_) => {} // unchanged
         }
     }
     for key in old.keys() {
         if !new.contains_key(key) {
-            out.push(ChangedSymbol {
+            out.push(ChangedSymbol::new(
                 plane,
-                change: ChangeKind::Removed,
-                key: key.clone(),
-                file: file.to_string(),
-            });
+                ChangeKind::Removed,
+                key.clone(),
+                file.to_string(),
+            ));
         }
     }
     out
@@ -757,12 +802,33 @@ fn classify_risk(
     let mut reasons: Vec<String> = Vec::new();
     let count = affected.len();
 
-    // ── CRITICAL trigger 1: any CHANGED symbol is contract surface. ──
+    // ── CRITICAL trigger 1: a BREAKING change to contract surface (a removed or
+    // modified operation key breaks its consumers). An ADDITIVE contract change —
+    // new surface, no existing consumers — is named honestly in the reasons but
+    // does not, by itself, escalate: crying CRITICAL for every added endpoint is
+    // the cry-wolf failure the rubric exists to avoid. (Trigger 2 still escalates
+    // whenever the blast radius REACHES existing contract surface.) ──
     let mut critical = false;
     for sym in symbols {
-        if sym.plane == Plane::Contract {
-            critical = true;
-            reasons.push(format!("touches contract surface: {}", sym.key));
+        match sym.contract_change {
+            Some(ContractChange::Breaking) => {
+                critical = true;
+                let how = match sym.change {
+                    ChangeKind::Removed => "removed",
+                    _ => "modified",
+                };
+                reasons.push(format!(
+                    "breaking change to contract surface: {} ({how})",
+                    sym.key
+                ));
+            }
+            Some(ContractChange::Additive) => {
+                reasons.push(format!(
+                    "additive contract change: {} (new surface; existing consumers unaffected)",
+                    sym.key
+                ));
+            }
+            None => {}
         }
     }
     // ── CRITICAL trigger 2: any AFFECTED node is contract surface. ──
@@ -859,7 +925,7 @@ fn kind_name(kind: NodeKind) -> String {
 /// pre-edit blast walks the *graph nodes* a file already defines, so it derives
 /// the plane from each node's [`NodeKind`] instead. Contract surface
 /// (`ApiOperation`/`GraphqlField`) → [`Plane::Contract`] so the synthetic
-/// changed symbol fires `classify_risk`'s CRITICAL "touches contract surface"
+/// changed symbol fires `classify_risk`'s CRITICAL "breaking change to contract surface"
 /// trigger exactly as a real contract-file change would; the infra kinds →
 /// [`Plane::Infra`]; everything else → [`Plane::Code`]. (The plane only affects
 /// risk classification — the impact aggregation is plane-agnostic.)
@@ -952,11 +1018,13 @@ pub fn blast_for_file_in_repo(graph: &Graph, file: &str, repo: Option<&str>) -> 
     // the existing aggregation/risk run unchanged.
     let symbols: Vec<ChangedSymbol> = file_nodes
         .iter()
-        .map(|n| ChangedSymbol {
-            plane: plane_for_kind(n.kind),
-            change: ChangeKind::Modified,
-            key: n.fqn.clone(),
-            file: n.path.clone(),
+        .map(|n| {
+            ChangedSymbol::new(
+                plane_for_kind(n.kind),
+                ChangeKind::Modified,
+                n.fqn.clone(),
+                n.path.clone(),
+            )
         })
         .collect();
 
@@ -1208,12 +1276,12 @@ mod tests {
     #[test]
     fn risk_critical_when_changed_symbol_is_contract_surface() {
         let g = Graph::new();
-        let symbols = vec![ChangedSymbol {
-            plane: Plane::Contract,
-            change: ChangeKind::Removed,
-            key: "Query.getPolicyStats".into(),
-            file: "schema.graphql".into(),
-        }];
+        let symbols = vec![ChangedSymbol::new(
+            Plane::Contract,
+            ChangeKind::Removed,
+            "Query.getPolicyStats".into(),
+            "schema.graphql".into(),
+        )];
         let risk = classify_risk(&g, &symbols, &[], None);
         assert_eq!(risk.level, RiskLevel::Critical);
         assert!(
@@ -1276,12 +1344,12 @@ mod tests {
         g.add_edge(mk_edge("hi", "changed", Provenance::Inferred));
         g.add_edge(mk_edge("amb", "changed", Provenance::Ambiguous));
 
-        let symbols = vec![ChangedSymbol {
-            plane: Plane::Code,
-            change: ChangeKind::Modified,
-            key: "changed".into(),
-            file: "a.ts".into(),
-        }];
+        let symbols = vec![ChangedSymbol::new(
+            Plane::Code,
+            ChangeKind::Modified,
+            "changed".into(),
+            "a.ts".into(),
+        )];
 
         let affected = aggregate_impact(&g, &symbols);
         let get = |id: &str| affected.iter().find(|a| a.uid == id).unwrap();
@@ -1523,18 +1591,18 @@ mod tests {
         // The reference: the SAME synthetic modified-symbol set the engine builds,
         // run through the detect_changes helpers directly.
         let ref_symbols = vec![
-            ChangedSymbol {
-                plane: Plane::Code,
-                change: ChangeKind::Modified,
-                key: "one".into(),
-                file: "a.ts".into(),
-            },
-            ChangedSymbol {
-                plane: Plane::Code,
-                change: ChangeKind::Modified,
-                key: "two".into(),
-                file: "a.ts".into(),
-            },
+            ChangedSymbol::new(
+                Plane::Code,
+                ChangeKind::Modified,
+                "one".into(),
+                "a.ts".into(),
+            ),
+            ChangedSymbol::new(
+                Plane::Code,
+                ChangeKind::Modified,
+                "two".into(),
+                "a.ts".into(),
+            ),
         ];
         let ref_affected = aggregate_impact(&g, &ref_symbols);
         let ref_risk = classify_risk(&g, &ref_symbols, &ref_affected, None);

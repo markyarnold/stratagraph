@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use sqlparser::ast::{
     AlterTableOperation, ColumnDef as SqlColumnDef, ColumnOption, Expr, FromTable, IndexColumn,
     ObjectName, Query, SetExpr, Statement, TableConstraint, TableFactor, TableObject,
-    TableWithJoins,
+    TableWithJoins, UpdateTableFromKind,
 };
 use sqlparser::dialect::{ClickHouseDialect, PostgreSqlDialect};
 use sqlparser::parser::Parser;
@@ -222,8 +222,8 @@ pub struct TableRef {
 /// resolution is deferred). `INSERT INTO t SELECT … FROM s` records `t` Write **and**
 /// `s` Read. Subqueries nested in a SELECT's FROM are followed, and a `DELETE … USING s`
 /// records `s` Read. Documented gap (conservative — a missed read, never a phantom):
-/// an `UPDATE t … FROM s`'s auxiliary source `s` is NOT yet captured (only `t` Write);
-/// capturing it is a small follow-up.
+/// an `UPDATE t … FROM s` records `t` Write **and** each FROM source (joins
+/// included) as a Read.
 pub fn parse_table_refs(sql: &str) -> Vec<TableRef> {
     // Parse with the same PostgreSQL dialect the DDL adapter uses. A fragment that
     // won't parse is not an error here — many code string literals are partial SQL.
@@ -262,11 +262,17 @@ fn collect_stmt_table_refs(stmt: &Statement, refs: &mut Vec<TableRef>) {
                 collect_query_reads(source, refs);
             }
         }
-        // UPDATE t SET …: t is a Write. Documented gap: an auxiliary `FROM s`
-        // (`UPDATE … FROM s`) source read is not yet captured — conservative (a
-        // missed read, never a phantom); a small follow-up.
+        // UPDATE t SET … [FROM s [JOIN l …]]: t is a Write; the FROM sources
+        // (either side of SET — Postgres puts it after, Snowflake before) are Reads.
         Statement::Update(update) => {
             collect_table_with_joins(&update.table, refs, SqlAccess::Write);
+            if let Some(from) = &update.from {
+                let (UpdateTableFromKind::BeforeSet(tables)
+                | UpdateTableFromKind::AfterSet(tables)) = from;
+                for twj in tables {
+                    collect_table_with_joins(twj, refs, SqlAccess::Read);
+                }
+            }
         }
         // DELETE FROM t: t is a Write; a USING clause reads its tables.
         Statement::Delete(delete) => {
@@ -2320,6 +2326,28 @@ mod tests {
         assert_eq!(
             parse_table_refs("UPDATE users SET last_login = now() WHERE id = 1"),
             vec![r("users", SqlAccess::Write)]
+        );
+    }
+
+    #[test]
+    fn update_from_source_is_a_read() {
+        // The Postgres `UPDATE t … FROM s` form: `t` is the Write, and the FROM
+        // sources (including joins) are Reads — previously a documented missed read.
+        assert_eq!(
+            parse_table_refs(
+                "UPDATE users SET org_name = o.name FROM orgs o WHERE users.org_id = o.id"
+            ),
+            vec![r("users", SqlAccess::Write), r("orgs", SqlAccess::Read)]
+        );
+        assert_eq!(
+            parse_table_refs(
+                "UPDATE t SET v = s.v FROM staging s JOIN lookup l ON l.id = s.lid WHERE t.id = s.id"
+            ),
+            vec![
+                r("t", SqlAccess::Write),
+                r("staging", SqlAccess::Read),
+                r("lookup", SqlAccess::Read)
+            ]
         );
     }
 

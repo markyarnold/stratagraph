@@ -1168,7 +1168,14 @@ fn render_change_report(report: &strata_index::ChangeReport) -> String {
                 strata_index::ChangeKind::Removed => "removed",
                 strata_index::ChangeKind::Modified => "modified",
             };
-            out.push_str(&format!("    {kind:>8}  {}  ({})\n", s.key, s.file));
+            // Contract-plane symbols carry the operation-level breaking/additive
+            // verdict; other planes have no label.
+            let label = match s.contract_change {
+                Some(strata_index::ContractChange::Breaking) => "  [BREAKING]",
+                Some(strata_index::ContractChange::Additive) => "  [additive]",
+                None => "",
+            };
+            out.push_str(&format!("    {kind:>8}  {}  ({}){label}\n", s.key, s.file));
         }
     }
 
@@ -1795,12 +1802,14 @@ mod tests {
                     change: ChangeKind::Modified,
                     key: "helper".into(),
                     file: "src/a.ts".into(),
+                    contract_change: None,
                 },
                 ChangedSymbol {
                     plane: Plane::Contract,
                     change: ChangeKind::Removed,
                     key: "Query.getStats".into(),
                     file: "schema.graphql".into(),
+                    contract_change: Some(strata_index::ContractChange::Breaking),
                 },
             ],
             other_files: vec!["README.md".into()],
