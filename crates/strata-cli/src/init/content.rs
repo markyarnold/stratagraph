@@ -136,8 +136,8 @@ pub const KIRO_ROUTING: &str = "\
 
 Three lifecycle hooks enforce this protocol automatically:
 - **strata-pre-edit**: before any file write, confirms you ran `impact` on every symbol/field about to change.
-- **strata-pre-commit**: before a commit, runs `detect_changes` for the per-plane changed symbols, blast radius, and risk.
-- **strata-post-commit**: after a commit, re-runs `strata index .` to keep the on-disk graph fresh.
+- **strata-pre-commit**: before a command that creates a git commit, runs `detect_changes` for the per-plane changed symbols, blast radius, and risk. It applies ONLY to commit commands — any other command (including strata's own `detect-changes`/`index` runs) proceeds untouched, so the hook can never loop on its own remediation.
+- **strata-post-edit**: after a file edit, re-runs `strata index .` to keep the on-disk graph fresh (the MCP server hot-reloads it).
 
 When in doubt: `query` to find the symbol → `context` for its plane buckets → `impact` before you change it → `detect_changes` before you commit.";
 
@@ -423,8 +423,13 @@ mod tests {
     #[test]
     fn kiro_routing_names_detect_changes_in_pre_commit() {
         assert!(
-            KIRO_ROUTING.contains("strata-pre-commit**: before a commit, runs `detect_changes`"),
+            KIRO_ROUTING
+                .contains("strata-pre-commit**: before a command that creates a git commit, runs `detect_changes`"),
             "the Kiro routing pre-commit line must name detect_changes:\n{KIRO_ROUTING}"
+        );
+        assert!(
+            KIRO_ROUTING.contains("can never loop on its own remediation"),
+            "the routing must state the anti-circularity rule:\n{KIRO_ROUTING}"
         );
     }
 

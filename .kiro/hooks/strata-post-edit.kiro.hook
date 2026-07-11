@@ -1,12 +1,12 @@
 {
   "enabled": true,
-  "name": "Strata Post-Commit Reindex",
-  "description": "After a git commit, re-runs strata index to keep the on-disk graph fresh.",
+  "name": "StrataGraph Post-Edit Reindex",
+  "description": "After a file edit, re-runs strata index so the on-disk graph stays fresh (the MCP server hot-reloads it).",
   "version": "1",
   "when": {
     "type": "postToolUse",
     "toolTypes": [
-      ".*git_add_or_commit.*"
+      "write"
     ]
   },
   "then": {
