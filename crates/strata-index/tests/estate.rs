@@ -138,6 +138,60 @@ path = "svc-v2"
     );
 }
 
+/// Test 3b: two repos (distinct names) declaring the SAME `path` →
+/// `EstateError::DuplicateRepoPath`. Both entries would index into the same
+/// `.strata/graph.duckdb` and write the same estate marker (last-writer-wins),
+/// silently losing one declared identity — reject at parse, never at damage time.
+#[test]
+fn manifest_duplicate_repo_path_is_error() {
+    let toml = r#"
+[workspace]
+name = "ok"
+
+[[repos]]
+name = "backend"
+path = "services/api"
+
+[[repos]]
+name = "api-v2"
+path = "services/api"
+"#;
+    let err = WorkspaceManifest::parse_str(toml).expect_err("duplicate repo paths must error");
+    assert!(
+        matches!(err, EstateError::DuplicateRepoPath(..)),
+        "expected DuplicateRepoPath error, got: {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("services/api") && msg.contains("backend") && msg.contains("api-v2"),
+        "error names the path and both repos, got: {msg}"
+    );
+}
+
+/// Test 3c: the dedup is lexically normalized — `svc` and `./svc` are the same
+/// directory, so declaring both is the same footgun. (Symlink aliasing needs the
+/// filesystem and is a documented bound.)
+#[test]
+fn manifest_duplicate_repo_path_is_error_across_lexical_aliases() {
+    let toml = r#"
+[workspace]
+name = "ok"
+
+[[repos]]
+name = "a"
+path = "svc"
+
+[[repos]]
+name = "b"
+path = "./svc"
+"#;
+    let err = WorkspaceManifest::parse_str(toml).expect_err("aliased duplicate paths must error");
+    assert!(
+        matches!(err, EstateError::DuplicateRepoPath(..)),
+        "expected DuplicateRepoPath error, got: {err:?}"
+    );
+}
+
 // ══ Manifest v2: [[repos.apis]] (api-scoped identity, B6 fix) ════════════════════
 
 /// A v1 manifest (no `[[repos.apis]]`) parses unchanged — `apis` defaults empty.
