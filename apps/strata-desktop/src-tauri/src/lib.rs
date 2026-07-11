@@ -102,12 +102,23 @@ impl AppState {
     /// error when nothing is loaded. Centralises the lock + not-loaded check the
     /// `tool`/`subgraph` commands share.
     fn with_graph<T>(&self, f: impl FnOnce(&Graph) -> Result<T, String>) -> Result<T, String> {
+        self.with_loaded(|loaded| f(&loaded.graph))
+    }
+
+    /// Like [`with_graph`](Self::with_graph) but exposing the whole
+    /// [`LoadedGraph`], for callers that also need the [`OpenedSource`] (the
+    /// `tool` command derives the repo root from it for the filesystem-touching
+    /// tools). Same discipline: the lock is held only for the closure.
+    fn with_loaded<T>(
+        &self,
+        f: impl FnOnce(&LoadedGraph) -> Result<T, String>,
+    ) -> Result<T, String> {
         let guard = self
             .loaded
             .lock()
             .map_err(|_| "internal: graph state lock poisoned".to_string())?;
         match guard.as_ref() {
-            Some(loaded) => f(&loaded.graph),
+            Some(loaded) => f(loaded),
             None => Err("no graph loaded — open a graph or workspace first".to_string()),
         }
     }
@@ -220,7 +231,13 @@ async fn run_reindex_blocking(
 /// the shared [`strata_mcp::call_tool`] dispatch.
 #[tauri::command]
 fn tool(name: String, args: Value, state: State<'_, AppState>) -> Result<Value, String> {
-    state.with_graph(|graph| commands::run_tool(graph, &name, &args))
+    state.with_loaded(|loaded| {
+        // The repo root (when the opened source implies one) rides in the ToolCtx
+        // so detect_changes/rename work from the desktop exactly as they do from
+        // the CLI/MCP with --repo; without one they keep their clear refusal.
+        let repo_root = loaded.source_kind.repo_root();
+        commands::run_tool(&loaded.graph, repo_root, &name, &args)
+    })
 }
 
 /// Bounded both-directions neighbourhood of `uid` for the renderer (depth ≤
