@@ -237,8 +237,8 @@ Writes five files (`kiro::install`):
 | `.kiro/settings/mcp.json`             | `merge_json`           | Adds `mcpServers.strata` (`{ "command": "strata", "args": [ … ] }`). |
 | `.kiro/steering/strata.md`            | `upsert_managed_block` | The managed steering block (Kiro routing).                           |
 | `.kiro/hooks/strata-pre-edit.*`       | `write_owned`          | Pre-edit impact check (`.kiro.hook` by default, `.json` with `--kiro-version new`). |
-| `.kiro/hooks/strata-pre-commit.*`     | `write_owned`          | Pre-commit scope check.                                             |
-| `.kiro/hooks/strata-post-commit.*`    | `write_owned`          | Post-commit reindex.                                                |
+| `.kiro/hooks/strata-pre-commit.*`     | `write_owned`          | Pre-commit scope check (prompt-gated: applies only to commit commands). |
+| `.kiro/hooks/strata-post-edit.*`      | `write_owned`          | Post-edit reindex.                                                  |
 
 The steering block is the same content as Claude's, but its routing section is the
 Kiro cross-references (Kiro reads steering files, not skills): it names the three
@@ -266,8 +266,8 @@ The per-hook trigger/matcher in the table below use the `new`-format names; the
 | File                      | `trigger`     | `matcher`                          | `action`  | Detail                                                                                                                                                     |
 | ------------------------- | ------------- | ---------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `strata-pre-edit.json`    | `PreToolUse`  | `fs_write\|str_replace\|fs_append` | `agent`   | A STOP-style prompt confirming blast-radius assessment (`blast`/`impact`/`context`) across planes before any file write.                                   |
-| `strata-pre-commit.json`  | `PreToolUse`  | `.*git_add_or_commit.*`            | `agent`   | A STOP-style prompt driving the `detect_changes` tool (pass `staged:true` for a partial commit) for the per-plane changed symbols, blast radius, and risk. |
-| `strata-post-commit.json` | `PostToolUse` | `.*git_add_or_commit.*`            | `command` | `strata index .` with `timeout: 120`: reindex after a commit.                                                                                              |
+| `strata-pre-commit.json`  | `PreToolUse`  | `execute_bash\|executeBash`        | `agent`   | An applicability-gated prompt: for a command that creates a git commit, it drives the `detect_changes` tool (pass `staged:true` for a partial commit) for the per-plane changed symbols, blast radius, and risk; any other command (including strata's own invocations, so the hook can never loop on its own remediation) proceeds untouched. Kiro matchers scope by tool name only, so the prompt carries this gate. |
+| `strata-post-edit.json`   | `PostToolUse` | `fs_write\|str_replace\|fs_append` | `command` | `strata index .` with `timeout: 120`: reindex after a file edit (the MCP server hot-reloads the fresh index). Replaces the retired `strata-post-commit` hook, which is removed on install.                                                                                              |
 
 ## Estates
 

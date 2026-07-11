@@ -1,7 +1,7 @@
 <!-- strata:begin -->
 # StrataGraph: Cross-Plane Code Intelligence
 
-This repo is indexed by StrataGraph as **strata** (3193 nodes, 24987 edges; planes present: code/contract/infra). The MCP tools below let you understand the code, assess blast radius across planes, and navigate safely.
+This repo is indexed by StrataGraph as **this repo** (3331 nodes, 26884 edges; planes present: code/contract/infra). The MCP tools below let you understand the code, assess blast radius across planes, and navigate safely.
 
 ## Always Do (MUST)
 
@@ -34,8 +34,8 @@ This repo is indexed by StrataGraph as **strata** (3193 nodes, 24987 edges; plan
 
 Three lifecycle hooks enforce this protocol automatically:
 - **strata-pre-edit**: before any file write, confirms you ran `impact` on every symbol/field about to change.
-- **strata-pre-commit**: before a commit, runs `detect_changes` for the per-plane changed symbols, blast radius, and risk.
-- **strata-post-commit**: after a commit, re-runs `strata index .` to keep the on-disk graph fresh.
+- **strata-pre-commit**: before a command that creates a git commit, runs `detect_changes` for the per-plane changed symbols, blast radius, and risk. It applies ONLY to commit commands — any other command (including strata's own `detect-changes`/`index` runs) proceeds untouched, so the hook can never loop on its own remediation.
+- **strata-post-edit**: after a file edit, re-runs `strata index .` to keep the on-disk graph fresh (the MCP server hot-reloads it).
 
 When in doubt: `query` to find the symbol → `context` for its plane buckets → `impact` before you change it → `detect_changes` before you commit.
 <!-- strata:end -->

@@ -233,7 +233,7 @@ fn scenario4_kiro_default_uses_legacy_kiro_hook_schema() {
         ".kiro/steering/strata.md",
         ".kiro/hooks/strata-pre-edit.kiro.hook",
         ".kiro/hooks/strata-pre-commit.kiro.hook",
-        ".kiro/hooks/strata-post-commit.kiro.hook",
+        ".kiro/hooks/strata-post-edit.kiro.hook",
     ] {
         assert!(root.join(f).exists(), "{f} must exist (old default)");
     }
@@ -250,15 +250,14 @@ fn scenario4_kiro_default_uses_legacy_kiro_hook_schema() {
     assert_eq!(pre_edit["when"]["toolTypes"][0], "write");
     assert_eq!(pre_edit["then"]["type"], "askAgent");
 
-    // post-commit: postToolUse → runCommand strata index.
-    let post_commit: serde_json::Value = serde_json::from_str(&read(
-        &root.join(".kiro/hooks/strata-post-commit.kiro.hook"),
-    ))
-    .unwrap();
-    assert_eq!(post_commit["when"]["type"], "postToolUse");
-    assert_eq!(post_commit["then"]["type"], "runCommand");
-    assert_eq!(post_commit["then"]["command"], "strata index .");
-    assert_eq!(post_commit["then"]["timeout"], 120);
+    // post-edit: postToolUse (write tools) → runCommand strata index.
+    let post_edit: serde_json::Value =
+        serde_json::from_str(&read(&root.join(".kiro/hooks/strata-post-edit.kiro.hook"))).unwrap();
+    assert_eq!(post_edit["when"]["type"], "postToolUse");
+    assert_eq!(post_edit["when"]["toolTypes"][0], "write");
+    assert_eq!(post_edit["then"]["type"], "runCommand");
+    assert_eq!(post_edit["then"]["command"], "strata index .");
+    assert_eq!(post_edit["then"]["timeout"], 120);
 
     // Steering + pre-commit prompt name detect_changes (format-agnostic content).
     let steering = read(&root.join(".kiro/steering/strata.md"));
@@ -296,7 +295,7 @@ fn scenario4b_kiro_new_version_uses_v1_json_schema() {
     for f in [
         ".kiro/hooks/strata-pre-edit.json",
         ".kiro/hooks/strata-pre-commit.json",
-        ".kiro/hooks/strata-post-commit.json",
+        ".kiro/hooks/strata-post-edit.json",
     ] {
         assert!(root.join(f).exists(), "{f} must exist (--kiro-version new)");
     }
@@ -313,10 +312,11 @@ fn scenario4b_kiro_new_version_uses_v1_json_schema() {
     assert_eq!(pe["matcher"], "fs_write|str_replace|fs_append");
     assert_eq!(pe["action"]["type"], "agent");
 
-    let post_commit: serde_json::Value =
-        serde_json::from_str(&read(&root.join(".kiro/hooks/strata-post-commit.json"))).unwrap();
-    let poc = &post_commit["hooks"][0];
+    let post_edit: serde_json::Value =
+        serde_json::from_str(&read(&root.join(".kiro/hooks/strata-post-edit.json"))).unwrap();
+    let poc = &post_edit["hooks"][0];
     assert_eq!(poc["trigger"], "PostToolUse");
+    assert_eq!(poc["matcher"], "fs_write|str_replace|fs_append");
     assert_eq!(poc["action"]["type"], "command");
     assert_eq!(poc["action"]["command"], "strata index .");
 }

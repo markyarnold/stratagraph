@@ -50,6 +50,22 @@ pub enum OpenedSource {
     Estate(PathBuf),
 }
 
+impl OpenedSource {
+    /// The repository working directory this source implies, when one is
+    /// inferable: an opened project dir IS the root; a conventional
+    /// `<root>/.strata/graph.duckdb` infers `<root>`; a bare graph file has no
+    /// root, and an estate has MANY roots (the repo-scoped filesystem tools get
+    /// an honest `None` and refuse with their clear message rather than guessing
+    /// a member).
+    pub fn repo_root(&self) -> Option<PathBuf> {
+        match self {
+            OpenedSource::Repo(dir) => Some(dir.clone()),
+            OpenedSource::GraphFile(file) => repo_root_of_graph_file(file),
+            OpenedSource::Estate(_) => None,
+        }
+    }
+}
+
 /// Per-repo load outcome inside an estate open (mirrors
 /// `strata_index::RepoIndexResult`, trimmed to what the UI shows).
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -315,14 +331,25 @@ fn repo_root_of_graph_file(file: &Path) -> Option<PathBuf> {
     Some(strata_dir.parent()?.to_path_buf())
 }
 
-/// Delegate a `query`/`context`/`impact` call to the shared MCP dispatch.
+/// Delegate a tool call to the shared MCP dispatch.
 ///
 /// This is the whole point of the `tool` command: the GUI reuses
-/// [`strata_mcp::call_tool`] verbatim, so its answers are byte-for-byte the MCP
-/// server's. The only adaptation is mapping [`strata_mcp::ToolError`] to the
+/// [`strata_mcp::call_tool_ctx`] verbatim, so its answers are byte-for-byte the
+/// MCP server's. `repo_root` (from [`OpenedSource::repo_root`]) rides in the
+/// [`ToolCtx`](strata_mcp::ToolCtx) so the filesystem-touching tools
+/// (`detect_changes`, `rename`) work when the opened source implies a project
+/// root — previously the desktop always passed the ctx-less default and those
+/// tools could only ever error. A `None` root keeps their clear refusal. The
+/// only other adaptation is mapping [`strata_mcp::ToolError`] to the
 /// `Err(String)` the Tauri boundary wants.
-pub fn run_tool(graph: &Graph, name: &str, args: &Value) -> Result<Value, String> {
-    strata_mcp::call_tool(graph, name, args).map_err(|e| e.to_string())
+pub fn run_tool(
+    graph: &Graph,
+    repo_root: Option<PathBuf>,
+    name: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let ctx = strata_mcp::ToolCtx { repo_root };
+    strata_mcp::call_tool_ctx(graph, &ctx, name, args).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -347,6 +374,60 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join(name)
+    }
+
+    #[test]
+    fn opened_source_repo_root_covers_all_variants() {
+        assert_eq!(
+            OpenedSource::Repo(PathBuf::from("/w/proj")).repo_root(),
+            Some(PathBuf::from("/w/proj")),
+            "an opened project dir IS the repo root"
+        );
+        assert_eq!(
+            OpenedSource::GraphFile(PathBuf::from("/w/proj/.strata/graph.duckdb")).repo_root(),
+            Some(PathBuf::from("/w/proj")),
+            "a conventional graph file infers its project root"
+        );
+        assert_eq!(
+            OpenedSource::GraphFile(PathBuf::from("/tmp/some.duckdb")).repo_root(),
+            None,
+            "a bare graph file has no inferable root — honest None"
+        );
+        assert_eq!(
+            OpenedSource::Estate(PathBuf::from("/w/est/strata.workspace.toml")).repo_root(),
+            None,
+            "an estate has MANY roots; the repo-scoped fs tools get an honest None"
+        );
+    }
+
+    #[test]
+    fn run_tool_threads_repo_root_to_filesystem_tools() {
+        let (_tmp, db) = indexed_monolith();
+        let (graph, _info, _src) = open_path(db.to_str().expect("utf8 path")).expect("open");
+
+        // Without a root the fs-touching tools refuse with the clear message.
+        let err = run_tool(&graph, None, "detect_changes", &json!({}))
+            .expect_err("detect_changes without a root must error");
+        assert!(
+            err.contains("needs a repo root"),
+            "ctx-less call keeps the clear refusal, got: {err}"
+        );
+
+        // With a root the ctx REACHES the tool: it proceeds past the root check
+        // and fails on git instead (the tempdir is not a repository) — proving
+        // the desktop no longer drops the root on the floor.
+        let non_git = TempDir::new().expect("tempdir");
+        let err = run_tool(
+            &graph,
+            Some(non_git.path().to_path_buf()),
+            "detect_changes",
+            &json!({}),
+        )
+        .expect_err("detect_changes in a non-git dir must error");
+        assert!(
+            !err.contains("needs a repo root"),
+            "the root was threaded through, got: {err}"
+        );
     }
 
     /// Index the `monolith_graphql` fixture into a fresh DuckDB store inside a
@@ -389,7 +470,7 @@ mod tests {
         let (graph, _info, _src) = open_path(db_path.to_str().unwrap()).expect("open db");
 
         // query: the fixture defines a `getUser` resolver handler — find it.
-        let q = run_tool(&graph, "query", &json!({ "text": "getUser" })).expect("query ok");
+        let q = run_tool(&graph, None, "query", &json!({ "text": "getUser" })).expect("query ok");
         let matches = q["matches"].as_array().expect("matches array");
         assert!(
             matches
@@ -399,7 +480,7 @@ mod tests {
         );
 
         // context: the same symbol resolves to a node with the context buckets.
-        let ctx = run_tool(&graph, "context", &json!({ "symbol": "getUser" }));
+        let ctx = run_tool(&graph, None, "context", &json!({ "symbol": "getUser" }));
         // `getUser` may be ambiguous (handler + maybe others) — either a node
         // payload or an ambiguous-candidates payload is a valid round-trip; what
         // matters is it does not error and shares call_tool's shape.
@@ -412,8 +493,13 @@ mod tests {
         // impact: the GraphqlField `Query.getUser` has dependents (its consumer +
         // producer) — impact on it must not error and must carry an `affected`
         // array (the shared call_tool contract).
-        let imp =
-            run_tool(&graph, "impact", &json!({ "symbol": "Query.getUser" })).expect("impact ok");
+        let imp = run_tool(
+            &graph,
+            None,
+            "impact",
+            &json!({ "symbol": "Query.getUser" }),
+        )
+        .expect("impact ok");
         assert!(
             imp["affected"].is_array(),
             "impact must return an affected array: {imp}"
@@ -427,6 +513,7 @@ mod tests {
         // Unknown symbol → NotFound → Err(String), never a panic.
         let err = run_tool(
             &graph,
+            None,
             "impact",
             &json!({ "symbol": "definitely_absent_zzz" }),
         )
@@ -436,7 +523,7 @@ mod tests {
             "unknown symbol maps to a not-found error string: {err}"
         );
         // Unknown tool name → BadArgs → Err(String).
-        let err2 = run_tool(&graph, "frobnicate", &json!({})).unwrap_err();
+        let err2 = run_tool(&graph, None, "frobnicate", &json!({})).unwrap_err();
         assert!(!err2.is_empty(), "unknown tool errors as a string");
     }
 
@@ -641,7 +728,7 @@ path = "good"
     /// Whether `query` over a freshly-loaded graph at `db`/`source` finds a node
     /// named `name` (the user-visible "the new symbol is present" check).
     fn query_finds(graph: &Graph, name: &str) -> bool {
-        let res = run_tool(graph, "query", &json!({ "text": name })).expect("query ok");
+        let res = run_tool(graph, None, "query", &json!({ "text": name })).expect("query ok");
         res["matches"]
             .as_array()
             .map(|ms| ms.iter().any(|m| m["name"].as_str() == Some(name)))
