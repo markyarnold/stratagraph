@@ -191,6 +191,13 @@ context: if the current repo carries an estate marker (written by `strata index
 --workspace`), it runs over the full estate graph; otherwise it runs single-repo.
 See [Multi-repo estates](../getting-started/estates.md).
 
+Contract-plane changed symbols are rendered with an operation-level
+**`[BREAKING]`** / **`[additive]`** tag: a removed or modified operation key
+breaks its consumers and escalates the risk to CRITICAL with an explicit reason;
+an added key is new surface with no existing consumers, so it is named honestly
+in the reasons but does not, by itself, escalate. (Field-level classification is
+a roadmap item; an in-place change surfaces as modified ⇒ breaking, recall-safe.)
+
 ## blast
 
 Report the pre-edit blast radius of a *file*: the symbols it defines, the reverse

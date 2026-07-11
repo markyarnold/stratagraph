@@ -456,7 +456,8 @@ fn tool_detect_changes(graph: &Graph, ctx: &ToolCtx, args: &Value) -> Result<Val
         ToolError::BadArgs(
             "detect_changes needs a repo root — launch the MCP server with a `--db \
              <repo>/.strata/graph.duckdb` (repo root is its grandparent) or an explicit `--repo \
-             <path>`. The estate (`--workspace`) mode is single-repo only for now."
+             <path>`. In estate (`--workspace`) mode the root is `--repo` or the working \
+             directory of the member repo you launched from."
                 .to_string(),
         )
     })?;

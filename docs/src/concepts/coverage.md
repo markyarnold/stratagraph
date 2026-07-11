@@ -71,7 +71,9 @@ path. The Lambda is counted as handler-unresolved, honestly, rather than linked 
 a guessed file.
 
 ² Python contract linking covers Flask/FastAPI/Django **producer routes**,
-`requests`/`httpx` **consumer calls**, `gql("…")` **consumer documents**, and
+`requests`/`httpx` **consumer calls** (plus `aiohttp`'s direct module forms —
+the session-variable pattern needs type information and is never guessed),
+`gql("…")` **consumer documents**, and
 Graphene/Strawberry/Ariadne **resolver producers**, all at the same banded confidence as
 TS/JS. Django routes carry no HTTP method (the view dispatches internally), so they
 match on path alone at a slightly lower `Inferred` tier (0.65) and attribute to the
@@ -82,7 +84,8 @@ A few notes the matrix compresses:
 - **Contract producer/consumer linking** is driven by framework-shaped signals
   (route declarations, GraphQL resolver maps, HTTP-client calls, GraphQL
   documents). These are recognised in the **TypeScript and Python** analyzers
-  today (Python adds Flask/FastAPI/Django routes, `requests`/`httpx` calls,
+  today (TS/JS reads `fetch`/`axios`/`got`/`ky`/`superagent` calls; Python adds
+  Flask/FastAPI/Django routes, `requests`/`httpx`/`aiohttp` calls,
   `gql` documents, and Graphene/Strawberry/Ariadne resolvers); Rust and C# code is
   not yet scanned for producer/consumer signals, so a Rust/C# service's *code* does
   not link to contract operations even though its spec files are still parsed into
@@ -154,7 +157,15 @@ A few notes the matrix compresses:
 
 ### Data plane
 
-- **Formats.** SQL DDL (`CREATE TABLE` + cumulative `ALTER`), via `sqlparser`.
+- **Formats.** SQL DDL (`CREATE TABLE` + cumulative `ALTER`), via `sqlparser`,
+  parsed with the PostgreSQL dialect plus a **ClickHouse recovery ladder**: the
+  ClickHouse dialect as a fallback, then a column-list recovery that strips
+  ClickHouse-only decoration (`ENGINE`/`PARTITION BY`/`TTL`/`SETTINGS` tails,
+  `CODEC`/`ALIAS`/`MATERIALIZED` column modifiers, inline `INDEX`/`PROJECTION`
+  entries) — every recovery re-validated by the parser, so the declared column
+  set is exact and nothing is guessed. RBAC/maintenance statements and
+  clone/CTAS tables (whose shape lives elsewhere) are recognized and skipped
+  with counts, never reported as file failures.
 - **Supported (`Extracted`, all 0.95).** `Table`/`Column` nodes; `HasColumn`
   containment; `ForeignKey` from explicit `REFERENCES`/`FOREIGN KEY`; code→table
   `Reads`/`Writes` from raw-SQL string literals; ORM `MapsTo` from an **explicit

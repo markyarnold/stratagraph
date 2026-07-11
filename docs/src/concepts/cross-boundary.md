@@ -175,8 +175,9 @@ its weakest hop:
   WILL BREAK: act on it before you change the target.
 - **A chain with an `Inferred` hop** (an interpolated infra ref, a convention-
   matched producer) is still WILL BREAK but earns a look at the source.
-- **A chain with any `Ambiguous` hop** (including the cross-repo `Ambiguous`
-  fan-out when a key is owned by several APIs) is surfaced so you do not miss it,
+- **A chain with any `Ambiguous` hop** (including the `Ambiguous` fan-out when
+  an operation key is owned by several APIs — across repos, or by several spec
+  files within one repo) is surfaced so you do not miss it,
   but its verdict is "review", and you must **treat it as UNKNOWN, not certain**.
 
 And the cross-boundary cases are precisely the ones to **pause on**: when a blast
