@@ -252,9 +252,9 @@ enum Command {
         /// Run any needed `strata index` non-interactively (no prompts).
         #[arg(long, default_value_t = false)]
         yes: bool,
-        /// Kiro only: hook format — `old` (legacy `.kiro.hook`, the default) or
-        /// `new` (`.json`, the schema Kiro's newer version introduced).
-        #[arg(long, value_name = "VERSION", default_value = "old")]
+        /// Kiro only: hook format — `auto` (default: detect from existing hooks,
+        /// else `new`), `old` (legacy `.kiro.hook`) or `new` (`.json`, current Kiro).
+        #[arg(long, value_name = "VERSION", default_value = "auto")]
         kiro_version: String,
         /// Install into your user-level ~/.claude so the kit applies to every repo.
         #[arg(long, default_value_t = false)]
@@ -295,12 +295,18 @@ fn run_init(
         })?,
     };
 
-    let kiro_version = KiroVersion::parse(kiro_version).ok_or_else(|| {
-        CliError::Other(format!(
-            "unknown --kiro-version `{kiro_version}`; supported: {}",
-            KiroVersion::SUPPORTED.join(", ")
-        ))
-    })?;
+    // `auto` (the default) → None → the installer auto-detects the format from
+    // the repo's existing hooks. An explicit `old`/`new` overrides.
+    let kiro_version = if kiro_version.eq_ignore_ascii_case("auto") {
+        None
+    } else {
+        Some(KiroVersion::parse(kiro_version).ok_or_else(|| {
+            CliError::Other(format!(
+                "unknown --kiro-version `{kiro_version}`; supported: auto, {}",
+                KiroVersion::SUPPORTED.join(", ")
+            ))
+        })?)
+    };
 
     let scope = init::InstallScope::from_flags(global, scope).map_err(CliError::Other)?;
     let root: PathBuf = match scope {

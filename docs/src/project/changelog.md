@@ -6,6 +6,20 @@ change the way you would meet it — a command, a report line, a recovered file.
 (The engine build behind any answer is always visible: `strata --version` and
 the `engine:` line of every index summary print the exact build id.)
 
+## Unreleased — on `main`
+
+**Kiro agent kit: pre-commit hook removed; hook format auto-detected.** Kiro can
+only trigger a hook by tool name and has no "git commit" tool, so a pre-commit
+hook fired on *every* shell command (and could intercept its own `detect_changes`
+run). It is now **dropped**: the two remaining hooks (`strata-pre-edit`,
+`strata-post-edit`) fire only on the file-write tools, and the "run
+`detect_changes` before you commit" discipline lives in the steering block Kiro
+reads. `strata init kiro` now **auto-detects** the hook format from the repo's
+existing hooks (a fresh repo defaults to the `.json` schema current Kiro reads),
+so re-running it always installs hooks your Kiro actually reads — and it removes
+any previously installed `strata-pre-commit` / `strata-post-commit` hook.
+Re-run `strata init kiro` in a repo to apply.
+
 ## 0.2.0 — 2026-07-12
 
 **Data plane: ClickHouse support.** `.sql` files are no longer Postgres-only.

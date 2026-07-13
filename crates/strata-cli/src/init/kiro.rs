@@ -4,18 +4,20 @@
 //! * `.kiro/settings/mcp.json` — merge-add `mcpServers.strata` (same rules as Claude);
 //! * `.kiro/steering/strata.md` — the managed steering block (Kiro-native steering,
 //!   an improvement over GitNexus which only wrote CLAUDE/AGENTS);
-//! * the three lifecycle hooks, in one of two Kiro hook formats selected by
-//!   [`KiroVersion`] (Kiro changed its hook schema between releases):
-//!   - [`KiroVersion::Old`] (the default): legacy `.kiro/hooks/strata-*.kiro.hook`
-//!     files, a `when`/`then` shape (`{ enabled, when:{type,toolTypes}, then:{…} }`).
+//! * the two write-scoped lifecycle hooks ([`hook_specs`]), in one of two Kiro
+//!   hook formats (Kiro changed its hook schema between releases), resolved by
+//!   [`resolve_kiro_version`] — an explicit `--kiro-version`, else auto-detected
+//!   from the repo's existing hooks, else `New`:
+//!   - [`KiroVersion::Old`]: legacy `.kiro/hooks/strata-*.kiro.hook` files, a
+//!     `when`/`then` shape (`{ enabled, when:{type,toolTypes}, then:{…} }`).
 //!   - [`KiroVersion::New`]: `.kiro/hooks/strata-*.json` files, a
 //!     `{ version:"v1", hooks:[{ trigger, matcher, action }] }` envelope.
 //!
-//! The two formats carry the SAME hook data (names, prompts, the `detect_changes`
-//! pre-commit check, the reindex command); only the envelope and file extension
+//! The two formats carry the SAME hook data; only the envelope and file extension
 //! differ. Installing one version removes the other version's StrataGraph hook files,
 //! so the two never coexist (a stale hook in the format Kiro no longer reads is
-//! dead weight; one in the format it DOES read would double-fire).
+//! dead weight; one in the format it DOES read would double-fire). There is no
+//! pre-commit hook — Kiro has no commit-specific trigger; see [`hook_specs`].
 
 use std::path::Path;
 
@@ -102,16 +104,21 @@ struct HookSpec {
 
 const PRE_EDIT_PROMPT: &str = "STOP: StrataGraph workflow check. Before writing to this file, confirm you have assessed its blast radius: run the blast tool ({ file }) for the whole-file view, or impact({ symbol }) for EVERY symbol, field, or operation you are about to modify. For any GraphQL field / API operation, also run context({ symbol }) and check its producers (implementers) and consumers (callers) buckets. If you have NOT done this yet, do it now before proceeding. State which symbols were analysed, their d=1/d=2 dependents, confidence bands, and risk level. NEVER present uncertain impact (<0.40 or ambiguous) as certain; say so explicitly. If risk is HIGH/CRITICAL or the change crosses a repo boundary, pause for user direction.";
 
-// Kiro's Pre/PostToolUse matcher scopes by TOOL NAME only (no command patterns),
-// so this hook necessarily fires on every shell invocation — the PROMPT is the
-// gate. Order matters: applicability first (silent proceed when not a commit),
-// the anti-circularity exemption (never re-check strata's own invocations,
-// including the detect_changes run this hook requests — the observed loop),
-// and only then the actual pre-commit discipline.
-const PRE_COMMIT_PROMPT: &str = "StrataGraph pre-commit check — applicability first. This check applies ONLY when the command about to run creates a git commit (git commit, or a script/alias that commits). If it does anything else — a read-only or query command, a build, or ANY strata CLI invocation (strata detect-changes / index / blast, including a run this very hook previously requested) — the check does not apply: proceed with the original command immediately and say nothing about this hook. Never re-trigger this check from its own remediation. WHEN the command IS a commit: run the detect_changes tool first (pass staged:true for a partial commit). It git-diffs the work, derives the changed symbols PER PLANE (code; contract producers/consumers; infra), aggregates the blast radius across the graph, and returns the overall risk level (LOW/MEDIUM/HIGH/CRITICAL) with reasons. Report its affected set and risk, and proceed with the commit ONLY if that scope matches your intent. If risk is HIGH/CRITICAL, crosses a repo boundary, or touches contract surface consumed elsewhere, pause for user direction first.";
-
-/// The three lifecycle hooks. Prompts are identical across both schemas.
-fn hook_specs() -> [HookSpec; 3] {
+/// The two lifecycle hooks Kiro ships. Both ride a **mechanically scoped**
+/// trigger — the write tools — so they never fire on read-only or shell
+/// operations.
+///
+/// There is deliberately **no pre-commit hook**. Kiro can only trigger a hook by
+/// tool NAME (its `matcher` is a regex over the tool name, not the command text),
+/// and there is no "git commit" tool — a commit runs through the same
+/// `execute_bash` tool as every build, `git log`, and `ls`. So any pre-commit
+/// hook necessarily fires on *all* shell use, spamming the agent on operations
+/// that are not commits (the failure a live Kiro session surfaced). The
+/// commit-time `detect_changes` discipline lives instead in the steering block
+/// (`MUST run detect_changes before committing`), which Kiro reads — that is its
+/// correct home. (Claude Code, whose matcher can inspect the actual command text,
+/// *can* run a real pre-commit hook; Kiro cannot, so this is Kiro-specific.)
+fn hook_specs() -> [HookSpec; 2] {
     [
         HookSpec {
             stem: "strata-pre-edit",
@@ -123,23 +130,10 @@ fn hook_specs() -> [HookSpec; 3] {
             action: HookAction::Agent(PRE_EDIT_PROMPT),
         },
         HookSpec {
-            stem: "strata-pre-commit",
-            name: "StrataGraph Pre-Commit Scope Check",
-            description: "Before a command that creates a git commit, runs detect_changes for the per-plane changed symbols, blast radius, and risk. Applies only to commit commands; anything else proceeds untouched.",
-            trigger: Trigger::Pre,
-            // The REAL shell tool name (ground-truthed from a live Kiro session).
-            // The previous guessed `.*git_add_or_commit.*` matched no tool and fell
-            // back to firing on everything.
-            old_tool_types: &["execute_bash"],
-            new_matcher: "execute_bash|executeBash",
-            action: HookAction::Agent(PRE_COMMIT_PROMPT),
-        },
-        HookSpec {
-            // Replaces the retired `strata-post-commit` reindex: a runCommand hook
-            // has no agent in the loop to self-disqualify, so it must ride a
-            // trigger that is mechanically scoped — reindex after the WRITE tools
-            // (the Claude kit's post-edit reindex, exactly), never after every
-            // bash command. The MCP server hot-reloads the fresh index.
+            // The reindex is a runCommand hook with no agent in the loop to
+            // self-disqualify, so it MUST ride a mechanically scoped trigger —
+            // the WRITE tools (the Claude kit's post-edit reindex, exactly),
+            // never every bash command. The MCP server hot-reloads the fresh index.
             stem: "strata-post-edit",
             name: "StrataGraph Post-Edit Reindex",
             description: "After a file edit, re-runs strata index so the on-disk graph stays fresh (the MCP server hot-reloads it).",
@@ -156,8 +150,52 @@ fn hook_specs() -> [HookSpec; 3] {
 
 /// Hook stems this kit previously installed and no longer ships. Removed (in
 /// BOTH formats) on every install so an upgrade retires them — a stale
-/// always-firing hook is exactly the failure this rename fixes.
-const RETIRED_STEMS: &[&str] = &["strata-post-commit"];
+/// always-firing hook is exactly the failure this cleanup fixes.
+///
+/// - `strata-pre-commit`: dropped entirely (see [`hook_specs`] — Kiro has no
+///   commit-specific trigger, so it fired on all shell use).
+/// - `strata-post-commit`: superseded by `strata-post-edit` (write-tool scoped).
+const RETIRED_STEMS: &[&str] = &["strata-pre-commit", "strata-post-commit"];
+
+/// Resolve the hook-file format for an install: an explicit `--kiro-version`
+/// wins; otherwise **auto-detect** from the repo's existing `.kiro/hooks` so a
+/// re-run always installs the format the user's Kiro actually reads (the fix for
+/// "I deleted the hooks and init didn't bring them back" — the old default wrote
+/// the legacy `.kiro.hook` a newer Kiro ignores). A fresh repo with neither
+/// format present defaults to [`KiroVersion::New`], the `.json` schema current
+/// Kiro reads.
+pub fn resolve_kiro_version(root: &Path, explicit: Option<KiroVersion>) -> KiroVersion {
+    explicit
+        .or_else(|| detect_kiro_version(root))
+        .unwrap_or(KiroVersion::New)
+}
+
+/// Detect which hook format a repo already uses from the strata hook files under
+/// `<root>/.kiro/hooks`: a `strata-*.json` ⇒ [`KiroVersion::New`], a
+/// `strata-*.kiro.hook` ⇒ [`KiroVersion::Old`]. `None` when neither is present.
+/// If both somehow coexist, prefer New (the current schema).
+fn detect_kiro_version(root: &Path) -> Option<KiroVersion> {
+    let (mut saw_json, mut saw_legacy) = (false, false);
+    if let Ok(entries) = std::fs::read_dir(root.join(".kiro/hooks")) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("strata-") {
+                continue;
+            }
+            if name.ends_with(".kiro.hook") {
+                saw_legacy = true;
+            } else if name.ends_with(".json") {
+                saw_json = true;
+            }
+        }
+    }
+    match (saw_json, saw_legacy) {
+        (true, _) => Some(KiroVersion::New),
+        (false, true) => Some(KiroVersion::Old),
+        (false, false) => None,
+    }
+}
 
 /// Render a hook spec into `(relative_path, json_value)` for the given version.
 fn render_hook(version: KiroVersion, spec: &HookSpec) -> (String, Value) {
@@ -253,7 +291,7 @@ pub fn install(
         }
     }
 
-    // 4. The three lifecycle hooks in the selected format — wholly-owned files.
+    // 4. The lifecycle hooks in the selected format — wholly-owned files.
     for spec in &specs {
         let (rel, hook) = render_hook(version, spec);
         let mut body = serde_json::to_string_pretty(&hook).map_err(|e| WriteError::Io {
@@ -308,11 +346,17 @@ mod tests {
             ".kiro/settings/mcp.json",
             ".kiro/steering/strata.md",
             ".kiro/hooks/strata-pre-edit.kiro.hook",
-            ".kiro/hooks/strata-pre-commit.kiro.hook",
             ".kiro/hooks/strata-post-edit.kiro.hook",
         ] {
             assert!(tmp.path().join(rel).exists(), "expected {rel}");
         }
+        // No pre-commit hook is installed (Kiro has no commit trigger).
+        assert!(
+            !tmp.path()
+                .join(".kiro/hooks/strata-pre-commit.kiro.hook")
+                .exists(),
+            "no pre-commit hook must be installed"
+        );
         assert!(reports
             .iter()
             .all(|r| r.outcome == writers::Outcome::Created));
@@ -326,12 +370,6 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("STOP"));
-
-        let pre_commit = read_json(&tmp.path().join(".kiro/hooks/strata-pre-commit.kiro.hook"));
-        assert!(pre_commit["then"]["prompt"]
-            .as_str()
-            .unwrap()
-            .contains("detect_changes"));
 
         let post = read_json(&tmp.path().join(".kiro/hooks/strata-post-edit.kiro.hook"));
         assert_eq!(post["when"]["type"], "postToolUse");
@@ -353,11 +391,16 @@ mod tests {
         .unwrap();
         for rel in [
             ".kiro/hooks/strata-pre-edit.json",
-            ".kiro/hooks/strata-pre-commit.json",
             ".kiro/hooks/strata-post-edit.json",
         ] {
             assert!(tmp.path().join(rel).exists(), "expected {rel}");
         }
+        assert!(
+            !tmp.path()
+                .join(".kiro/hooks/strata-pre-commit.json")
+                .exists(),
+            "no pre-commit hook must be installed"
+        );
         let pre_edit = read_json(&tmp.path().join(".kiro/hooks/strata-pre-edit.json"));
         assert_eq!(pre_edit["version"], "v1");
         assert!(pre_edit["when"].is_null(), "no legacy when block");
@@ -375,14 +418,18 @@ mod tests {
     }
 
     #[test]
-    fn pre_commit_hook_targets_the_shell_tool_and_gates_applicability() {
-        // Ground truth (live Kiro session, 2026-07): the matcher on Pre/PostToolUse
-        // matches the TOOL NAME only, and the shell tool is `execute_bash` — the old
-        // guessed name `git_add_or_commit` matched nothing and the hook fired on
-        // EVERYTHING (always-match fallback), including read-only queries and even
-        // the detect_changes run the hook itself requested (a circular loop). Kiro
-        // cannot scope to command patterns, so the PROMPT must carry the gate.
+    fn retired_hooks_are_removed_on_install_in_both_formats() {
+        // The over-triggering fix: the pre-commit hook (no commit trigger on Kiro)
+        // and the old post-commit reindex are RETIRED. A pre-existing copy of
+        // either, in EITHER format, must be deleted on install so the storm stops.
         let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".kiro/hooks")).unwrap();
+        for stem in ["strata-pre-commit", "strata-post-commit"] {
+            for ext in ["json", "kiro.hook"] {
+                std::fs::write(tmp.path().join(format!(".kiro/hooks/{stem}.{ext}")), "{}").unwrap();
+            }
+        }
+
         install(
             tmp.path(),
             &ctx_db(),
@@ -390,93 +437,58 @@ mod tests {
             crate::init::InstallScope::Project,
         )
         .unwrap();
-        let pc = read_json(&tmp.path().join(".kiro/hooks/strata-pre-commit.json"));
-        let hook = &pc["hooks"][0];
-        assert_eq!(
-            hook["matcher"], "execute_bash|executeBash",
-            "matcher targets the real shell tool, never the guessed git_add_or_commit"
-        );
-        let prompt = hook["action"]["prompt"].as_str().unwrap();
-        assert!(
-            prompt.contains("ONLY when the command about to run creates a git commit"),
-            "applicability gate comes first"
-        );
-        assert!(
-            prompt.contains("proceed with the original command immediately"),
-            "non-applicable => silent proceed, no nagging"
-        );
-        assert!(
-            prompt.contains("including a run this very hook previously requested"),
-            "anti-circularity exemption for strata's own invocations"
-        );
-        assert!(
-            !prompt.contains("git_add_or_commit"),
-            "the guessed tool name is gone"
-        );
 
-        // Old format: same tool-name fix + the same gated prompt.
-        let tmp2 = TempDir::new().unwrap();
-        install(
-            tmp2.path(),
-            &ctx_db(),
-            KiroVersion::Old,
-            crate::init::InstallScope::Project,
-        )
-        .unwrap();
-        let pc_old = read_json(&tmp2.path().join(".kiro/hooks/strata-pre-commit.kiro.hook"));
-        assert_eq!(pc_old["when"]["toolTypes"][0], "execute_bash");
-        assert!(pc_old["then"]["prompt"]
-            .as_str()
-            .unwrap()
-            .contains("ONLY when the command about to run creates a git commit"));
+        for stem in ["strata-pre-commit", "strata-post-commit"] {
+            for ext in ["json", "kiro.hook"] {
+                assert!(
+                    !tmp.path()
+                        .join(format!(".kiro/hooks/{stem}.{ext}"))
+                        .exists(),
+                    "retired {stem}.{ext} must be removed on install"
+                );
+            }
+        }
+        // The reindex now rides the write tools, not shell/commit.
+        let pe = read_json(&tmp.path().join(".kiro/hooks/strata-post-edit.json"));
+        assert_eq!(
+            pe["hooks"][0]["matcher"], "fs_write|str_replace|fs_append",
+            "reindex fires after write tools, not after every bash command"
+        );
     }
 
     #[test]
-    fn post_edit_reindex_replaces_the_post_commit_hook() {
-        // A runCommand hook has no agent in the loop to self-disqualify, so it must
-        // ride a trigger that is ACTUALLY scoped: reindex after the WRITE tools
-        // (mirroring the Claude kit's post-edit reindex), never after every bash
-        // command. The retired strata-post-commit files are removed on install.
+    fn resolve_kiro_version_detects_format_and_defaults_new() {
+        // Explicit wins.
         let tmp = TempDir::new().unwrap();
-        // Seed stale retired hooks in BOTH formats, as a real upgrade would find.
-        std::fs::create_dir_all(tmp.path().join(".kiro/hooks")).unwrap();
-        std::fs::write(tmp.path().join(".kiro/hooks/strata-post-commit.json"), "{}").unwrap();
+        assert_eq!(
+            resolve_kiro_version(tmp.path(), Some(KiroVersion::Old)),
+            KiroVersion::Old
+        );
+        // Fresh repo (no hooks) → New (the format current Kiro reads). This is the
+        // fix for "init didn't restore my hooks": the old default wrote legacy
+        // `.kiro.hook` files a newer Kiro ignores.
+        assert_eq!(resolve_kiro_version(tmp.path(), None), KiroVersion::New);
+
+        // A repo with existing `.json` hooks auto-detects New.
+        let newrepo = TempDir::new().unwrap();
+        std::fs::create_dir_all(newrepo.path().join(".kiro/hooks")).unwrap();
         std::fs::write(
-            tmp.path().join(".kiro/hooks/strata-post-commit.kiro.hook"),
+            newrepo.path().join(".kiro/hooks/strata-pre-edit.json"),
             "{}",
         )
         .unwrap();
+        assert_eq!(resolve_kiro_version(newrepo.path(), None), KiroVersion::New);
 
-        install(
-            tmp.path(),
-            &ctx_db(),
-            KiroVersion::New,
-            crate::init::InstallScope::Project,
+        // A repo with existing `.kiro.hook` hooks auto-detects Old — so a legacy
+        // Kiro user's re-run keeps the format their editor reads.
+        let oldrepo = TempDir::new().unwrap();
+        std::fs::create_dir_all(oldrepo.path().join(".kiro/hooks")).unwrap();
+        std::fs::write(
+            oldrepo.path().join(".kiro/hooks/strata-pre-edit.kiro.hook"),
+            "{}",
         )
         .unwrap();
-
-        let pe = read_json(&tmp.path().join(".kiro/hooks/strata-post-edit.json"));
-        let hook = &pe["hooks"][0];
-        assert_eq!(hook["trigger"], "PostToolUse");
-        assert_eq!(
-            hook["matcher"], "fs_write|str_replace|fs_append",
-            "reindex fires after the write tools, not after every bash command"
-        );
-        assert_eq!(hook["action"]["type"], "command");
-        assert_eq!(hook["action"]["command"], "strata index .");
-
-        assert!(
-            !tmp.path()
-                .join(".kiro/hooks/strata-post-commit.json")
-                .exists(),
-            "retired post-commit hook (new format) is removed"
-        );
-        assert!(
-            !tmp.path()
-                .join(".kiro/hooks/strata-post-commit.kiro.hook")
-                .exists(),
-            "retired post-commit hook (old format) is removed"
-        );
+        assert_eq!(resolve_kiro_version(oldrepo.path(), None), KiroVersion::Old);
     }
 
     #[test]
