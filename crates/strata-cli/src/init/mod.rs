@@ -253,14 +253,18 @@ pub fn run(
     agent: Agent,
     root: &Path,
     _yes: bool,
-    kiro_version: KiroVersion,
+    kiro_version: Option<KiroVersion>,
     scope: InstallScope,
 ) -> Result<String, WriteError> {
     let ctx = detect_context(root, load_identity);
     let reports = match agent {
         Agent::Claude => claude::install(root, &ctx, scope)?,
-        // `kiro_version` selects the hook-file format; it is ignored for Claude.
-        Agent::Kiro => kiro::install(root, &ctx, kiro_version, scope)?,
+        // `kiro_version` selects the hook-file format; `None` auto-detects it from
+        // the repo's existing hooks (default New). Ignored for Claude.
+        Agent::Kiro => {
+            let resolved = kiro::resolve_kiro_version(root, kiro_version);
+            kiro::install(root, &ctx, resolved, scope)?
+        }
     };
     Ok(render_summary(agent, root, &ctx, &reports))
 }

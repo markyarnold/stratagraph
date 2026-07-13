@@ -48,24 +48,25 @@ it finishes.
 ## `strata init kiro`
 
 ```bash
-strata init kiro                      # legacy `.kiro.hook` format (the default)
-strata init kiro --kiro-version new   # newer `.json` (version "v1") format
+strata init kiro                      # auto-detects the hook format (fresh repo → new .json)
+strata init kiro --kiro-version old   # force the legacy `.kiro.hook` format
 ```
 
 For [Kiro](https://kiro.dev), the kit is the same idea in Kiro's native formats:
 
 - **`.kiro/settings/mcp.json`**: the same merge-add MCP registration.
 - **`.kiro/steering/strata.md`**: the managed steering block (Kiro reads
-  steering files, so the block ends with steering cross-references and a list of
-  the lifecycle hooks rather than a Claude skill table).
-- **The three lifecycle hooks** (`strata-pre-edit`, `strata-pre-commit`,
-  `strata-post-edit`), written in the format your Kiro version accepts. Kiro
-  changed its hook schema between releases, so `--kiro-version` selects which to
-  emit:
-  - **`old`** (the default): `.kiro/hooks/strata-*.kiro.hook` files, a
-    `when`/`then` shape.
-  - **`new`**: `.kiro/hooks/strata-*.json` files, a `version: "v1"` wrapper around
-    a `hooks` array (`trigger`/`matcher`/`action`).
+  steering files, so the block ends with steering cross-references and the
+  lifecycle hooks rather than a Claude skill table). Because Kiro has no
+  commit-specific hook trigger, the "run `detect_changes` before you commit"
+  discipline lives here as a rule the agent follows itself, not as a hook.
+- **Two lifecycle hooks** (`strata-pre-edit`, `strata-post-edit`), both scoped to
+  the file-write tools, written in the format your Kiro reads. `strata init kiro`
+  **auto-detects** that format from the repo's existing hooks (`.json` ⇒ new,
+  `.kiro.hook` ⇒ old); a fresh repo defaults to **new** (`.json`, `version: "v1"`,
+  the schema current Kiro reads). Pass `--kiro-version old|new` to force one.
+  There is deliberately no pre-commit hook (Kiro would fire it on every shell
+  command); any previously installed one is removed on install.
 
   Both carry the identical hooks (same prompts, the same `detect_changes`
   pre-commit check, the same reindex command); only the envelope differs.

@@ -134,10 +134,11 @@ pub const CLAUDE_ROUTING: &str = "\
 pub const KIRO_ROUTING: &str = "\
 ## Workflow hooks (Kiro)
 
-Three lifecycle hooks enforce this protocol automatically:
-- **strata-pre-edit**: before any file write, confirms you ran `impact` on every symbol/field about to change.
-- **strata-pre-commit**: before a command that creates a git commit, runs `detect_changes` for the per-plane changed symbols, blast radius, and risk. It applies ONLY to commit commands — any other command (including strata's own `detect-changes`/`index` runs) proceeds untouched, so the hook can never loop on its own remediation.
+Two lifecycle hooks run automatically, both scoped to the file-write tools:
+- **strata-pre-edit**: before any file write, confirms you ran `impact`/`blast` on every symbol/field about to change.
 - **strata-post-edit**: after a file edit, re-runs `strata index .` to keep the on-disk graph fresh (the MCP server hot-reloads it).
+
+There is deliberately **no pre-commit hook**: Kiro can only trigger a hook by tool name, and there is no \"git commit\" tool (a commit runs through the same shell tool as every other command), so a pre-commit hook would fire on all shell use. The commit-time check is therefore a rule you run **yourself**: before you create a git commit, run `detect_changes`, report its per-plane affected set and risk, and pause on HIGH/CRITICAL — exactly as the Always Do rules above require.
 
 When in doubt: `query` to find the symbol → `context` for its plane buckets → `impact` before you change it → `detect_changes` before you commit.";
 
@@ -418,18 +419,26 @@ mod tests {
         );
     }
 
-    /// The Kiro routing's pre-commit cross-ref names `detect_changes` too (Kiro
-    /// reads steering, not skills).
+    /// The Kiro routing lists exactly the two write-scoped hooks, does NOT claim a
+    /// pre-commit hook (Kiro has no commit trigger), and keeps the commit-time
+    /// `detect_changes` step as a rule the agent runs itself.
     #[test]
-    fn kiro_routing_names_detect_changes_in_pre_commit() {
+    fn kiro_routing_has_no_pre_commit_hook_but_keeps_the_commit_rule() {
         assert!(
-            KIRO_ROUTING
-                .contains("strata-pre-commit**: before a command that creates a git commit, runs `detect_changes`"),
-            "the Kiro routing pre-commit line must name detect_changes:\n{KIRO_ROUTING}"
+            KIRO_ROUTING.contains("strata-pre-edit") && KIRO_ROUTING.contains("strata-post-edit"),
+            "the two write-scoped hooks must be listed:\n{KIRO_ROUTING}"
         );
         assert!(
-            KIRO_ROUTING.contains("can never loop on its own remediation"),
-            "the routing must state the anti-circularity rule:\n{KIRO_ROUTING}"
+            !KIRO_ROUTING.contains("strata-pre-commit"),
+            "the routing must NOT claim a pre-commit hook (Kiro has no commit trigger):\n{KIRO_ROUTING}"
+        );
+        assert!(
+            KIRO_ROUTING.contains("no pre-commit hook"),
+            "the routing must explain why there is no pre-commit hook:\n{KIRO_ROUTING}"
+        );
+        assert!(
+            KIRO_ROUTING.contains("before you create a git commit, run `detect_changes`"),
+            "the commit-time detect_changes step must survive as a self-run rule:\n{KIRO_ROUTING}"
         );
     }
 

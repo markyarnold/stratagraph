@@ -217,59 +217,82 @@ fn scenario3_stale_managed_block_replaced_in_place() {
     );
 }
 
-// ── Scenario 4: init kiro → all files; DEFAULT is the legacy .kiro.hook schema ─
+// ── Scenario 4: init kiro on a fresh repo → the .json schema, NO pre-commit ────
 
 #[test]
-fn scenario4_kiro_default_uses_legacy_kiro_hook_schema() {
+fn scenario4_kiro_fresh_repo_defaults_to_new_json_no_pre_commit() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
 
-    // No --kiro-version → the default `old` (legacy `.kiro.hook`) format.
+    // No --kiro-version → `auto`; a fresh repo (no existing hooks) resolves to the
+    // `new` (.json) format current Kiro reads.
     let (ok, _o, err) = run_init(&["kiro", "--path", root.to_str().unwrap()]);
     assert!(ok, "init kiro must exit 0; stderr: {err}");
 
     for f in [
         ".kiro/settings/mcp.json",
         ".kiro/steering/strata.md",
-        ".kiro/hooks/strata-pre-edit.kiro.hook",
-        ".kiro/hooks/strata-pre-commit.kiro.hook",
-        ".kiro/hooks/strata-post-edit.kiro.hook",
+        ".kiro/hooks/strata-pre-edit.json",
+        ".kiro/hooks/strata-post-edit.json",
     ] {
-        assert!(root.join(f).exists(), "{f} must exist (old default)");
+        assert!(
+            root.join(f).exists(),
+            "{f} must exist (fresh default = new)"
+        );
     }
+    // The pre-commit hook is gone; the legacy format is not emitted.
     assert!(
-        !root.join(".kiro/hooks/strata-pre-edit.json").exists(),
-        "old default must not emit the new .json format"
+        !root.join(".kiro/hooks/strata-pre-commit.json").exists()
+            && !root
+                .join(".kiro/hooks/strata-pre-commit.kiro.hook")
+                .exists(),
+        "no pre-commit hook in either format"
+    );
+    assert!(
+        !root.join(".kiro/hooks/strata-pre-edit.kiro.hook").exists(),
+        "fresh default must not emit the legacy .kiro.hook"
     );
 
-    // pre-edit: legacy when/then → preToolUse(write) → askAgent.
+    // pre-edit: v1 json → PreToolUse(write tools) → agent.
     let pre_edit: serde_json::Value =
-        serde_json::from_str(&read(&root.join(".kiro/hooks/strata-pre-edit.kiro.hook"))).unwrap();
-    assert_eq!(pre_edit["version"], "1");
-    assert_eq!(pre_edit["when"]["type"], "preToolUse");
-    assert_eq!(pre_edit["when"]["toolTypes"][0], "write");
-    assert_eq!(pre_edit["then"]["type"], "askAgent");
+        serde_json::from_str(&read(&root.join(".kiro/hooks/strata-pre-edit.json"))).unwrap();
+    assert_eq!(pre_edit["version"], "v1");
+    assert_eq!(pre_edit["hooks"][0]["trigger"], "PreToolUse");
+    assert_eq!(
+        pre_edit["hooks"][0]["matcher"],
+        "fs_write|str_replace|fs_append"
+    );
 
-    // post-edit: postToolUse (write tools) → runCommand strata index.
-    let post_edit: serde_json::Value =
-        serde_json::from_str(&read(&root.join(".kiro/hooks/strata-post-edit.kiro.hook"))).unwrap();
-    assert_eq!(post_edit["when"]["type"], "postToolUse");
-    assert_eq!(post_edit["when"]["toolTypes"][0], "write");
-    assert_eq!(post_edit["then"]["type"], "runCommand");
-    assert_eq!(post_edit["then"]["command"], "strata index .");
-    assert_eq!(post_edit["then"]["timeout"], 120);
-
-    // Steering + pre-commit prompt name detect_changes (format-agnostic content).
+    // The commit-time detect_changes discipline lives in steering, not a hook.
     let steering = read(&root.join(".kiro/steering/strata.md"));
     assert!(steering.contains("<!-- strata:begin -->"));
     assert!(
         steering.contains("detect_changes"),
         "Kiro steering must name detect_changes; got:\n{steering}"
     );
-    let pre_commit_raw = read(&root.join(".kiro/hooks/strata-pre-commit.kiro.hook"));
+}
+
+// ── Scenario 4a: init kiro AUTO-DETECTS an existing legacy (.kiro.hook) repo ────
+
+#[test]
+fn scenario4a_kiro_auto_detects_existing_legacy_format() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // Seed an existing legacy-format hook, as a repo on an older Kiro would have.
+    std::fs::create_dir_all(root.join(".kiro/hooks")).unwrap();
+    std::fs::write(root.join(".kiro/hooks/strata-pre-edit.kiro.hook"), "{}").unwrap();
+
+    // Bare init (auto) must keep the format the repo already uses.
+    let (ok, _o, err) = run_init(&["kiro", "--path", root.to_str().unwrap()]);
+    assert!(ok, "init kiro must exit 0; stderr: {err}");
+
     assert!(
-        pre_commit_raw.contains("detect_changes"),
-        "Kiro pre-commit hook prompt must name detect_changes; got:\n{pre_commit_raw}"
+        root.join(".kiro/hooks/strata-pre-edit.kiro.hook").exists(),
+        "auto-detect must keep the legacy .kiro.hook format"
+    );
+    assert!(
+        !root.join(".kiro/hooks/strata-pre-edit.json").exists(),
+        "auto-detect must NOT switch a legacy repo to .json"
     );
 }
 
@@ -294,11 +317,14 @@ fn scenario4b_kiro_new_version_uses_v1_json_schema() {
 
     for f in [
         ".kiro/hooks/strata-pre-edit.json",
-        ".kiro/hooks/strata-pre-commit.json",
         ".kiro/hooks/strata-post-edit.json",
     ] {
         assert!(root.join(f).exists(), "{f} must exist (--kiro-version new)");
     }
+    assert!(
+        !root.join(".kiro/hooks/strata-pre-commit.json").exists(),
+        "no pre-commit hook is installed"
+    );
     assert!(
         !root.join(".kiro/hooks/strata-pre-edit.kiro.hook").exists(),
         "new format must not emit the legacy .kiro.hook"
