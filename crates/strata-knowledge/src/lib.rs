@@ -428,6 +428,7 @@ mod tests {
     fn preamble_before_first_heading_is_a_section() {
         let m = parse_markdown("README.md", "intro line with `alpha`\n\n# First\n");
         assert_eq!(m.sections[0].anchor, "preamble");
+        assert_eq!(m.sections[0].heading, "(preamble)");
         assert!(m.sections[0].refs.iter().any(|r| r.text == "alpha"));
     }
 
@@ -436,12 +437,18 @@ mod tests {
         let md = "# S\nUse `strata_core::impact` on `docs`.\nSee [x](src/lib.rs).\n```rust\nlet g = build_graph(repo);\nif x { }\n```\n";
         let m = parse_markdown("d.md", md);
         let refs = &m.sections[0].refs;
+        let pairs: Vec<(&str, DocRefKind)> =
+            refs.iter().map(|r| (r.text.as_str(), r.kind)).collect();
         let texts: Vec<&str> = refs.iter().map(|r| r.text.as_str()).collect();
         assert!(texts.contains(&"strata_core::impact"), "{texts:?}");
         assert!(texts.contains(&"docs"));
         assert!(
-            texts.contains(&"src/lib.rs"),
-            "link destination is a PathRef"
+            pairs.contains(&("src/lib.rs", DocRefKind::PathRef)),
+            "link destination must be a PathRef: {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&("docs", DocRefKind::InlineCode)),
+            "inline code span must be an InlineCode: {pairs:?}"
         );
         assert!(
             texts.contains(&"build_graph"),
@@ -478,5 +485,25 @@ mod tests {
                 .any(|r| r.text == "src/handlers/index.ts" && matches!(r.kind, DocRefKind::PathRef)),
             "inline code with a path shape must ALSO yield a PathRef: {refs:?}"
         );
+    }
+
+    #[test]
+    fn qualified_fence_tokens_split_only_when_whole_token_qualifies() {
+        let m = parse_markdown(
+            "d.md",
+            "# S\n```rust\nstrata_core::impact(x);\n1.2.3\n```\n",
+        );
+        let texts: Vec<&str> = m.sections[0].refs.iter().map(|r| r.text.as_str()).collect();
+        assert!(texts.contains(&"strata_core::impact"), "{texts:?}");
+        assert!(
+            texts.contains(&"strata_core") && texts.contains(&"impact"),
+            "segments of a qualifying token"
+        );
+        for bad in ["1.2.3", "1", "2", "3"] {
+            assert!(
+                !texts.contains(&bad),
+                "non-qualifying dotted token must yield nothing: {bad}"
+            );
+        }
     }
 }
