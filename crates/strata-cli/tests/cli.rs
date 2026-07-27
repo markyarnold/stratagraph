@@ -345,6 +345,7 @@ fn help_lists_all_subcommands() {
         "detect-changes",
         "rename",
         "search-docs",
+        "guidance",
     ] {
         assert!(
             stdout.contains(sub),
