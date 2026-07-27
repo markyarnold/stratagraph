@@ -219,11 +219,16 @@ pub enum EdgeKind {
     /// honest "needs review" verdict (never "WILL BREAK": a stale doc doesn't
     /// fail to compile). Graded per the design §2 table: an exact repo-relative
     /// path reference is Extracted 0.95; a unique fqn/name match is Inferred
-    /// 0.80/0.70; a multi-candidate match fans out Ambiguous 0.35, one edge per
-    /// candidate — never a confident pick. An unresolvable reference earns NO
-    /// edge (counted as `stale_doc_mentions`, the doc-drift signal — the repo
-    /// reports which docs are lying). Handled generically by the
-    /// graph/traversal (Knowledge plane, K2).
+    /// 0.80/0.70 (the bare-name 0.70 tier is reached only from an inline-code
+    /// span, never a fenced-code-block token — a fence token is incidental
+    /// example vocabulary, not a deliberate symbol callout); a multi-candidate
+    /// match fans out Ambiguous 0.35, one edge per candidate — never a
+    /// confident pick. An unresolvable reference earns NO edge and is counted
+    /// as `stale_doc_mentions` (the doc-drift signal — the repo reports which
+    /// docs are lying) — EXCEPT a fenced-code-block token, whose miss is
+    /// silently dropped uncounted: drift is an authorial-claim signal, and a
+    /// fence token was never claimed as a reference. Handled generically by
+    /// the graph/traversal (Knowledge plane, K2).
     Mentions,
 }
 

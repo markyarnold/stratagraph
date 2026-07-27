@@ -1960,6 +1960,85 @@ mod tests {
         );
     }
 
+    #[test]
+    fn render_impact_result_marks_a_doc_section_needs_review_never_will_break() {
+        // Review verdict: a hermetic strata-cli unit test replaces the earlier
+        // strata-index dev-dependency test (which called this same function
+        // cross-crate). A 3-node graph: `target` is reached by `caller`
+        // (Calls, a real WILL BREAK dependent) and by `section` (a
+        // DocSection, via Mentions) — ONE `render_impact_result` call must
+        // show the doc row as "needs review" and the non-doc row as
+        // "WILL BREAK", proving the row-level distinction end-to-end through
+        // the real `impact` walk, not just `affected_row`'s own unit test.
+        let target_uid = Uid("ts|app|src/a.ts|target|()".to_string());
+        let caller_uid = Uid("ts|app|src/b.ts|caller|()".to_string());
+        let section_uid = Uid("doc|app|docs/g.md|docs/g.md#h|".to_string());
+
+        let mut g = Graph::new();
+        g.add_node(Node {
+            uid: target_uid.clone(),
+            kind: NodeKind::Function,
+            name: "target".into(),
+            fqn: "target".into(),
+            path: "src/a.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_node(Node {
+            uid: caller_uid.clone(),
+            kind: NodeKind::Function,
+            name: "caller".into(),
+            fqn: "caller".into(),
+            path: "src/b.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_node(Node {
+            uid: section_uid.clone(),
+            kind: NodeKind::DocSection,
+            name: "Heading".into(),
+            fqn: "docs/g.md#h".into(),
+            path: "docs/g.md".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_edge(Edge {
+            src: caller_uid,
+            dst: target_uid.clone(),
+            kind: EdgeKind::Calls,
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(0.95),
+        });
+        g.add_edge(Edge {
+            src: section_uid,
+            dst: target_uid.clone(),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.80),
+        });
+
+        let target_node = g.get_node(&target_uid).unwrap().clone();
+        let result = impact(&g, &target_uid, &ImpactOptions::default());
+        let rendered = render_impact_result(&g, &target_node, &result);
+
+        let doc_row = rendered
+            .lines()
+            .find(|l| l.contains("Heading"))
+            .unwrap_or_else(|| panic!("doc row present: {rendered}"));
+        assert!(doc_row.contains("needs review"), "doc row: {doc_row:?}");
+        assert!(!doc_row.contains("WILL BREAK"), "doc row: {doc_row:?}");
+
+        let fn_row = rendered
+            .lines()
+            .find(|l| l.contains("caller"))
+            .unwrap_or_else(|| panic!("non-doc row present: {rendered}"));
+        assert!(fn_row.contains("WILL BREAK"), "non-doc row: {fn_row:?}");
+        assert!(!fn_row.contains("needs review"), "non-doc row: {fn_row:?}");
+    }
+
     // ── blast renderers (Slice 20: the pre-edit blast radius printers) ──────────
 
     /// A populated BlastReport: file `src/a.ts` defines `target`, one dependent

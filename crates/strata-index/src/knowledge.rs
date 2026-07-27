@@ -39,10 +39,11 @@ pub const KNOW_MENTION_PATH: f32 = 0.95;
 /// `Mentions` via a unique fully-qualified-name match: a code-fence token or
 /// inline-code span whose text equals exactly one node's `fqn` — Inferred.
 pub const KNOW_MENTION_FQN: f32 = 0.80;
-/// `Mentions` via a unique bare-name match (tried only after an `fqn` miss): a
-/// code-fence token or inline-code span whose text equals exactly one node's
-/// `name` — Inferred, graded below the `fqn` tier because a bare name is a
-/// weaker, more collision-prone signal.
+/// `Mentions` via a unique bare-name match (tried only after an `fqn` miss,
+/// and only for a [`DocRefKind::InlineCode`] ref — a fence token never falls
+/// through to this tier, F1): an inline-code span whose text equals exactly
+/// one node's `name` — Inferred, graded below the `fqn` tier because a bare
+/// name is a weaker, more collision-prone signal.
 pub const KNOW_MENTION_NAME: f32 = 0.70;
 /// `Mentions` fan-out when a reference matches MULTIPLE candidates at whichever
 /// tier resolved it (path, fqn, or name) — one edge per candidate, all
@@ -216,12 +217,19 @@ fn build_lookup_tables(g: &Graph) -> LookupTables {
 
 /// Resolve one ref against the tables, in priority order: a [`DocRefKind::PathRef`]
 /// tries ONLY `by_path` (an exact path reference is either a hit or nothing — a
-/// path string is never usefully retried as a bare name); every other ref kind
-/// tries `by_fqn` first, then (only on a `by_fqn` MISS — zero candidates, not
-/// merely an ambiguous 2+) `by_name`. A tier "hits" the moment it has ≥1
-/// candidate: 2+ candidates still resolves AT that tier (ambiguous fan-out),
-/// it does not fall through. Returns `None` when no tier produced a candidate
-/// (the caller counts this as stale).
+/// path string is never usefully retried as a bare name); a
+/// [`DocRefKind::InlineCode`] tries `by_fqn` first, then (only on a `by_fqn`
+/// MISS — zero candidates, not merely an ambiguous 2+) `by_name`; a
+/// [`DocRefKind::FenceToken`] tries `by_fqn` ONLY — **no name-tier fallback**
+/// (review finding F1). A fence token is incidental code-example vocabulary
+/// (`r.process(x)`'s `process` segment), not a deliberate symbol callout the
+/// way an author's inline `` `code` `` span is; falling a bare fence-token
+/// name through to `by_name` would spuriously match unrelated symbols across
+/// the whole repo far more often than it would catch a real reference. A tier
+/// "hits" the moment it has ≥1 candidate: 2+ candidates still resolves AT that
+/// tier (ambiguous fan-out), it does not fall through. Returns `None` when no
+/// tried tier produced a candidate (the caller decides whether that counts as
+/// stale — see `resolve_ref`'s fence-token carve-out, F1).
 fn candidates_for<'t>(
     r: &DocRef,
     tables: &'t LookupTables,
@@ -232,54 +240,81 @@ fn candidates_for<'t>(
             .get(r.text.as_str())
             .map(|v| (v.as_slice(), KNOW_MENTION_PATH, Provenance::Extracted));
     }
-    tables
+    let fqn_hit = tables
         .by_fqn
         .get(r.text.as_str())
-        .map(|v| (v.as_slice(), KNOW_MENTION_FQN, Provenance::Inferred))
-        .or_else(|| {
-            tables
-                .by_name
-                .get(r.text.as_str())
-                .map(|v| (v.as_slice(), KNOW_MENTION_NAME, Provenance::Inferred))
-        })
+        .map(|v| (v.as_slice(), KNOW_MENTION_FQN, Provenance::Inferred));
+    if fqn_hit.is_some() || r.kind == DocRefKind::FenceToken {
+        return fqn_hit;
+    }
+    tables
+        .by_name
+        .get(r.text.as_str())
+        .map(|v| (v.as_slice(), KNOW_MENTION_NAME, Provenance::Inferred))
 }
 
 /// Resolve and edge ONE ref from `section_uid`, updating `cov` and `edged` (the
 /// per-section dedup-by-dst set — edges are deduped by (src,dst), and `src` is
-/// fixed to `section_uid` within one section's ref loop).
+/// fixed to `section_uid` within one section's ref loop). `own_doc_uid` is the
+/// uid of the `Doc` node this section itself belongs to (named to avoid
+/// shadowing the free function [`doc_uid`], F5).
 #[allow(clippy::too_many_arguments)]
 fn resolve_ref(
     g: &mut Graph,
     cov: &mut KnowledgeLinkCoverage,
     section_uid: &Uid,
-    doc_uid: &Uid,
+    own_doc_uid: &Uid,
     r: &DocRef,
     tables: &LookupTables,
     edged: &mut HashSet<Uid>,
 ) {
     let Some((raw_candidates, unique_conf, unique_prov)) = candidates_for(r, tables) else {
-        cov.stale_doc_mentions += 1;
+        // Fence-token misses are NOT drift (F1, controller decision): drift
+        // (`stale_doc_mentions`) is an AUTHORIAL-CLAIM signal — the doc told
+        // you a symbol exists and it doesn't. A fence token is incidental
+        // code-example vocabulary the author never claimed as a reference (no
+        // inline `` `code` `` intent, no link), so a miss there is silently
+        // dropped, exactly like a fence-token match is silently NOT
+        // name-tier-resolved (F1) — only `InlineCode`/`PathRef` misses are an
+        // honest "this doc references something that doesn't exist".
+        if r.kind != DocRefKind::FenceToken {
+            cov.stale_doc_mentions += 1;
+        }
         return;
     };
+
+    // Ambiguity is graded on the RAW candidate count — BEFORE the self-skip
+    // filter below (review finding F3). A reference matching several real
+    // candidates is fundamentally ambiguous even when one of those candidates
+    // happens to be the section's own Doc: removing that self-match doesn't
+    // resolve which of the OTHER candidates was meant, so grading the lone
+    // survivor as a clean, confident unique hit would be exactly the
+    // confident-wrong "never confidently wrong" forbids. See the
+    // `ambiguity_is_graded_on_raw_candidates_before_the_self_skip_filter` test
+    // (two same-named docs, one self-referencing) for the pinned case.
+    let ambiguous = raw_candidates.len() > 1;
 
     // Drop a self-reference (a section mentioning its OWN Doc) — skipped
     // silently: it DID resolve (not stale), but a doc trivially "mentioning"
     // itself is not a real cross-reference (not an edge either). If every raw
     // candidate was the section's own Doc, `targets` is empty and we return
     // without touching `cov` at all.
-    let targets: Vec<&Uid> = raw_candidates.iter().filter(|u| *u != doc_uid).collect();
+    let targets: Vec<&Uid> = raw_candidates
+        .iter()
+        .filter(|u| *u != own_doc_uid)
+        .collect();
     if targets.is_empty() {
         return;
     }
 
-    let (conf, prov) = if targets.len() == 1 {
-        (unique_conf, unique_prov)
-    } else {
+    let (conf, prov) = if ambiguous {
         (KNOW_AMBIGUOUS, Provenance::Ambiguous)
+    } else {
+        (unique_conf, unique_prov)
     };
 
     cov.mentions_linked += 1;
-    if targets.len() > 1 {
+    if ambiguous {
         cov.mentions_ambiguous += 1;
     }
 
@@ -458,6 +493,95 @@ mod tests {
             0,
             "no Mentions edge for a pure self-reference"
         );
+    }
+
+    #[test]
+    fn fence_token_miss_is_not_edged_and_not_stale_but_inline_code_miss_is_stale() {
+        // Review finding F1. A fenced `r.process(x);` yields FenceToken refs
+        // "r.process" and "process" (K1's own extraction: the whole qualified
+        // token, then its qualifying segment — "x" is too short to qualify at
+        // all). Neither matches any real symbol in this graph (which has no
+        // code nodes, only the doc itself). Per F1: a fence-token miss is NOT
+        // a name-tier candidate (no by_name fallback) AND is NOT drift — a
+        // fence token is incidental code-example vocabulary, not an
+        // authorial claim the way an inline `` `code` `` span is. The
+        // trailing inline-code `vanishedSymbol`, by contrast, DOES miss both
+        // tiers and IS an authorial claim, so it must still count as stale —
+        // asserted here for contrast, unchanged from before F1.
+        let doc = parse_markdown(
+            "docs/g.md",
+            "# H\n```rust\nr.process(x);\n```\n`vanishedSymbol` is gone.\n",
+        );
+        let mut g = Graph::new();
+        let cov = build_knowledge_plane(&mut g, REPO, &[("docs/g.md".to_string(), doc)]);
+
+        assert_eq!(
+            cov.mentions_linked, 0,
+            "neither fence token nor the inline-code miss produced an edge"
+        );
+        assert_eq!(cov.mentions_ambiguous, 0);
+        assert_eq!(
+            cov.stale_doc_mentions, 1,
+            "only the InlineCode miss (vanishedSymbol) counts as stale; the \
+             two fence-token misses (r.process, process) do not"
+        );
+
+        let s_uid = doc_section_uid(REPO, "docs/g.md", "h");
+        assert_eq!(
+            g.edges().filter(|e| e.src == s_uid).count(),
+            0,
+            "no Mentions edge from either fence token or the stale inline code"
+        );
+    }
+
+    #[test]
+    fn ambiguity_is_graded_on_raw_candidates_before_the_self_skip_filter() {
+        // Review finding F3. Two docs both literally named "README.md"
+        // (different paths) — by_name["README.md"] fans out to BOTH. Doc A's
+        // own section mentions `README.md` inline: the self-skip filter
+        // removes doc A's OWN uid from the candidate set, leaving exactly one
+        // survivor (doc B) — but the reference was ambiguous BEFORE that
+        // filter ran (2 real docs share the name), so the edge to doc B must
+        // still read Ambiguous 0.35, never a confident NAME-tier 0.70 just
+        // because self-filtering happened to leave one candidate standing.
+        let doc_a = parse_markdown("packages/a/README.md", "# H\nSee `README.md` too.\n");
+        let doc_b = parse_markdown("packages/b/README.md", "# H\nNothing here.\n");
+        let mut g = Graph::new();
+        let cov = build_knowledge_plane(
+            &mut g,
+            REPO,
+            &[
+                ("packages/a/README.md".to_string(), doc_a),
+                ("packages/b/README.md".to_string(), doc_b),
+            ],
+        );
+
+        let sec_a = doc_section_uid(REPO, "packages/a/README.md", "h");
+        let doc_b_uid = doc_uid(REPO, "packages/b/README.md");
+
+        let edges: Vec<_> = g
+            .edges()
+            .filter(|e| e.kind == EdgeKind::Mentions && e.src == sec_a && e.dst == doc_b_uid)
+            .collect();
+        assert_eq!(
+            edges.len(),
+            1,
+            "one Mentions edge from A's section to doc B: {edges:?}"
+        );
+        assert_eq!(
+            edges[0].provenance,
+            Provenance::Ambiguous,
+            "must be Ambiguous even though self-filtering left exactly one \
+             survivor — the RAW candidate count (2) is what grades this"
+        );
+        assert!(
+            (edges[0].confidence.value() - KNOW_AMBIGUOUS).abs() < 1e-6,
+            "must be the shared 0.35 Ambiguous tier, not the NAME tier's 0.70: {:?}",
+            edges[0].confidence.value()
+        );
+        assert_eq!(cov.mentions_ambiguous, 1);
+        assert_eq!(cov.mentions_linked, 1);
+        assert_eq!(cov.stale_doc_mentions, 0);
     }
 
     #[test]

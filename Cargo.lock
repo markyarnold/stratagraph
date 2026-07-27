@@ -4460,7 +4460,6 @@ dependencies = [
  "ignore",
  "serde",
  "serde_json",
- "strata-cli",
  "strata-contract",
  "strata-core",
  "strata-data",

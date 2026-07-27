@@ -4,8 +4,10 @@
 //! fail to compile, it goes stale — design §2 "Impact semantics").
 //!
 //! Fixture: `tests/fixtures/knowledge_repo/` — two TS files (`beta` declared
-//! in both `src/app.ts` and `src/other.ts`, forcing a multi-candidate name)
-//! and one markdown doc (`docs/guide.md`) whose two sections exercise every
+//! in both `src/app.ts` and `src/other.ts`, forcing a multi-candidate name;
+//! `src/app.ts` also declares `class Foo { bar() {} }`, whose fqn `Foo.bar`
+//! differs from its name `bar` — the fixture's ONLY name-tier case) and one
+//! markdown doc (`docs/guide.md`) whose three sections exercise every
 //! resolution tier:
 //!   - "Using alphaOne": a `PathRef` to `src/app.ts` (Extracted 0.95, unique)
 //!     and a unique bare name `alphaOne` that resolves at the fqn tier
@@ -13,6 +15,11 @@
 //!   - "Betas": an ambiguous bare name `beta` (two candidates, Ambiguous 0.35
 //!     fan-out) and an unresolvable name `vanishedSymbol` (stale, never
 //!     edged).
+//!   - "Bar method": a unique bare name `bar` that MISSES the fqn tier
+//!     (`Foo.bar` != `bar`) and resolves at the name tier (Inferred 0.70) —
+//!     pins the tier the other two sections never exercise (review finding
+//!     F2; without this, a 0.70→other-value nudge to `KNOW_MENTION_NAME`
+//!     would pass the whole suite undetected).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -107,31 +114,11 @@ fn impact_of(g: &Graph, name: &str) -> Vec<AffectedNode> {
     strata_core::impact(g, &node.uid, &strata_core::ImpactOptions::default()).affected
 }
 
-/// Render `impact(name)` through the REAL CLI renderer
-/// (`strata_cli::render_impact_result`) — no DB/disk IO, so this proves the
-/// shipped renderer's "needs review" wording against an in-memory fixture
-/// graph, not a re-implemented copy of its logic.
-fn render_impact_for_test(g: &Graph, name: &str) -> String {
-    let node = node_named(g, name).clone();
-    let result = strata_core::impact(g, &node.uid, &strata_core::ImpactOptions::default());
-    strata_cli::render_impact_result(g, &node, &result)
-}
-
-/// The line of a rendered impact report naming `needle` (e.g. a DocSection's
-/// heading) — so an assertion about that ONE row cannot be satisfied by some
-/// unrelated row elsewhere in the table.
-fn line_containing<'s>(rendered: &'s str, needle: &str) -> &'s str {
-    rendered
-        .lines()
-        .find(|l| l.contains(needle))
-        .unwrap_or_else(|| panic!("no rendered line contains {needle:?}:\n{rendered}"))
-}
-
 #[test]
 fn path_ref_links_extracted_unique_fqn_inferred() {
     let (g, cov) = build_fixture();
     assert_eq!(cov.docs, 1);
-    assert_eq!(cov.sections, 2, "preamble is blank/absent; two headings");
+    assert_eq!(cov.sections, 3, "preamble is blank/absent; three headings");
 
     let sec = doc_section_uid(REPO, "docs/guide.md", "using-alphaone");
     let out = mentions_of(&g, &sec);
@@ -173,14 +160,34 @@ fn multi_candidate_name_fans_out_ambiguous_and_stale_is_counted_not_edged() {
     // Coverage semantics (design's own worked example: "N mentions linked (M
     // ambiguous)" — ambiguous is a SUBSET of linked, not disjoint from it).
     // Refs: alphaOne (linked, fqn), src/app.ts (linked, path), beta (linked +
-    // ambiguous), vanishedSymbol (stale). => linked=3, ambiguous=1, stale=1.
-    assert_eq!(cov.mentions_linked, 3);
+    // ambiguous), vanishedSymbol (stale), bar (linked, name — see the
+    // "Bar method" section test below). => linked=4, ambiguous=1, stale=1.
+    assert_eq!(cov.mentions_linked, 4);
     assert_eq!(cov.mentions_ambiguous, 1);
     assert_eq!(cov.stale_doc_mentions, 1);
 }
 
 #[test]
-fn impact_reaches_docs_and_cli_renders_needs_review() {
+fn unique_bare_name_with_a_qualified_fqn_resolves_at_the_name_tier_inferred_0_70() {
+    // Review finding F2: `bar` is a METHOD (fqn "Foo.bar", name "bar"), so the
+    // fqn tier MISSES (no symbol's fqn is bare "bar") and this pins the NAME
+    // tier specifically — Inferred 0.70, never the fqn tier's 0.80. Without
+    // this, nothing in the suite reached the name tier with a value-pinning
+    // assertion (see `confidence_bands.rs`'s discrimination note).
+    let (g, _) = build_fixture();
+    let sec = doc_section_uid(REPO, "docs/guide.md", "bar-method");
+    let out = mentions_of(&g, &sec);
+    assert!(
+        out.iter()
+            .any(|(d, p, c)| d == &fn_uid("src/app.ts", "Foo.bar")
+                && *p == Provenance::Inferred
+                && (*c - 0.70).abs() < 1e-6),
+        "unique bare name -> name tier 0.70: {out:?}"
+    );
+}
+
+#[test]
+fn impact_reaches_docs_with_needs_review_verdict() {
     let (g, _) = build_fixture();
     let affected = impact_of(&g, "alphaOne");
     assert!(
@@ -189,13 +196,12 @@ fn impact_reaches_docs_and_cli_renders_needs_review() {
             .any(|a| a.uid == doc_section_uid(REPO, "docs/guide.md", "using-alphaone")),
         "the section mentioning alphaOne is in its blast radius: {affected:?}"
     );
-
-    let rendered = render_impact_for_test(&g, "alphaOne");
-    assert!(
-        rendered.contains("needs review"),
-        "doc nodes never say WILL BREAK: {rendered}"
-    );
-    assert!(!line_containing(&rendered, "Using alphaOne").contains("WILL BREAK"));
+    // The CLI's own rendering (never "WILL BREAK" for a Doc/DocSection kind)
+    // is unit-tested directly in strata-cli against a small hermetic graph
+    // (`render_impact_result_marks_a_doc_section_needs_review_never_will_break`)
+    // rather than from here — this crate no longer takes a dev-dependency on
+    // strata-cli (review verdict: remove); this test stays scoped to the
+    // graph-level fact that `impact` reaches the mentioning DocSection.
 }
 
 #[test]

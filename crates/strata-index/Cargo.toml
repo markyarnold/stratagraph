@@ -38,9 +38,3 @@ tree-sitter-rust = "=0.24.2"
 
 [dev-dependencies]
 tempfile = "3"
-# Test-only back-edge (Cargo permits a dev-dependency cycle: strata-cli depends on
-# strata-index normally, but nothing in strata-index's OWN library needs strata-cli
-# — only this crate's test binaries do). `tests/knowledge_linking.rs` calls the
-# real `strata_cli::render_impact_result` so the "doc nodes render `needs review`"
-# assertion exercises the actual shipped CLI renderer, not a re-implemented copy.
-strata-cli = { path = "../strata-cli" }
