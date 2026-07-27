@@ -170,7 +170,62 @@ on demand; everything capped. The engine never dumps a file at an agent.
   stays under budget against a deliberately fat fixture, alongside the band
   guardrails.
 
-## 5. Testing and accuracy
+## 5. Agent kit changes (Claude Code + Kiro)
+
+The plane only matters if the kits teach agents to use it. Governing principle,
+per the token-economy requirement: **the kits add no unconditional per-edit
+tool calls.** Awareness is pushed free (one line in a hook that already
+fires); detail is pulled only when the agent chooses.
+
+### Steering (both kits — CLAUDE.md/AGENTS.md and `.kiro/steering/strata.md`)
+
+- **Tool list** gains `guidance` and `search_docs` with one-line usage rules:
+  `search_docs` replaces manual doc-grepping for "how do we…?" questions;
+  `guidance` before acting on a symbol *when coverage exists* (see below).
+- **New conditional MUST:** "MUST act on the `docs:` line the pre-edit blast
+  injects: when it lists a section at ≥ 0.80 covering the file and you have
+  not consulted it this session, fetch `guidance` for the file before
+  editing." Conditional on the free hook line — never a blanket call.
+- **Honesty rule extended:** doc guidance is *repo knowledge, not ground
+  truth* — docs can be stale; the graph marks drift (`stale_doc_mentions`)
+  and a mention below 0.40/ambiguous is UNKNOWN, same trust policy as
+  every other band.
+- **Commit rule extended:** `detect_changes`' "docs to review" line must be
+  reported in the pre-commit summary; offer (never auto-apply) doc updates
+  for stale sections.
+- The generic `AGENTS.md` carries the same block, so Cursor/other
+  AGENTS.md-reading assistants inherit the behaviour without a bespoke kit.
+
+### Claude Code specifics
+
+- **Pre-edit hook:** no settings change — the payload is `blast --format
+  agent`, which now includes the capped `docs:` line (engine-side, §4).
+- **Skills:** extend `strata-guide` (tool table + routing row: repo
+  conventions / "is there guidance on X?" → `search_docs`/`guidance`) and
+  `strata-exploring` (docs bucket in `context`, guidance-first exploration of
+  unfamiliar areas). **No fifth skill** — more skills means more listing
+  tokens in every session; the content fits the existing two.
+
+### Kiro specifics
+
+- Kiro reads steering, not skills: the steering additions above carry the
+  whole behaviour. The pre-edit askAgent prompt gains one clause — consult
+  the blast `docs:` line / fetch `guidance` when covered — kept within the
+  prompt's existing length discipline.
+- The post-edit reindex hook is unchanged in shape; note that `strata index .`
+  now also refreshes `.strata/docs.idx`, which keeps `search_docs` current in
+  exactly the sessions that edit files.
+
+### Kit token audit (the additions, in full)
+
+| Surface | Added cost |
+|---|---|
+| Pre-edit hook payload | ≤ 1 line (hard char cap, §4) |
+| Steering block | ~8 lines once per session context |
+| Skills | edits to existing skills; no new skill |
+| Per-edit tool calls | **zero unconditional**; `guidance` only when the free hook line shows unconsulted ≥ 0.80 coverage |
+
+## 6. Testing and accuracy
 
 - Red-first fixtures per source: markdown ref shapes (fence/inline/path/
   ambiguous/stale), each language's doc-comment forms, OpenAPI + GraphQL
@@ -185,7 +240,7 @@ on demand; everything capped. The engine never dumps a file at an agent.
   real-repo verification pass. Published report:
   `docs/accuracy/knowledge-linking.md` with measured counts.
 
-## 6. Slices
+## 7. Slices
 
 Each through the gated implement → independent review → fix → merge cycle:
 
@@ -199,15 +254,18 @@ Each through the gated implement → independent review → fix → merge cycle:
 - **K5** — tantivy index + `search_docs`.
 - **K6** — `guidance` + `context` docs bucket + pre-edit hook line +
   `detect_changes` "docs to review" + the budget guardrail.
-- **K7** — manual docs, agent-kit steering update, website mirror, changelog.
+- **K7** — agent kits per §5 (steering rules + tool list in both kits, the
+  Kiro pre-edit prompt clause, `strata-guide`/`strata-exploring` skill
+  extensions, kit token audit verified against the table), then manual docs,
+  website mirror, changelog.
 
-## 7. Graph-sync compatibility (obligations pinned here)
+## 8. Graph-sync compatibility (obligations pinned here)
 
 Per the [protocol note](2026-07-13-graph-sync-protocol-note.md): section UIDs
 are anchor-stable; artifacts never contain body text (true by construction);
 the tantivy index is always built locally and never synced.
 
-## 8. Open questions (deliberately small)
+## 9. Open questions (deliberately small)
 
 - Default `guidance` budget value: start at ~1,200 tokens and tune against
   dogfood transcripts.
