@@ -142,12 +142,27 @@ Output:
 ```json
 {
   "target": { "uid", "name", "kind", "path" },
-  "affected": [ { "uid", "name", "depth", "confidence", "ambiguous", "will_break" }, … ]
+  "affected": [ { "uid", "name", "kind", "depth", "confidence", "ambiguous", "will_break" }, … ]
 }
 ```
 
 `will_break` is the derived verdict (`confidence ≥ 0.40` AND not `ambiguous`,
-independent of depth). When the target is member-bearing (class/struct/enum/
+independent of depth).
+
+**`kind` and doc-kind entries.** Each `affected` entry's `kind` is the node's
+serde unit-variant kind name (the same vocabulary `context`/`query` use, e.g.
+`"Function"`, `"GraphqlField"`, `"Doc"`, `"DocSection"`) — looked up from the
+graph by `uid`. It exists so a caller can tell a **doc dependent** apart from a
+code one. `will_break` itself is confidence/ambiguous-only: it has no notion of
+node kind, so a real, high-confidence `Documents`/`Mentions` edge from a doc
+section mechanically labels that entry `will_break: true` exactly like a code
+caller would get. **A doc-kind entry — `kind` is `"Doc"` or `"DocSection"`
+(uid prefix `doc|`) — appearing in `affected` means "needs review", never
+"WILL BREAK", regardless of this mechanical bool.** A doc going stale and code
+breaking are not the same failure mode; read `kind` before trusting
+`will_break` at face value.
+
+When the target is member-bearing (class/struct/enum/
 interface/table), its own `affected` is empty, but its **members** have
 dependents, the result additionally carries:
 
@@ -235,6 +250,14 @@ level. **Needs the server to know the repo root** (launch with `--db
 | `staged` | boolean | no | `false` | Diff the staged index (`git diff --cached HEAD`) instead of the working tree. |
 
 Output: the serialized `strata_index::ChangeReport`. Reports, never gates.
+
+`ChangeReport.affected` is a `Vec<AffectedNode>` whose entries have always
+carried a `kind` field (`uid`, `name`, `kind`, `path`, `depth`, `confidence`,
+`ambiguous`, `will_break`) — unlike the `impact` tool's `affected`, which
+gained `kind` later (see [`impact`](#impact)). The same reading applies here:
+`will_break` is confidence/ambiguous-only and does not know about node kind,
+so a `kind: "Doc"` / `"DocSection"` entry means "needs review", never "WILL
+BREAK", regardless of the mechanical bool.
 
 Each **contract-plane** changed symbol carries a `contract_change` label:
 `"breaking"` (a removed or modified operation key — it breaks consumers) or

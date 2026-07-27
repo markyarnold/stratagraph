@@ -284,9 +284,24 @@ fn tool_impact(graph: &Graph, args: &Value) -> Result<Value, ToolError> {
         .affected
         .iter()
         .map(|a| {
+            // Additive (K7 fix F1): the affected node's kind, looked up from the
+            // graph by uid — the same `kind_name` vocabulary `node_json`/`context`
+            // already use, and the same shape `detect_changes`' own AffectedNode
+            // (strata_index::changes) already carries. Lets a caller recognize a
+            // `Doc`/`DocSection` dependent and apply the steering's downgrade
+            // (doc-kind ⇒ "needs review", never WILL BREAK) instead of trusting
+            // the mechanical `will_break` bool blindly — see docs/src/reference/mcp.md.
+            // A uid that has vanished from the graph (should not happen — impact
+            // only ever returns real node uids) degrades to "Unknown" rather than
+            // panicking or dropping the entry.
+            let kind = graph
+                .get_node(&a.uid)
+                .map(|n| kind_name(n.kind))
+                .unwrap_or_else(|| "Unknown".to_string());
             json!({
                 "uid": a.uid.as_str(),
                 "name": a.name,
+                "kind": kind,
                 "depth": a.depth,
                 "confidence": a.confidence,
                 "ambiguous": a.ambiguous,
@@ -1899,6 +1914,64 @@ mod tests {
         assert!(bar["depth"].is_u64());
         assert!(bar["confidence"].is_number());
         assert_eq!(bar["ambiguous"], json!(false));
+        // K7 fix F1: `kind` is now present too — a plain code dependent reports
+        // its real NodeKind ("Function" here), same vocabulary as `node_json`.
+        assert_eq!(bar["kind"], "Function");
+    }
+
+    #[test]
+    fn impact_affected_kind_lets_a_caller_recognize_a_doc_dependent() {
+        // K7 fix F1 (the serious reviewer finding): `will_break` is confidence/
+        // ambiguous-only — it has NO idea a dependent is a doc. A DocSection that
+        // documents `foo` at a real Extracted 0.95 (doc-comment strength) reaches
+        // impact(foo) and is mechanically labelled will_break:true, exactly like a
+        // code caller would be. Only the new `kind` field lets a caller (the agent
+        // steering, or a human) recognize this is a doc and downgrade the reading
+        // to "needs review" instead of trusting a false "WILL BREAK" — see
+        // docs/src/reference/mcp.md and the STEERING Always Do block.
+        let mut g = bar_calls_foo();
+        g.add_node(Node {
+            uid: Uid("doc|r|g.md|g.md#about-foo|".into()),
+            kind: NodeKind::DocSection,
+            name: "g.md#about-foo".into(),
+            fqn: "g.md#g.md#about-foo".into(),
+            path: "g.md".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_edge(Edge {
+            src: Uid("doc|r|g.md|g.md#about-foo|".into()),
+            dst: Uid("foo".into()),
+            kind: EdgeKind::Documents,
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(0.95),
+        });
+
+        let v = call_tool(&g, "impact", &json!({ "symbol": "foo" })).unwrap();
+        let affected = v["affected"].as_array().unwrap();
+
+        let doc = affected
+            .iter()
+            .find(|a| a["name"] == "g.md#about-foo")
+            .expect("the DocSection reaches impact(foo) via Documents");
+        assert_eq!(doc["kind"], "DocSection");
+        assert_eq!(
+            doc["will_break"],
+            json!(true),
+            "will_break stays MECHANICAL (confidence/ambiguous only, unchanged by \
+             this fix) — a high-confidence Documents edge mechanically labels the \
+             doc WILL BREAK even though it never can; `kind` is what lets a caller \
+             apply the doc-kind downgrade instead of trusting the bool blindly"
+        );
+
+        // The plain code dependent (bar) is unaffected by the doc addition.
+        let bar = affected
+            .iter()
+            .find(|a| a["name"] == "bar")
+            .expect("bar is still affected");
+        assert_eq!(bar["kind"], "Function");
+        assert_eq!(bar["will_break"], json!(true));
     }
 
     // ── include_contracts on the impact tool (the one-dispatch-path fix) ──

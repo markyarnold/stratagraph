@@ -89,7 +89,7 @@ pub fn render_steering_block(identity: &Identity, routing: &str) -> String {
     // ── Always Do (MUST) ──
     s.push_str("## Always Do (MUST)\n\n");
     s.push_str("- **MUST act on the pre-edit blast radius the hook injects.** Before each file edit, a PreToolUse hook computes that file's blast radius and injects it as context (the same report as `strata blast <file>`). It is authoritative at edit time: read it, report the affected dependents and risk, and follow the rules below. Never edit past it without acting on what it shows.\n");
-    s.push_str("- **MUST run `impact` on a symbol/field/operation BEFORE modifying it**, and report the blast radius to the user before proceeding: list the direct (d=1) and indirect (d=2) dependents with each one's `will_break` verdict (WILL BREAK only when `confidence ≥ 0.40` AND not `ambiguous`; depth does NOT decide it), its confidence, and a risk level (LOW / MEDIUM / HIGH / CRITICAL), then wait for direction.\n");
+    s.push_str("- **MUST run `impact` on a symbol/field/operation BEFORE modifying it**, and report the blast radius to the user before proceeding: list the direct (d=1) and indirect (d=2) dependents with each one's `will_break` verdict (WILL BREAK only when `confidence ≥ 0.40` AND not `ambiguous`; depth does NOT decide it; a doc-kind dependent — kind `Doc`/`DocSection` — is \"needs review\", never WILL BREAK), its confidence, and a risk level (LOW / MEDIUM / HIGH / CRITICAL), then wait for direction.\n");
     s.push_str("- **MUST run `detect_changes` before committing.** It is the mechanical pre-commit check: it git-diffs your work, derives the changed symbols PER PLANE (code / contract / infra), aggregates the blast radius over the whole graph, and returns a risk level with reasons. Read its risk and affected set, report them, and pause for direction on HIGH/CRITICAL. Do NOT hand-run `impact` symbol-by-symbol when `detect_changes` does it across every plane in one call.\n");
     s.push_str("- **MUST check every plane the target touches.** A GraphQL field / API operation → `context` and read its `producers` (who implements it) and `consumers` (who queries it) buckets. A Lambda / handler / module → its `produces` / `consumes`. An ordinary exported symbol → `impact` for upstream dependents.\n");
     s.push_str("- **MUST warn and pause for direction** when the blast radius is HIGH or CRITICAL, when it crosses a repo boundary (estate), or when it touches contract surface consumed by another plane.\n");
@@ -553,6 +553,39 @@ mod tests {
                 "skill {slug} equates d=1 with a certain break:\n{body}"
             );
         }
+    }
+
+    /// K7 fix F1 (reviewer finding, controller-adopted): `will_break` is
+    /// confidence/ambiguous-only — it has no notion of node kind, so a real,
+    /// high-confidence `Documents`/`Mentions` edge from a doc section mechanically
+    /// gets `will_break: true` exactly like a code caller would. The
+    /// impact-reporting MUST line teaches the agent to read a doc-kind dependent
+    /// (`kind` `Doc`/`DocSection`) as "needs review", never WILL BREAK — extending
+    /// the SAME rule that explains the will_break verdict, not a new bullet.
+    #[test]
+    fn always_do_impact_rule_downgrades_doc_kind_dependents_to_needs_review() {
+        let block = render_steering_block(&Identity::NotIndexed, CLAUDE_ROUTING);
+        let impact_line = block
+            .lines()
+            .find(|l| l.contains("MUST run `impact` on a symbol/field/operation"))
+            .expect("the Always Do block has the impact-reporting MUST line");
+        assert!(
+            impact_line.contains("doc-kind dependent")
+                && impact_line.contains("`Doc`/`DocSection`")
+                && impact_line.contains("needs review")
+                && impact_line.contains("never WILL BREAK"),
+            "the impact-reporting rule must teach the doc-kind downgrade right \
+             next to the will_break verdict it extends:\n{impact_line}"
+        );
+        // A half-line addition to the EXISTING rule, not a new bullet — the K7
+        // steering-addition token budget (measured separately, see
+        // steering_addition_stays_within_the_kit_token_audit_budget) is untouched
+        // because this text lives in the base block, not either KNOWLEDGE_* const.
+        assert!(
+            !KNOWLEDGE_STEERING_ADDITION.contains("doc-kind dependent"),
+            "the doc-kind downgrade half-line extends the PRE-EXISTING impact \
+             rule in the base block, not the K7 steering addition"
+        );
     }
 
     /// The impact-analysis skill must document the members-with-dependents
