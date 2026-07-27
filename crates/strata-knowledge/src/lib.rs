@@ -468,4 +468,15 @@ mod tests {
             1
         );
     }
+
+    #[test]
+    fn inline_code_path_shape_is_also_a_path_ref() {
+        let m = parse_markdown("d.md", "# S\nEdit `src/handlers/index.ts` first.\n");
+        let refs = &m.sections[0].refs;
+        assert!(
+            refs.iter()
+                .any(|r| r.text == "src/handlers/index.ts" && matches!(r.kind, DocRefKind::PathRef)),
+            "inline code with a path shape must ALSO yield a PathRef: {refs:?}"
+        );
+    }
 }
