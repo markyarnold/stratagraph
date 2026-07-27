@@ -63,7 +63,10 @@ pub const KNOW_DOC_COMMENT: f32 = 0.95;
 /// resolved to 2+ candidates (fanned out) rather than one confident hit —
 /// mirroring the design's own worked example, "480 mentions linked (12
 /// ambiguous), 9 stale". `stale_doc_mentions` IS disjoint from both (a
-/// reference that matched nothing at any tier).
+/// reference that matched nothing at any tier) — see its own doc comment for
+/// the K7 fix F2 shape-based carve-out; [`unresolved_plain_refs`](Self::unresolved_plain_refs)
+/// is disjoint from all three (an unresolvable reference lands in exactly one
+/// of `stale_doc_mentions`/`unresolved_plain_refs`, never both).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct KnowledgeLinkCoverage {
     /// `Doc` nodes created (one per ingested markdown file).
@@ -77,9 +80,32 @@ pub struct KnowledgeLinkCoverage {
     /// The subset of [`mentions_linked`](Self::mentions_linked) that resolved
     /// to 2+ candidates (Ambiguous 0.35 fan-out, one edge per candidate).
     pub mentions_ambiguous: usize,
-    /// References that matched NOTHING at any tier — counted, never edged (the
-    /// doc-drift signal: this reference is lying about what exists).
+    /// References that matched NOTHING at any tier AND read as an authorial
+    /// claim about something that should exist — counted, never edged (the
+    /// doc-drift signal: this reference is lying about what exists). A
+    /// [`DocRefKind::PathRef`] miss is always counted here (an exact path
+    /// claim that resolves nowhere). A [`DocRefKind::InlineCode`] miss is
+    /// counted here ONLY when its text is symbol-shaped (K7 fix F2 —
+    /// `inline_code_looks_symbol_shaped`: contains `::`/`.`, or is
+    /// compound-case); a plain-word/`SCREAMING_SNAKE_CASE` `InlineCode` miss
+    /// is schema-invisible, not drift, and goes to
+    /// [`unresolved_plain_refs`](Self::unresolved_plain_refs) instead. A
+    /// [`DocRefKind::FenceToken`] miss is never counted anywhere (unchanged —
+    /// incidental example vocabulary, not an authorial claim).
     pub stale_doc_mentions: usize,
+    /// K7 fix F2 (reviewer-recommended refinement, controller-adopted): an
+    /// unresolvable [`DocRefKind::InlineCode`] reference whose text is NOT
+    /// symbol-shaped — a bare all-lowercase word or a `SCREAMING_SNAKE_CASE`
+    /// token (a constant, a config key, a CLI flag, or prose that merely sits
+    /// in backticks). The graph has no node for a raw constant/config-key, so
+    /// this is not evidence the doc is lying (drift) — only evidence the
+    /// graph's own reach stops at named, structured symbols. NEVER folded into
+    /// [`stale_doc_mentions`](Self::stale_doc_mentions); tracked separately so
+    /// the drift metric stays meaningful instead of being swamped by every
+    /// bare word an author ever wrapped in backticks (the reviewer's fitness
+    /// analysis found ~80% of sampled `stale_doc_mentions` misses, pre-fix,
+    /// were exactly this schema-invisible shape).
+    pub unresolved_plain_refs: usize,
     /// Doc-comment `Documents` edges. Always `0` until K3 wires `doc_span`
     /// across the four analyzers; the field lives here now so
     /// `KnowledgeLinkCoverage` is K3-ready without another schema bump.
@@ -311,6 +337,37 @@ fn candidates_for<'t>(
         .map(|v| (v.as_slice(), KNOW_MENTION_NAME, Provenance::Inferred))
 }
 
+/// K7 fix F2 (reviewer-recommended, controller-adopted): whether an
+/// unresolvable [`DocRefKind::InlineCode`] ref's raw text plausibly NAMES A
+/// SYMBOL, splitting the miss between `stale_doc_mentions` (a real, broken
+/// reference) and `unresolved_plain_refs` (schema-invisible: a constant,
+/// config key, or plain word the graph was never going to model).
+///
+/// `true` when the text:
+/// - contains `::` or `.` (an explicit qualification, e.g. `mod::item`,
+///   `a.b` — unambiguously symbol-shaped regardless of case), OR
+/// - is compound-case: it has BOTH an ASCII lowercase and an ASCII uppercase
+///   letter (`renamedSymbol`, `DocSection` — camelCase/PascalCase-shaped)
+///   AND is therefore not all-caps-with-underscores. The second clause is
+///   written out explicitly (rather than relying on it following logically
+///   from "has both cases") because a `SCREAMING_SNAKE_CASE` token by
+///   definition has NO lowercase letter — the two checks read as the same
+///   test the design calls for, so a reader can trace this code straight back
+///   to the spec sentence without re-deriving the entailment.
+///
+/// `false` for a `SCREAMING_SNAKE_CASE` token (`CONF_BARE_MULTI`) or a bare
+/// all-lowercase single word (`foo`) — never guessed into `stale_doc_mentions`
+/// (never-confidently-wrong governs the metric itself, not only graph edges).
+fn inline_code_looks_symbol_shaped(text: &str) -> bool {
+    if text.contains("::") || text.contains('.') {
+        return true;
+    }
+    let has_lower = text.bytes().any(|b| b.is_ascii_lowercase());
+    let has_upper = text.bytes().any(|b| b.is_ascii_uppercase());
+    let all_caps_with_underscores = has_upper && !has_lower;
+    has_lower && has_upper && !all_caps_with_underscores
+}
+
 /// Resolve and edge ONE ref from `section_uid`, updating `cov` and `edged` (the
 /// per-section dedup-by-dst set — edges are deduped by (src,dst), and `src` is
 /// fixed to `section_uid` within one section's ref loop). `own_doc_uid` is the
@@ -343,8 +400,30 @@ fn resolve_ref(
         // defaults to conservative (not counted as drift) until explicitly
         // added here, instead of silently inheriting drift-counting by
         // accident of not being `FenceToken`.
-        if matches!(r.kind, DocRefKind::InlineCode | DocRefKind::PathRef) {
-            cov.stale_doc_mentions += 1;
+        //
+        // K7 fix F2 (reviewer-recommended refinement, controller-adopted): a
+        // PathRef miss is ALWAYS `stale_doc_mentions` — an exact path claim
+        // that resolves nowhere is unambiguously an authorial claim about a
+        // specific, nonexistent file, so it needs no further split. An
+        // InlineCode miss is further split by SHAPE
+        // (`inline_code_looks_symbol_shaped`): symbol-shaped text
+        // (`strata_core::impact`, `renamedSymbol`) reads exactly like a
+        // broken reference and stays `stale_doc_mentions`; a
+        // `SCREAMING_SNAKE_CASE` token or bare all-lowercase word
+        // (`CONF_BARE_MULTI`, `foo`) is schema-invisible — the graph never
+        // models a raw constant/config-key, so "unresolved" here is not
+        // evidence of drift, only of the graph's own reach — and is counted
+        // separately as `unresolved_plain_refs`, NEVER folded into "stale".
+        // See `KnowledgeLinkCoverage::stale_doc_mentions`'s doc comment,
+        // `docs/accuracy/knowledge-linking.md`, and
+        // `docs/src/concepts/knowledge.md`.
+        match r.kind {
+            DocRefKind::PathRef => cov.stale_doc_mentions += 1,
+            DocRefKind::InlineCode if inline_code_looks_symbol_shaped(&r.text) => {
+                cov.stale_doc_mentions += 1;
+            }
+            DocRefKind::InlineCode => cov.unresolved_plain_refs += 1,
+            DocRefKind::FenceToken => {}
         }
         return;
     };
@@ -653,12 +732,97 @@ mod tests {
             "only the InlineCode miss (vanishedSymbol) counts as stale; the \
              two fence-token misses (r.process, process) do not"
         );
+        // K7 fix F2: "vanishedSymbol" is compound-case (has both an ASCII
+        // lower and upper letter) — symbol-shaped, so it stays stale and
+        // never lands in the new plain-unresolved counter.
+        assert_eq!(
+            cov.unresolved_plain_refs, 0,
+            "vanishedSymbol is compound-case (symbol-shaped), not plain"
+        );
 
         let s_uid = doc_section_uid(REPO, "docs/g.md", "h");
         assert_eq!(
             g.edges().filter(|e| e.src == s_uid).count(),
             0,
             "no Mentions edge from either fence token or the stale inline code"
+        );
+    }
+
+    #[test]
+    fn inline_code_looks_symbol_shaped_matches_the_design_shape_rule() {
+        // K7 fix F2, pinned directly against the pure predicate: `::`/`.`
+        // qualification always counts; otherwise compound-case (both an ASCII
+        // lower AND an ASCII upper letter present) counts; a
+        // SCREAMING_SNAKE_CASE token or a bare all-lowercase word does not.
+        assert!(inline_code_looks_symbol_shaped("strata_core::impact"));
+        assert!(inline_code_looks_symbol_shaped("a.b"));
+        assert!(inline_code_looks_symbol_shaped("renamedSymbol"));
+        assert!(inline_code_looks_symbol_shaped("DocSection"));
+        assert!(
+            !inline_code_looks_symbol_shaped("CONF_BARE_MULTI"),
+            "SCREAMING_SNAKE_CASE has no lowercase letter at all"
+        );
+        assert!(
+            !inline_code_looks_symbol_shaped("FOO"),
+            "all-caps single word — no lowercase either"
+        );
+        assert!(
+            !inline_code_looks_symbol_shaped("foo"),
+            "bare all-lowercase word"
+        );
+        assert!(
+            !inline_code_looks_symbol_shaped("foo_bar"),
+            "snake_case, still all-lowercase"
+        );
+    }
+
+    #[test]
+    fn stale_vs_plain_unresolved_split_by_ref_kind_and_shape() {
+        // K7 fix F2 (reviewer-recommended refinement, controller-adopted) —
+        // the exact scenarios the fix wave specified, in one section so the
+        // split is visible at a glance. None of these refs matches anything
+        // in this graph (no code was analyzed here), so every one is a
+        // genuine miss and none produces a Mentions edge:
+        //   - `src/gone.rs` (PathRef miss): ALWAYS stale, regardless of shape
+        //     — an exact path claim to a file that does not exist.
+        //   - `CONF_BARE_MULTI` (InlineCode miss, SCREAMING_SNAKE_CASE):
+        //     plain unresolved, NEVER stale — schema-invisible constant shape.
+        //   - `foo` (InlineCode miss, bare all-lowercase): plain unresolved.
+        //   - `renamedSymbol` (InlineCode miss, camelCase/compound-case):
+        //     stale — reads as a real, broken symbol reference.
+        //   - `strata_core::impact` (InlineCode miss, `::`-qualified): stale
+        //     — explicit qualification is unambiguously symbol-shaped.
+        let doc = parse_markdown(
+            "docs/g.md",
+            "# H\nSee [gone](src/gone.rs) for details.\n`CONF_BARE_MULTI` was \
+             removed. `renamedSymbol` was renamed. `foo` is undocumented. \
+             `strata_core::impact` moved.\n",
+        );
+        let mut g = Graph::new();
+        let cov = build_knowledge_plane(
+            &mut g,
+            REPO,
+            &BTreeMap::new(),
+            &[("docs/g.md".to_string(), doc)],
+        );
+
+        assert_eq!(cov.mentions_linked, 0, "every ref here is an honest miss");
+        assert_eq!(
+            cov.stale_doc_mentions, 3,
+            "three symbol-shaped misses: src/gone.rs (PathRef, always stale), \
+             renamedSymbol (camelCase), strata_core::impact (`::`-qualified)"
+        );
+        assert_eq!(
+            cov.unresolved_plain_refs, 2,
+            "two plain misses: CONF_BARE_MULTI (SCREAMING_SNAKE_CASE) and foo \
+             (bare all-lowercase) — schema-invisible, never folded into stale"
+        );
+
+        let s_uid = doc_section_uid(REPO, "docs/g.md", "h");
+        assert_eq!(
+            g.edges().filter(|e| e.src == s_uid).count(),
+            0,
+            "no Mentions edge from any of these misses, stale or plain"
         );
     }
 

@@ -223,12 +223,18 @@ pub enum EdgeKind {
     /// span, never a fenced-code-block token — a fence token is incidental
     /// example vocabulary, not a deliberate symbol callout); a multi-candidate
     /// match fans out Ambiguous 0.35, one edge per candidate — never a
-    /// confident pick. An unresolvable reference earns NO edge and is counted
-    /// as `stale_doc_mentions` (the doc-drift signal — the repo reports which
-    /// docs are lying) — EXCEPT a fenced-code-block token, whose miss is
-    /// silently dropped uncounted: drift is an authorial-claim signal, and a
-    /// fence token was never claimed as a reference. Handled generically by
-    /// the graph/traversal (Knowledge plane, K2).
+    /// confident pick. An unresolvable reference earns NO edge. A path
+    /// reference is always counted as `stale_doc_mentions` (the doc-drift
+    /// signal — the repo reports which docs are lying); a fenced-code-block
+    /// token's miss is silently dropped uncounted (drift is an
+    /// authorial-claim signal, and a fence token was never claimed as a
+    /// reference); an inline-code miss is counted as `stale_doc_mentions`
+    /// ONLY when its text is symbol-shaped (contains `::`/`.`, or is
+    /// compound-case) — a plain-word/`SCREAMING_SNAKE_CASE` inline-code miss
+    /// is schema-invisible (a constant/config key the graph never models),
+    /// not drift, and is counted separately as `unresolved_plain_refs` (K7 fix
+    /// F2, `strata_index::knowledge::inline_code_looks_symbol_shaped`).
+    /// Handled generically by the graph/traversal (Knowledge plane, K2).
     Mentions,
 }
 

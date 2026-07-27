@@ -320,12 +320,13 @@ pub fn cmd_index(repo: &Path, db: &Path, include_vendored: bool) -> Result<Strin
     if knowledge.docs > 0 {
         out.push_str(&format!(
             "\n  knowledge:      {docs} doc(s), {sections} section(s); {linked} mention(s) \
-             linked ({ambiguous} ambiguous), {stale} stale",
+             linked ({ambiguous} ambiguous), {stale} stale, {plain} plain unresolved",
             docs = knowledge.docs,
             sections = knowledge.sections,
             linked = knowledge.mentions_linked,
             ambiguous = knowledge.mentions_ambiguous,
             stale = knowledge.stale_doc_mentions,
+            plain = knowledge.unresolved_plain_refs,
         ));
     }
     // K5 lexical docs index (`.strata/docs.idx`) write failure — a review fix:
