@@ -560,6 +560,20 @@ fn reverse_walk(graph: &Graph, target: &Uid, opts: &ImpactOptions) -> Best {
         // has incoming `Calls`, transitively the code that instantiates/uses the model.
         // A graph with no ORM edges is unaffected (the traversal finds none).
         EdgeKind::MapsTo,
+        // Knowledge-plane dependency edges (Knowledge plane, K2): `Documents` (a doc
+        // comment's `DocSection` → the symbol it documents, K3) and `Mentions` (a
+        // `DocSection` → anything its extracted refs resolved to) are traversed
+        // INCOMING from the target exactly like `Reads`/`Writes`/`MapsTo` — so
+        // `impact(symbol)` reaches the doc sections that reference it ("docs enter the
+        // blast radius", design §2). Each propagates at its own edge confidence/
+        // provenance (never re-graded), so a Mentions fan-out (Ambiguous 0.35) reaches
+        // exactly as ambiguous as it was graded, never laundered into a clean hit. The
+        // sibling `Contains` (Doc → DocSection) is DELIBERATELY excluded from this
+        // list — see its doc comment: a section changing does not mean its file
+        // "broke". A graph with no knowledge edges is unaffected (the traversal finds
+        // none), so knowledge-free impact results are byte-identical.
+        EdgeKind::Documents,
+        EdgeKind::Mentions,
     ];
     if opts.include_imports {
         kinds.push(EdgeKind::Imports);
@@ -2638,5 +2652,61 @@ mod tests {
         // N reaches T only cleanly → not ambiguous in either view.
         let en = explain(&g, &Uid("t".into()), &Uid("n".into()), &opts).expect("n reachable");
         assert!(!imp_amb("n") && !en.ambiguous, "N is clean in both views");
+    }
+
+    // ── knowledge plane (K2): Mentions/Documents traversed, Contains never is ──
+
+    #[test]
+    fn impact_traverses_mentions_and_documents_but_never_contains() {
+        // doc —Contains→ sec (never traversed: a section is not "affected" by its
+        // own container, and the container must not be surfaced as a dependent of
+        // its member — the same rule the infra ApiId `Contains` precedent set).
+        // sec —Mentions→ fn and doc2 —Documents→ fn2 (both traversed INCOMING from
+        // the target, exactly like Calls/Reads/Assumes): a symbol's `impact` must
+        // include the doc sections that reference it — "docs enter the blast
+        // radius" (design §2).
+        let mut g = Graph::new();
+        g.add_node(node_with_kind("doc", NodeKind::Doc));
+        g.add_node(node_with_kind("sec", NodeKind::DocSection));
+        g.add_node(node_with_kind("doc2", NodeKind::Doc));
+        g.add_node(node_with_kind("sec2", NodeKind::DocSection));
+        g.add_node(node("fn"));
+        g.add_node(node("fn2"));
+        g.add_edge(edge("doc", "sec", EdgeKind::Contains));
+        g.add_edge(edge("doc2", "sec2", EdgeKind::Contains));
+        g.add_edge(edge("sec", "fn", EdgeKind::Mentions));
+        g.add_edge(edge("sec2", "fn2", EdgeKind::Documents));
+
+        let opts = ImpactOptions::default();
+
+        // impact(fn) reaches "sec" via the reverse-walked Mentions edge.
+        let r = impact(&g, &Uid("fn".into()), &opts);
+        assert!(
+            r.affected.iter().any(|a| a.uid == Uid("sec".into())),
+            "Mentions must be reverse-walked so a mentioned symbol's impact \
+             includes the mentioning DocSection: {r:?}"
+        );
+
+        // impact(fn2) reaches "sec2" via the reverse-walked Documents edge.
+        let r2 = impact(&g, &Uid("fn2".into()), &opts);
+        assert!(
+            r2.affected.iter().any(|a| a.uid == Uid("sec2".into())),
+            "Documents must be reverse-walked the same way: {r2:?}"
+        );
+
+        // impact(sec) must NOT reach "doc" — Contains is never impact-traversed,
+        // in EITHER direction (a section changing doesn't "affect" its file, and
+        // a Doc target doesn't reach back out through Contains to its sections —
+        // that view is `context(doc).members`, not `impact`).
+        let r3 = impact(&g, &Uid("sec".into()), &opts);
+        assert!(
+            !r3.affected.iter().any(|a| a.uid == Uid("doc".into())),
+            "Contains must never be impact-traversed: {r3:?}"
+        );
+        let r4 = impact(&g, &Uid("doc".into()), &opts);
+        assert!(
+            r4.affected.is_empty(),
+            "a Doc has no incoming dependency edges of its own: {r4:?}"
+        );
     }
 }

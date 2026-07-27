@@ -32,6 +32,7 @@ use strata_index::{
     assemble_graph_with_contracts,
     assemble_graph_with_data,
     assemble_graph_with_infra,
+    assemble_graph_with_knowledge,
     assemble_graph_with_scip,
     // The PRODUCTION §4.1 band constants — these tests assert the REAL values
     // (re-exported from strata-index), not drifting local literal copies (T1).
@@ -48,6 +49,10 @@ use strata_index::{
     CONF_RUNS,
     CONF_THIS_METHOD,
     CONF_UNKNOWN_RECEIVER,
+    KNOW_AMBIGUOUS,
+    KNOW_MENTION_FQN,
+    KNOW_MENTION_NAME,
+    KNOW_MENTION_PATH,
 };
 // The contract consumer-tier constants are already `pub` in strata-contract.
 use strata_contract::{
@@ -1034,6 +1039,121 @@ fn data_orm_conf_constant_is_within_its_band() {
         assert!(
             CONF_ORM_EXPLICIT >= 0.95 && CONF_ORM_EXPLICIT <= 1.0,
             "CONF_ORM_EXPLICIT is outside the Extracted band [0.95, 1.0]"
+        )
+    };
+}
+
+// ── K2 (Knowledge plane): the band invariant extends to `Mentions` edges ─────
+//
+// The knowledge plane's `Mentions` edge is graded across THREE tiers (design
+// §2, "Model and vocabulary"): an exact repo-relative path reference →
+// Extracted 0.95; a unique fqn/name match → Inferred 0.80/0.70; a
+// multi-candidate match → Ambiguous 0.35 fan-out. This builds a graph
+// containing all three tiers (non-vacuously) and runs the same §4.1
+// invariant over it — proving a doc's guesses never masquerade at a tier they
+// did not earn. `Documents` (doc-comment) edges are K3's addition — none
+// exist yet, so this suite does not (and cannot honestly) cover that kind;
+// extend it when K3 lands.
+
+/// Two TS files: `alphaOne` (unique) and `beta` (declared in BOTH, forcing an
+/// Ambiguous name fan-out) — the same shape the K2 `knowledge_linking.rs`
+/// fixture uses.
+fn knowledge_app_source() -> &'static str {
+    concat!(
+        "export function alphaOne() {}\n",
+        "export function beta() {}\n",
+    )
+}
+
+fn knowledge_other_source() -> &'static str {
+    "export function beta() {}\n"
+}
+
+/// A markdown doc exercising all three `Mentions` tiers: a `PathRef` to
+/// `src/app.ts` (Extracted), a unique bare name resolving at the fqn tier
+/// (Inferred), and an ambiguous bare name (Ambiguous fan-out).
+fn knowledge_guide_md() -> &'static str {
+    concat!(
+        "# Using alphaOne\n",
+        "Call `alphaOne` before anything. See [the app](src/app.ts).\n",
+        "## Betas\n",
+        "`beta` is ambiguous here.\n",
+    )
+}
+
+#[test]
+fn knowledge_mentions_edges_satisfy_band_invariant_non_vacuously() {
+    let mut analyzed = BTreeMap::new();
+    analyzed.insert(
+        "src/app.ts".to_string(),
+        analyze("src/app.ts", knowledge_app_source()),
+    );
+    analyzed.insert(
+        "src/other.ts".to_string(),
+        analyze("src/other.ts", knowledge_other_source()),
+    );
+    let doc = strata_knowledge::parse_markdown("docs/guide.md", knowledge_guide_md());
+    let docs = vec![("docs/guide.md".to_string(), doc)];
+
+    let (g, cov) =
+        assemble_graph_with_knowledge(&analyzed, REPO, &ResolveOptions::default(), &docs);
+
+    // Confirm the graph contains Mentions edges at ALL THREE tiers, so the
+    // invariant below is exercising the knowledge plane non-vacuously.
+    let mut seen_extracted = false;
+    let mut seen_inferred = false;
+    let mut seen_ambiguous = false;
+    for node in g.nodes() {
+        for (edge, _) in g.neighbors(&node.uid, Direction::Outgoing, &[EdgeKind::Mentions]) {
+            match edge.provenance {
+                Provenance::Extracted => seen_extracted = true,
+                Provenance::Inferred => seen_inferred = true,
+                Provenance::Ambiguous => seen_ambiguous = true,
+                other => panic!("unexpected provenance on a Mentions edge: {other:?}"),
+            }
+        }
+    }
+    assert!(seen_extracted, "expected an Extracted (path) Mentions edge");
+    assert!(seen_inferred, "expected an Inferred (fqn) Mentions edge");
+    assert!(
+        seen_ambiguous,
+        "expected an Ambiguous (fan-out) Mentions edge"
+    );
+    assert!(cov.mentions_linked > 0 && cov.mentions_ambiguous > 0);
+
+    // The §4.1 band invariant must hold for every edge, including Mentions.
+    assert_band_invariant(&g, "knowledge-mentions");
+}
+
+#[test]
+fn knowledge_conf_constants_are_within_their_bands() {
+    // Asserts the REAL knowledge.rs KNOW_* constants (re-exported from
+    // strata-index): KNOW_MENTION_PATH in the Extracted band 0.95–1.0;
+    // KNOW_MENTION_FQN/KNOW_MENTION_NAME in the Inferred band 0.40–0.80;
+    // KNOW_AMBIGUOUS in the Ambiguous band (< 0.40). A future edit moving one
+    // out of band fails here (T1).
+    const {
+        assert!(
+            KNOW_MENTION_PATH >= 0.95 && KNOW_MENTION_PATH <= 1.0,
+            "KNOW_MENTION_PATH is outside the Extracted band [0.95, 1.0]"
+        )
+    };
+    const {
+        assert!(
+            KNOW_MENTION_FQN >= 0.40 && KNOW_MENTION_FQN <= 0.80,
+            "KNOW_MENTION_FQN is outside the Inferred band [0.40, 0.80]"
+        )
+    };
+    const {
+        assert!(
+            KNOW_MENTION_NAME >= 0.40 && KNOW_MENTION_NAME <= 0.80,
+            "KNOW_MENTION_NAME is outside the Inferred band [0.40, 0.80]"
+        )
+    };
+    const {
+        assert!(
+            KNOW_AMBIGUOUS < 0.40,
+            "KNOW_AMBIGUOUS is >= 0.40 (Ambiguous ceiling)"
         )
     };
 }

@@ -21,6 +21,7 @@ mod estate;
 pub mod estate_marker;
 mod fs;
 mod infra;
+mod knowledge;
 mod rename;
 mod resolve_mode;
 mod scip_merge;
@@ -80,6 +81,14 @@ pub use infra::{
 pub use infra::{
     CONF_PRODUCES_EXTRACTED, CONF_PRODUCES_INFERRED, CONF_REF_INFERRED, CONF_REF_RESOURCE,
     CONF_RUNS,
+};
+// The knowledge-plane builder (K2): Doc/DocSection nodes + banded Mentions
+// edges. `assemble_graph_with_knowledge` is the test/tool-visible convenience
+// (code plane + knowledge plane in one call); `index_impl` wires
+// `build_knowledge_plane` directly onto the fully-assembled multi-plane graph.
+pub use knowledge::{
+    assemble_graph_with_knowledge, build_knowledge_plane, doc_section_uid, KnowledgeLinkCoverage,
+    KNOW_AMBIGUOUS, KNOW_MENTION_FQN, KNOW_MENTION_NAME, KNOW_MENTION_PATH,
 };
 pub use rename::{
     rename, Candidate, Edit, RenameError, RenameOptions, RenameOutcome, DEF_SITE_CONFIDENCE,
@@ -153,6 +162,11 @@ pub struct IndexStats {
     /// never silent. Capped at [`MAX_INFRA_DIAGNOSTICS`] (with a final
     /// `… and N more` line) so a pathological repo cannot flood the output.
     pub infra_diagnostics: Vec<String>,
+    /// Knowledge-plane link coverage (K2): ingested markdown docs/sections, the
+    /// `Mentions` linking tallies, and the drift count (`stale_doc_mentions`).
+    /// A repo with no markdown under `docs/**`, no root `*.md`, and no nested
+    /// `README.md` reports all-zero (additive). Fed by `build_knowledge_plane`.
+    pub knowledge_link: KnowledgeLinkCoverage,
 }
 
 /// The cap on the number of per-template diagnostic lines carried in
@@ -619,6 +633,25 @@ fn index_impl(
     data_link.schemas_failed = data_diagnostics.len();
     let data_diagnostics = cap_diagnostics(data_diagnostics, "data schema failure(s)");
 
+    // ── Knowledge plane (K2): ingest markdown (docs/**/*.md, root *.md, nested
+    // README.md), parse it (K1's `parse_markdown`), and build Doc/DocSection
+    // nodes + banded Mentions edges. Runs LAST — after every other plane — so a
+    // doc's PathRef/fqn/name references resolve against the FULLY-assembled
+    // graph (a doc can mention a Table, an ApiOperation, another doc, or any
+    // code symbol from any language plane above). A markdown file that fails
+    // to produce any non-blank section (empty/whitespace-only) contributes a
+    // `Doc` with zero sections — pulldown-cmark cannot itself "fail to parse"
+    // the way SQL/CFN can, so there is no diagnostics vec here. ──
+    let markdown = collect_markdown(repo_path, Arc::clone(&vendored))?;
+    let docs: Vec<(String, strata_knowledge::DocModel)> = markdown
+        .into_iter()
+        .map(|(path, content)| {
+            let model = strata_knowledge::parse_markdown(&path, &content);
+            (path, model)
+        })
+        .collect();
+    let knowledge_link = knowledge::build_knowledge_plane(&mut graph, repo_name, &docs);
+
     let stats = IndexStats {
         // Includes TS/JS sources, the GraphQL operation documents that became
         // AnalyzedFiles (schemas, which contribute operations not docs, are not
@@ -642,6 +675,7 @@ fn index_impl(
         infra_diagnostics,
         data_link,
         data_diagnostics,
+        knowledge_link,
     };
 
     store.save_graph(&graph)?;
@@ -1274,6 +1308,66 @@ pub(crate) fn extract_repo_schemas(
     Ok((schemas, diagnostics))
 }
 
+/// Directory names NEVER walked for markdown sources, regardless of
+/// `.gitignore`: **`.strata`** (the engine's own state dir — its stamp/db/index
+/// files are never mistaken for repo documentation) plus the usual
+/// dependency/build-output roots a vendored `*.md` (a bundled package README)
+/// might live under — belt-and-suspenders beyond gitignore, the same spirit as
+/// the per-language skip lists.
+const MD_SKIP_DIRS: [&str; 7] = [
+    ".strata",
+    "node_modules",
+    "__pycache__",
+    "venv",
+    ".venv",
+    "site-packages",
+    "target",
+];
+
+/// The markdown file extension routed to `strata_knowledge::parse_markdown`.
+const MD_EXTS: [&str; 1] = ["md"];
+
+/// Whether `rel` (a `/`-normalized, repo-relative path) is in the default
+/// markdown collection set (design §3 "Collection (indexer)"): any `.md` under
+/// `docs/` (recursively), a ROOT-level `*.md` (no `/` in `rel` — e.g.
+/// `README.md`, `CONTRIBUTING.md`), or a nested `README.md` at any depth.
+/// `CHANGELOG*` is excluded regardless of where it lives (noise; entries
+/// churn) — checked against the file's own base name first, so
+/// `docs/CHANGELOG.md` is excluded even though it is under `docs/`.
+fn is_collected_markdown(rel: &str) -> bool {
+    let base = rel.rsplit('/').next().unwrap_or(rel);
+    if base.starts_with("CHANGELOG") {
+        return false;
+    }
+    if rel.starts_with("docs/") {
+        return true;
+    }
+    if !rel.contains('/') {
+        return true; // a root-level *.md
+    }
+    base == "README.md"
+}
+
+/// Walk `repo_path` (gitignore-aware) and collect the default markdown
+/// collection set into a map of `/`-normalized, repo-relative path -> content
+/// (design §3, Knowledge plane K2): `docs/**/*.md`, a root `*.md`, or a nested
+/// `README.md`; `CHANGELOG*` and `.strata/` are always excluded, and vendored
+/// dependency bundles are pruned via the SAME per-file `vendored` set every
+/// other plane uses. A repo with no matching markdown returns an empty map
+/// (additive) rather than an error.
+fn collect_markdown(
+    repo_path: &Path,
+    vendored: Arc<HashSet<PathBuf>>,
+) -> Result<BTreeMap<String, String>, IndexError> {
+    let mut files = BTreeMap::new();
+    for (rel, content) in collect_lang_sources(repo_path, &MD_EXTS, &MD_SKIP_DIRS, vendored)? {
+        if is_collected_markdown(&rel) {
+            files.insert(rel, content);
+        }
+    }
+    Ok(files)
+}
+
 /// Build the data plane's code→table input: one [`CodeSqlFile`] per source file,
 /// tagged with the language plane (`ts`/`py`/`cs`) its code nodes were built under,
 /// carrying that file's captured SQL candidates.
@@ -1692,5 +1786,30 @@ mod tests {
             name, "myrepo",
             "`repo_name_of(\".\")` must resolve through cwd to the real basename"
         );
+    }
+
+    // ── Knowledge plane (K2): the default markdown collection set (design §3) ──
+
+    #[test]
+    fn is_collected_markdown_matches_the_default_collection_set() {
+        // docs/**/*.md — collected regardless of depth.
+        assert!(is_collected_markdown("docs/guide.md"));
+        assert!(is_collected_markdown("docs/nested/deep.md"));
+        // A root-level *.md — collected.
+        assert!(is_collected_markdown("README.md"));
+        assert!(is_collected_markdown("CONTRIBUTING.md"));
+        // A nested README.md (any depth outside docs/) — collected.
+        assert!(is_collected_markdown("packages/foo/README.md"));
+        assert!(is_collected_markdown("src/README.md"));
+
+        // CHANGELOG* — excluded everywhere, including under docs/.
+        assert!(!is_collected_markdown("CHANGELOG.md"));
+        assert!(!is_collected_markdown("docs/CHANGELOG.md"));
+        assert!(!is_collected_markdown("CHANGELOG-2024.md"));
+
+        // A nested, non-README, non-docs markdown file — not collected (only
+        // docs/**, root *.md, and nested README.md are in the default set).
+        assert!(!is_collected_markdown("packages/foo/NOTES.md"));
+        assert!(!is_collected_markdown("src/internal/design.md"));
     }
 }

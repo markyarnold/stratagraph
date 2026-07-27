@@ -84,6 +84,16 @@ impl Graph {
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
         self.nodes.values()
     }
+
+    /// Every edge in the graph, in insertion order. The `Edge`-level twin of
+    /// [`nodes`](Self::nodes): unlike [`neighbors`](Self::neighbors), this does
+    /// NOT require the edge's endpoints to be present nodes, so it is the
+    /// rigorous way to assert "no edge exists at all" (e.g. a drift guard
+    /// proving a stale/unresolved reference was never edged, not merely that
+    /// its would-be target isn't a real node).
+    pub fn edges(&self) -> impl Iterator<Item = &Edge> {
+        self.edges.iter()
+    }
 }
 
 #[cfg(test)]

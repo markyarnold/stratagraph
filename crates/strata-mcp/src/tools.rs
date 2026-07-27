@@ -646,6 +646,9 @@ pub fn graph_schema_json() -> Value {
         NodeKind::Table,
         NodeKind::Column,
         NodeKind::CloudAction,
+        // Knowledge plane (K2): ingested markdown docs and their sections.
+        NodeKind::Doc,
+        NodeKind::DocSection,
     ];
     let edge_kinds = [
         EdgeKind::Defines,
@@ -669,6 +672,10 @@ pub fn graph_schema_json() -> Value {
         // IAM permission-gap (D2): a role Grants a CloudAction; code RequiresPermission it.
         EdgeKind::Grants,
         EdgeKind::RequiresPermission,
+        // Knowledge plane (K2): Doc—Contains→DocSection (never impact-traversed),
+        // and DocSection—Mentions→anything a section's refs resolved to.
+        EdgeKind::Documents,
+        EdgeKind::Mentions,
     ];
     json!({
         "node_kinds": node_kinds.iter().map(|k| kind_name(*k)).collect::<Vec<_>>(),
@@ -1817,7 +1824,9 @@ mod tests {
         assert!(nodes.contains(&"Table"));
         assert!(nodes.contains(&"Column"));
         assert!(nodes.contains(&"CloudAction"));
-        assert_eq!(nodes.len(), 19);
+        assert!(nodes.contains(&"Doc"));
+        assert!(nodes.contains(&"DocSection"));
+        assert_eq!(nodes.len(), 21);
         assert!(edges.contains(&"Calls"));
         assert!(edges.contains(&"Imports"));
         assert!(edges.contains(&"Produces"));
@@ -1833,7 +1842,9 @@ mod tests {
         assert!(edges.contains(&"MapsTo"));
         assert!(edges.contains(&"Grants"));
         assert!(edges.contains(&"RequiresPermission"));
-        assert_eq!(edges.len(), 19);
+        assert!(edges.contains(&"Documents"));
+        assert!(edges.contains(&"Mentions"));
+        assert_eq!(edges.len(), 21);
     }
 
     /// Guard against the advertised edge-kind vocabulary silently drifting from the
@@ -1870,6 +1881,8 @@ mod tests {
             EdgeKind::MapsTo,
             EdgeKind::Grants,
             EdgeKind::RequiresPermission,
+            EdgeKind::Documents,
+            EdgeKind::Mentions,
         ];
         for kind in all {
             let name = edge_kind_name(kind);

@@ -311,6 +311,21 @@ pub fn cmd_index(repo: &Path, db: &Path, include_vendored: bool) -> Result<Strin
             ));
         }
     }
+    // Knowledge-plane summary — shown when at least one markdown doc was
+    // ingested (docs/**/*.md, a root *.md, or a nested README.md). A repo with
+    // no matching markdown prints nothing extra (additive).
+    let knowledge = &stats.knowledge_link;
+    if knowledge.docs > 0 {
+        out.push_str(&format!(
+            "\n  knowledge:      {docs} doc(s), {sections} section(s); {linked} mention(s) \
+             linked ({ambiguous} ambiguous), {stale} stale",
+            docs = knowledge.docs,
+            sections = knowledge.sections,
+            linked = knowledge.mentions_linked,
+            ambiguous = knowledge.mentions_ambiguous,
+            stale = knowledge.stale_doc_mentions,
+        ));
+    }
     Ok(out)
 }
 
@@ -352,10 +367,25 @@ pub fn cmd_index_workspace(
 
 // ── impact ─────────────────────────────────────────────────────────────────────
 
+/// Whether a node-kind STRING names a knowledge-plane doc kind (`"Doc"` /
+/// `"DocSection"`). Shared by every printer that only has the serde kind name
+/// (not a typed `NodeKind`) to decide — see [`break_verdict`].
+fn is_doc_kind_name(kind: &str) -> bool {
+    matches!(kind, "Doc" | "DocSection")
+}
+
 /// The §15.6 will-break verdict as a printer label — the call in words, for the
-/// affected-node tables shared by `impact` and `detect-changes`.
-fn break_verdict(will_break: bool) -> &'static str {
-    if will_break {
+/// affected-node tables shared by `impact`, `blast`, and `detect-changes`.
+///
+/// `is_doc` overrides `will_break` to the honest `"needs review"` call for a
+/// knowledge-plane `Doc`/`DocSection` node: a stale doc doesn't fail to
+/// compile, it goes stale — design §2 "Impact semantics". This is
+/// presentation-only; the JSON tool payloads keep the mechanical `will_break`
+/// bool unchanged regardless of node kind.
+fn break_verdict(is_doc: bool, will_break: bool) -> &'static str {
+    if is_doc {
+        "needs review"
+    } else if will_break {
         "WILL BREAK"
     } else {
         "may affect"
@@ -366,7 +396,7 @@ fn break_verdict(will_break: bool) -> &'static str {
 /// impact printers pass two spaces, the change report four).
 fn affected_header(indent: &str) -> String {
     format!(
-        "{indent}{:>5}  {:>4}  {:>3}  {:<10}  {}\n",
+        "{indent}{:>5}  {:>4}  {:>3}  {:<12}  {}\n",
         "depth", "conf", "amb", "verdict", "name (path)"
     )
 }
@@ -375,19 +405,21 @@ fn affected_header(indent: &str) -> String {
 /// `depth  conf  amb  verdict  name (path)`, prefixed by `indent`. `verdict` is
 /// the §15.6 will-break call ([`break_verdict`]); the depth/confidence/ambiguity
 /// columns are unchanged from before the label existed.
+#[allow(clippy::too_many_arguments)]
 fn affected_row(
     indent: &str,
     depth: usize,
     confidence: f32,
     ambiguous: bool,
+    is_doc: bool,
     will_break: bool,
     name: &str,
     path: &str,
 ) -> String {
     format!(
-        "{indent}{depth:>5}  {confidence:>4.2}  {amb:>3}  {verdict:<10}  {name} ({path})\n",
+        "{indent}{depth:>5}  {confidence:>4.2}  {amb:>3}  {verdict:<12}  {name} ({path})\n",
         amb = if ambiguous { "yes" } else { "no" },
-        verdict = break_verdict(will_break),
+        verdict = break_verdict(is_doc, will_break),
     )
 }
 
@@ -467,7 +499,26 @@ pub fn cmd_impact(
         include_infra,
     };
     let result = impact(&graph, &node.uid, &opts);
+    Ok(render_impact_result(&graph, &node, &result))
+}
 
+/// Render a [`strata_core::ImpactResult`] as the human-readable `strata impact`
+/// output: the headline (`node`/its path/affected count), the zero-affected
+/// honesty tail, or the affected-node table. Shared by [`cmd_impact`] and
+/// [`cmd_impact_workspace`] (single-repo and `--workspace` both call this SAME
+/// renderer, so their output shape can never drift) — and `pub` so a hermetic
+/// test can exercise the real CLI rendering against an in-memory graph, with
+/// no DB/disk IO, exactly proving the doc-kind "needs review" verdict (never
+/// "WILL BREAK") the impact/blast renderers carry.
+///
+/// A [`strata_core::NodeKind::Doc`]/[`strata_core::NodeKind::DocSection`]
+/// affected node prints the `"needs review"` verdict regardless of its
+/// mechanical `will_break` bool (design §2) — every OTHER kind is unchanged.
+pub fn render_impact_result(
+    graph: &Graph,
+    node: &Node,
+    result: &strata_core::ImpactResult,
+) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "Impact of {} ({}) — {} affected:\n",
@@ -477,26 +528,31 @@ pub fn cmd_impact(
     ));
     if result.affected.is_empty() {
         render_zero_affected(&mut out, &node.name, &result.members_with_dependents);
-        return Ok(out);
+        return out;
     }
     out.push_str(&affected_header("  "));
     for a in &result.affected {
         // The node always exists in the graph (impact only reports reachable uids).
-        let path = graph
-            .get_node(&a.uid)
-            .map(|n| n.path.clone())
-            .unwrap_or_default();
+        let affected_node = graph.get_node(&a.uid);
+        let path = affected_node.map(|n| n.path.clone()).unwrap_or_default();
+        let is_doc = affected_node.is_some_and(|n| {
+            matches!(
+                n.kind,
+                strata_core::NodeKind::Doc | strata_core::NodeKind::DocSection
+            )
+        });
         out.push_str(&affected_row(
             "  ",
             a.depth,
             a.confidence,
             a.ambiguous,
+            is_doc,
             a.will_break,
             &a.name,
             &path,
         ));
     }
-    Ok(out.trim_end().to_string())
+    out.trim_end().to_string()
 }
 
 // ── explain ──────────────────────────────────────────────────────────────────
@@ -532,12 +588,16 @@ fn render_explanation(
     };
 
     let will_break = strata_core::will_break_label(explanation.confidence, explanation.ambiguous);
+    let is_doc = matches!(
+        affected.kind,
+        strata_core::NodeKind::Doc | strata_core::NodeKind::DocSection
+    );
     let mut out = format!(
         "Why {} affects {} (conf {:.2}, {}{}):\n",
         target.name,
         affected.name,
         explanation.confidence,
-        break_verdict(will_break),
+        break_verdict(is_doc, will_break),
         if explanation.ambiguous {
             ", via AMBIGUOUS"
         } else {
@@ -762,35 +822,7 @@ pub fn cmd_impact_workspace(
         include_infra,
     };
     let result = impact(&graph, &node.uid, &opts);
-
-    let mut out = String::new();
-    out.push_str(&format!(
-        "Impact of {} ({}) — {} affected:\n",
-        node.name,
-        node.path,
-        result.affected.len()
-    ));
-    if result.affected.is_empty() {
-        render_zero_affected(&mut out, &node.name, &result.members_with_dependents);
-        return Ok(out);
-    }
-    out.push_str(&affected_header("  "));
-    for a in &result.affected {
-        let path = graph
-            .get_node(&a.uid)
-            .map(|n| n.path.clone())
-            .unwrap_or_default();
-        out.push_str(&affected_row(
-            "  ",
-            a.depth,
-            a.confidence,
-            a.ambiguous,
-            a.will_break,
-            &a.name,
-            &path,
-        ));
-    }
-    Ok(out.trim_end().to_string())
+    Ok(render_impact_result(&graph, &node, &result))
 }
 
 /// `strata explain <target> <affected> --workspace <manifest> [--no-contracts]
@@ -1199,6 +1231,7 @@ fn render_change_report(report: &strata_index::ChangeReport) -> String {
                 a.depth,
                 a.confidence,
                 a.ambiguous,
+                is_doc_kind_name(&a.kind),
                 a.will_break,
                 &a.name,
                 &a.path,
@@ -1497,6 +1530,7 @@ fn render_blast_text(report: &BlastReport) -> String {
                 a.depth,
                 a.confidence,
                 a.ambiguous,
+                is_doc_kind_name(&a.kind),
                 a.will_break,
                 &a.name,
                 &a.path,
@@ -1567,7 +1601,7 @@ fn render_blast_agent(report: &BlastReport) -> String {
                 a.depth,
                 a.confidence,
                 if a.ambiguous { " AMBIGUOUS" } else { "" },
-                break_verdict(a.will_break),
+                break_verdict(is_doc_kind_name(&a.kind), a.will_break),
             ));
         }
         if report.affected.len() > TOP_N {
@@ -1855,10 +1889,10 @@ mod tests {
     #[test]
     fn affected_row_labels_the_will_break_verdict() {
         // The §15.6 verdict in words, and one rendered row of each kind.
-        assert_eq!(break_verdict(true), "WILL BREAK");
-        assert_eq!(break_verdict(false), "may affect");
+        assert_eq!(break_verdict(false, true), "WILL BREAK");
+        assert_eq!(break_verdict(false, false), "may affect");
 
-        let will = affected_row("  ", 1, 0.95, false, true, "caller", "a.ts");
+        let will = affected_row("  ", 1, 0.95, false, false, true, "caller", "a.ts");
         assert!(
             will.contains("WILL BREAK"),
             "will-break row carries it: {will:?}"
@@ -1868,7 +1902,7 @@ mod tests {
             "the name (path) is still present: {will:?}"
         );
 
-        let may = affected_row("  ", 2, 0.30, true, false, "weak", "b.ts");
+        let may = affected_row("  ", 2, 0.30, true, false, false, "weak", "b.ts");
         assert!(
             may.contains("may affect"),
             "may-affect row says so: {may:?}"
@@ -1876,6 +1910,53 @@ mod tests {
         assert!(
             !may.contains("WILL BREAK"),
             "a may-affect row is not labelled will-break: {may:?}"
+        );
+    }
+
+    // ── knowledge plane (K2): doc kinds render "needs review", never "WILL BREAK" ──
+
+    #[test]
+    fn is_doc_kind_name_matches_only_doc_and_docsection() {
+        assert!(is_doc_kind_name("Doc"));
+        assert!(is_doc_kind_name("DocSection"));
+        assert!(!is_doc_kind_name("Function"));
+        assert!(!is_doc_kind_name("Module"));
+    }
+
+    #[test]
+    fn break_verdict_overrides_will_break_for_doc_kinds() {
+        // is_doc=true always reads "needs review", regardless of will_break —
+        // a stale doc doesn't fail to compile, it goes stale (design §2).
+        assert_eq!(break_verdict(true, true), "needs review");
+        assert_eq!(break_verdict(true, false), "needs review");
+        // A non-doc kind is unaffected — the pre-existing WILL BREAK/may affect
+        // calls stay exactly as they were.
+        assert_eq!(break_verdict(false, true), "WILL BREAK");
+        assert_eq!(break_verdict(false, false), "may affect");
+    }
+
+    #[test]
+    fn affected_row_prints_needs_review_for_a_doc_kind_even_when_will_break_is_true() {
+        // A doc row's mechanical `will_break` CAN be true (confidence/ambiguity
+        // alone don't know the kind) — the row must still say "needs review",
+        // never "WILL BREAK".
+        let row = affected_row(
+            "  ",
+            1,
+            0.95,
+            false,
+            true,
+            true,
+            "Using alphaOne",
+            "docs/guide.md",
+        );
+        assert!(
+            row.contains("needs review"),
+            "a doc-kind row must say needs review: {row:?}"
+        );
+        assert!(
+            !row.contains("WILL BREAK"),
+            "a doc-kind row must never say WILL BREAK: {row:?}"
         );
     }
 
