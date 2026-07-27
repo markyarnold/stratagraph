@@ -356,11 +356,11 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_returns_the_seven_tools() {
+    fn tools_list_returns_the_eight_tools() {
         let g = Graph::new();
         let resp = handle_message(&g, &req(2, "tools/list", json!({}))).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 8);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
@@ -371,7 +371,8 @@ mod tests {
                 "query",
                 "blast",
                 "detect_changes",
-                "rename"
+                "rename",
+                "search_docs"
             ]
         );
     }

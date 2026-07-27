@@ -12,8 +12,8 @@ use strata_cli::init::{self, Agent, KiroVersion};
 use strata_cli::{
     cmd_blast, cmd_context, cmd_context_workspace, cmd_detect_changes, cmd_explain,
     cmd_explain_workspace, cmd_impact, cmd_impact_workspace, cmd_index, cmd_index_workspace,
-    cmd_mcp, cmd_mcp_workspace, cmd_query, cmd_query_workspace, cmd_rename, db_path, BlastFormat,
-    CliError, McpLaunch,
+    cmd_mcp, cmd_mcp_workspace, cmd_query, cmd_query_workspace, cmd_rename, cmd_search_docs,
+    db_path, BlastFormat, CliError, McpLaunch,
 };
 use strata_index::ResolveMode;
 
@@ -216,6 +216,28 @@ enum Command {
         /// token-lean block the pre-edit hook injects).
         #[arg(long, value_name = "FORMAT", default_value = "text")]
         format: String,
+    },
+    /// Lexical (tantivy, deterministic — no ML) search over the knowledge
+    /// plane's indexed docs: markdown sections, doc comments, and spec
+    /// descriptions. Explainable term matches, never a summary or an answer.
+    SearchDocs {
+        /// The search query (tantivy query syntax).
+        query: String,
+        /// Max results (default 5, hard-capped at 25).
+        #[arg(long, value_name = "N")]
+        limit: Option<u32>,
+        /// Graph database path. Forces single-repo search (no estate).
+        /// Conflicts with --workspace.
+        #[arg(long, value_name = "PATH", conflicts_with = "workspace")]
+        db: Option<PathBuf>,
+        /// Repository root (default: the grandparent of --db when it ends
+        /// `.strata/graph.duckdb`, else the current directory).
+        #[arg(long, value_name = "PATH")]
+        repo: Option<PathBuf>,
+        /// Estate workspace manifest path. Forces estate search: every
+        /// member's docs.idx is searched and merged. Conflicts with --db.
+        #[arg(long, value_name = "MANIFEST", conflicts_with = "db")]
+        workspace: Option<PathBuf>,
     },
     /// Graph-aware multi-file rename of a code symbol. Dry-run by default;
     /// pass --apply to write. Edits land only in graph-implicated files.
@@ -526,6 +548,20 @@ fn main() -> ExitCode {
             workspace.as_deref(),
             &file,
             BlastFormat::parse(&format),
+        )
+        .map(Some),
+        Command::SearchDocs {
+            query,
+            limit,
+            db,
+            repo,
+            workspace,
+        } => cmd_search_docs(
+            &query,
+            limit,
+            db.as_deref(),
+            repo.as_deref(),
+            workspace.as_deref(),
         )
         .map(Some),
         Command::Rename {

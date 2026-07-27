@@ -13,6 +13,7 @@ strata-core = { path = "../strata-core" }
 strata-index = { path = "../strata-index" }
 serde_json = { workspace = true }
 thiserror = "1"
+tantivy = "0.26.1"
 
 [dev-dependencies]
 # The detect_changes dispatch test drives a real tempdir git repo.

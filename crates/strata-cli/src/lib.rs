@@ -14,7 +14,9 @@ use strata_index::{
     BlastReport, ChangeScope, FileChange, IndexContext, IndexOptions, Plane, RenameOptions,
     RenameOutcome, ResolveMode, Risk, RiskLevel, WorkspaceManifest,
 };
-use strata_mcp::{resolve_symbol, serve_stdio_reloadable, GraphReloader, ResolveOutcome, ToolCtx};
+use strata_mcp::{
+    call_tool_ctx, resolve_symbol, serve_stdio_reloadable, GraphReloader, ResolveOutcome, ToolCtx,
+};
 use strata_store::{DuckGraphStore, GraphStore};
 
 pub mod init;
@@ -978,7 +980,14 @@ pub fn cmd_mcp(db: &Path, repo: Option<&Path>) -> Result<(), CliError> {
     // without a restart. The reloader is baselined to the db's current signal so
     // nothing looks stale until the next index; a failed reload keeps this graph.
     let reloader = SingleDbReloader::new(db);
-    serve_reloadable(graph, reloader, ToolCtx { repo_root })
+    serve_reloadable(
+        graph,
+        reloader,
+        ToolCtx {
+            repo_root,
+            member_roots: Vec::new(),
+        },
+    )
 }
 
 /// `strata mcp --workspace <manifest>` — load a **linked estate** graph and serve
@@ -1002,8 +1011,31 @@ pub fn cmd_mcp_workspace(manifest_path: &Path, repo_root: Option<&Path>) -> Resu
         reloader,
         ToolCtx {
             repo_root: repo_root.map(Path::to_path_buf),
+            // `search_docs` fan-out (K5): every declared member's own root, so
+            // its `.strata/docs.idx` (if any) is searched and merged. A manifest
+            // that fails to (re)load yields an empty vec (degrade-safe: the
+            // server still starts, `search_docs` just reports "no docs index"
+            // rather than the whole `mcp --workspace` launch failing over it).
+            member_roots: workspace_member_roots(manifest_path),
         },
     )
+}
+
+/// The (un-canonicalized, manifest-relative) root directory of every repo
+/// listed in the workspace manifest at `manifest_path` — matching EXACTLY how
+/// `index_estate_with_options` computes each member's `repo_path`
+/// (`manifest_dir.join(&repo.path)`, no canonicalize), so joining `.strata/…`
+/// onto one of these lands on the same directory the indexer wrote to. A
+/// manifest that fails to parse/load yields an empty vec.
+fn workspace_member_roots(manifest_path: &Path) -> Vec<PathBuf> {
+    let Ok((manifest, manifest_dir)) = load_manifest(manifest_path) else {
+        return Vec::new();
+    };
+    manifest
+        .repos
+        .iter()
+        .map(|r| manifest_dir.join(&r.path))
+        .collect()
 }
 
 /// The repository working directory implied by a `--db` path, when it has the
@@ -1037,6 +1069,109 @@ fn serve_reloadable(
 ) -> Result<(), CliError> {
     serve_stdio_reloadable(graph, reloader, ctx)
         .map_err(|e| CliError::Other(format!("mcp server error: {e}")))
+}
+
+// ── search-docs ───────────────────────────────────────────────────────────────
+
+/// `strata search-docs "<query>" [--limit N] [--db|--repo|--workspace]` —
+/// lexical (tantivy, deterministic — no ML) search over the knowledge plane's
+/// indexed docs: markdown sections, doc comments, and spec descriptions.
+///
+/// **One-dispatch rule:** this does NOT re-implement the tantivy query itself
+/// — `strata-cli` never takes a tantivy dependency at all. It resolves a
+/// [`ToolCtx`] (repo root for single-repo mode; every member's root for
+/// estate mode) exactly like [`cmd_blast`]/[`cmd_detect_changes`] resolve
+/// their graph source, then calls the SAME [`call_tool_ctx`] dispatch the MCP
+/// server uses for `search_docs`, so there is exactly one implementation of
+/// "how to search the docs index" (`strata-mcp`'s `tool_search_docs`).
+///
+/// Three-way dispatch (mirrors `cmd_blast`/`cmd_detect_changes`):
+/// 1. Explicit `--workspace <manifest>` → estate mode: every member's
+///    `.strata/docs.idx` is searched and merged. `--repo` does not scope this
+///    down to one member — search always covers the whole estate — so only
+///    `member_roots` is populated, `repo_root` stays `None`.
+/// 2. Explicit `--db <path>` → single-repo (the db's grandparent, or `--repo`).
+/// 3. Neither → auto-resolve via [`strata_index::resolve_context`] from
+///    `--repo`/cwd: `Estate` → estate mode (every member, same as #1),
+///    `Single` → that one repo's own index via `repo_root`.
+///
+/// Estate mode deliberately leaves `repo_root` unset (rather than ALSO
+/// setting it to the current member, the way the long-running `mcp
+/// --workspace` server's ctx does for `detect_changes`/`rename`): this ctx is
+/// built fresh for one call and discarded, so there is no other tool call
+/// that needs `repo_root`'s different "current working member" meaning —
+/// leaving it `None` here means `member_roots` alone drives the search, with
+/// no risk of the current member's index being counted twice.
+///
+/// The graph passed to `call_tool_ctx` is a fresh, empty [`Graph`] —
+/// `search_docs` never reads it (see its own doc comment), so there is no
+/// reason to pay for loading the real code graph just to run a lexical query.
+pub fn cmd_search_docs(
+    query: &str,
+    limit: Option<u32>,
+    db: Option<&Path>,
+    repo: Option<&Path>,
+    workspace: Option<&Path>,
+) -> Result<String, CliError> {
+    let ctx = if let Some(manifest) = workspace {
+        ToolCtx {
+            repo_root: None,
+            member_roots: workspace_member_roots(manifest),
+        }
+    } else if let Some(db) = db {
+        ToolCtx {
+            repo_root: repo
+                .map(Path::to_path_buf)
+                .or_else(|| repo_root_from_db(db)),
+            member_roots: Vec::new(),
+        }
+    } else {
+        let root = repo
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        match strata_index::resolve_context(&root) {
+            IndexContext::Estate { manifest, .. } => ToolCtx {
+                repo_root: None,
+                member_roots: workspace_member_roots(&manifest),
+            },
+            IndexContext::Single { .. } => ToolCtx {
+                repo_root: Some(root),
+                member_roots: Vec::new(),
+            },
+        }
+    };
+
+    let mut args = serde_json::json!({ "query": query });
+    if let Some(l) = limit {
+        args["limit"] = serde_json::json!(l);
+    }
+    let v = call_tool_ctx(&Graph::new(), &ctx, "search_docs", &args)
+        .map_err(|e| CliError::Other(e.to_string()))?;
+    Ok(render_search_docs(&v))
+}
+
+/// Render `search_docs`'s JSON result as `path#anchor (score) — snippet`
+/// lines, headed by a `[lexical match]` label so the output is honest about
+/// what it is (deterministic term matches, never a summary or an answer) —
+/// or the engine's own `note` when there is nothing to search.
+fn render_search_docs(v: &serde_json::Value) -> String {
+    let results = v["results"].as_array().cloned().unwrap_or_default();
+    if results.is_empty() {
+        let note = v
+            .get("note")
+            .and_then(|n| n.as_str())
+            .unwrap_or("no matches");
+        return format!("[lexical match] {note}");
+    }
+    let mut out = format!("[lexical match] {} result(s)\n", results.len());
+    for r in &results {
+        let path = r["path"].as_str().unwrap_or("");
+        let anchor = r["anchor"].as_str().unwrap_or("");
+        let score = r["score"].as_f64().unwrap_or(0.0);
+        let snippet = r["snippet"].as_str().unwrap_or("");
+        out.push_str(&format!("  {path}#{anchor} ({score:.2}) — {snippet}\n"));
+    }
+    out.trim_end().to_string()
 }
 
 // ── detect-changes ───────────────────────────────────────────────────────────────
@@ -1791,6 +1926,70 @@ mod tests {
     fn db_path_uses_override_when_given() {
         let p = PathBuf::from("/tmp/custom.duckdb");
         assert_eq!(db_path(Some(&p)), p);
+    }
+
+    // ── search-docs (K5): the CLI sibling over the SAME call_tool_ctx dispatch ──
+
+    #[test]
+    fn cmd_search_docs_single_repo_auto_resolve_renders_a_hit() {
+        // No estate marker under `.strata/` → resolve_context reports Single,
+        // exactly the auto-resolve path a plain `strata search-docs "…"` takes
+        // with no --db/--workspace given.
+        let tmp = tempfile::tempdir().unwrap();
+        let strata_dir = tmp.path().join(".strata");
+        std::fs::create_dir_all(&strata_dir).unwrap();
+        strata_index::write_docs_index(
+            &strata_dir,
+            &[strata_index::DocsIndexEntry {
+                uid: "doc|r|README.md|README.md#h|".to_string(),
+                name: "Heading".to_string(),
+                path: "README.md".to_string(),
+                anchor: "h".to_string(),
+                kind: strata_index::DocsEntryKind::Section,
+                body: "gadgetflow appears here".to_string(),
+            }],
+        )
+        .unwrap();
+
+        let out = cmd_search_docs("gadgetflow", None, None, Some(tmp.path()), None).unwrap();
+        assert!(
+            out.starts_with("[lexical match]"),
+            "output must be labeled lexical: {out}"
+        );
+        assert!(out.contains("README.md#h"), "{out}");
+        assert!(out.to_lowercase().contains("gadgetflow"), "{out}");
+    }
+
+    #[test]
+    fn cmd_search_docs_without_an_index_renders_the_honest_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = cmd_search_docs("anything", None, None, Some(tmp.path()), None).unwrap();
+        assert_eq!(out, "[lexical match] no docs index — run strata index");
+    }
+
+    #[test]
+    fn cmd_search_docs_explicit_limit_is_forwarded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let strata_dir = tmp.path().join(".strata");
+        std::fs::create_dir_all(&strata_dir).unwrap();
+        let entries: Vec<strata_index::DocsIndexEntry> = (0..5)
+            .map(|i| strata_index::DocsIndexEntry {
+                uid: format!("doc|r|README.md|README.md#s{i}|"),
+                name: "S".to_string(),
+                path: "README.md".to_string(),
+                anchor: format!("s{i}"),
+                kind: strata_index::DocsEntryKind::Section,
+                body: "flumboterm shared text".to_string(),
+            })
+            .collect();
+        strata_index::write_docs_index(&strata_dir, &entries).unwrap();
+
+        let out = cmd_search_docs("flumboterm", Some(2), None, Some(tmp.path()), None).unwrap();
+        assert_eq!(
+            out.matches("flumboterm").count(),
+            2,
+            "limit:2 must cap the rendered hit lines: {out}"
+        );
     }
 
     // ── repo_root_from_db: the canonical `<repo>/.strata/graph.duckdb` derivation ──

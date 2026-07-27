@@ -4,7 +4,7 @@
 //! payload — no IO, no MCP framing. This is the part that must be correct, and
 //! it is exercised directly by unit tests without any live MCP client.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use strata_core::{
@@ -19,14 +19,22 @@ use crate::resolve::{resolve_symbol, ResolveOutcome};
 /// Most tools (`context`/`impact`/`query`) are pure functions of the graph and
 /// ignore this entirely. The filesystem-touching tools (`detect_changes`,
 /// `rename`) need the repository root for git/IO; it lives here so the dispatch
-/// signature stays uniform. [`Default`] is `repo_root: None` — the ctx-less
-/// [`call_tool`] path, which makes those tools return a clear "needs a repo
-/// root" error rather than guessing.
+/// signature stays uniform. [`Default`] is `repo_root: None`, `member_roots:
+/// vec![]` — the ctx-less [`call_tool`] path, which makes those tools return a
+/// clear "needs a repo root" error rather than guessing.
 #[derive(Debug, Clone, Default)]
 pub struct ToolCtx {
     /// The repository working directory, when the server knows it (derived from
     /// the `--db` path or an explicit `--repo`). `None` over the ctx-less path.
     pub repo_root: Option<PathBuf>,
+    /// Every estate member's repo root, when the server is serving a linked
+    /// workspace graph (`--workspace`) — filled from the manifest's `[[repos]]`
+    /// paths by the CLI's workspace-mode server construction. Empty in
+    /// single-repo mode. Additive: only `search_docs` reads it today (estate
+    /// fan-out — every member's own `.strata/docs.idx` is searched and merged),
+    /// independent of `repo_root`'s single-member meaning used by
+    /// `detect_changes`/`rename`.
+    pub member_roots: Vec<PathBuf>,
 }
 
 /// Errors a tool call can fail with. Mapped to MCP `isError` results by the server.
@@ -168,8 +176,10 @@ pub fn call_tool(graph: &Graph, name: &str, args: &Value) -> Result<Value, ToolE
 /// the filesystem-touching tools), returning the JSON result.
 ///
 /// Supported tools: `context`, `impact`, `explain`, `query`, `blast` (graph-only,
-/// ignore the ctx), and `detect_changes`/`rename` (need `ctx.repo_root`). Any
-/// other name is [`ToolError::BadArgs`].
+/// ignore the ctx), `detect_changes`/`rename` (need `ctx.repo_root`), and
+/// `search_docs` (lexical-only — needs `ctx.repo_root`/`ctx.member_roots`,
+/// ignores `graph` entirely: it reads the tantivy docs index, not the code
+/// graph). Any other name is [`ToolError::BadArgs`].
 pub fn call_tool_ctx(
     graph: &Graph,
     ctx: &ToolCtx,
@@ -184,6 +194,7 @@ pub fn call_tool_ctx(
         "blast" => tool_blast(graph, args),
         "detect_changes" => tool_detect_changes(graph, ctx, args),
         "rename" => tool_rename(graph, ctx, args),
+        "search_docs" => tool_search_docs(ctx, args),
         other => Err(ToolError::BadArgs(format!("unknown tool: {other}"))),
     }
 }
@@ -524,9 +535,256 @@ fn bool_arg(args: &Value, key: &str) -> Result<Option<bool>, ToolError> {
     }
 }
 
+// ── search_docs (K5): lexical (tantivy) search over the knowledge plane's
+// indexed docs — markdown sections, doc comments, spec descriptions. This is
+// the ONLY tool that never touches `graph` at all: it reads
+// `<repo>/.strata/docs.idx`, a separate, local-only artifact `strata index`
+// writes (`strata_index::docs_index::write_docs_index`). Deterministic term
+// matching, no ML — every hit is labeled with what matched, never presented
+// as more than that.
+
+/// `search_docs`'s default result count when `limit` is omitted.
+const SEARCH_DOCS_DEFAULT_LIMIT: usize = 5;
+/// The hard cap on `limit`, regardless of what the caller asks for.
+const SEARCH_DOCS_MAX_LIMIT: usize = 25;
+/// The honest "nothing to search" note — returned instead of an error when no
+/// `docs.idx` is reachable at all (never indexed, or every configured index is
+/// unreadable), so a missing index degrades to an empty, explained result
+/// rather than a tool-call failure.
+const NO_DOCS_INDEX_NOTE: &str = "no docs index — run strata index";
+
+/// The `<repo>/.strata/docs.idx` paths to search: `ctx.repo_root`'s own index
+/// first, then every `ctx.member_roots` index (estate mode) — deduped by
+/// resolved path, since `repo_root` is commonly ALSO one of the manifest's
+/// members (the CLI's workspace-mode construction carries both), and
+/// searching the same index twice would double-count its hits.
+fn docs_index_paths(ctx: &ToolCtx) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    let mut paths = Vec::new();
+    for root in ctx.repo_root.iter().chain(ctx.member_roots.iter()) {
+        let idx = root.join(".strata").join(strata_index::DOCS_INDEX_DIR);
+        if seen.insert(idx.clone()) {
+            paths.push(idx);
+        }
+    }
+    paths
+}
+
+/// One search hit, before cross-index merging (a single `docs.idx`'s view).
+struct DocsHit {
+    uid: String,
+    name: String,
+    path: String,
+    anchor: String,
+    kind: String,
+    score: f32,
+    snippet: String,
+    matched_terms: Vec<String>,
+}
+
+/// The outcome of searching ONE `docs.idx`. `Missing`/`Unusable` are both
+/// expected, non-fatal states the caller tries the next configured index
+/// past — only a malformed QUERY (independent of which index it is tried
+/// against) is escalated to the caller as an error (see [`tool_search_docs`]).
+enum OneIndexOutcome {
+    Hits(Vec<DocsHit>),
+    /// No `docs.idx` directory at this path at all.
+    Missing,
+    /// The directory exists but could not be opened/read as a valid tantivy
+    /// index (corrupt, mid-write, wrong shape) — degrade, do not error.
+    Unusable,
+}
+
+/// Read a stored string field off `doc`, `""` if absent (defensive: every
+/// field this reader looks up is written by `write_docs_index` for every
+/// entry, so absence should not happen — but a reader never panics on a
+/// malformed/foreign index).
+fn stored_str(doc: &tantivy::TantivyDocument, field: tantivy::schema::Field) -> String {
+    use tantivy::schema::Value;
+    doc.get_first(field)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Search one `docs.idx` at `idx_path` for `query_text`, returning up to
+/// `limit` hits ordered by score descending. A query-syntax error is
+/// returned as `Err` (escalated to the caller — see [`tool_search_docs`]);
+/// every other failure mode (missing/corrupt index, an internal tantivy
+/// error past the parse step) degrades to [`OneIndexOutcome::Missing`] /
+/// [`OneIndexOutcome::Unusable`], never an error.
+fn search_one_index(
+    idx_path: &Path,
+    query_text: &str,
+    limit: usize,
+) -> Result<OneIndexOutcome, ToolError> {
+    if !idx_path.is_dir() {
+        return Ok(OneIndexOutcome::Missing);
+    }
+    let Ok(index) = tantivy::Index::open_in_dir(idx_path) else {
+        return Ok(OneIndexOutcome::Unusable);
+    };
+    let schema = index.schema();
+    let fields = (
+        schema.get_field("uid"),
+        schema.get_field("name"),
+        schema.get_field("path"),
+        schema.get_field("anchor"),
+        schema.get_field("kind"),
+        schema.get_field("body"),
+    );
+    let (uid_f, name_f, path_f, anchor_f, kind_f, body_f) = match fields {
+        (Ok(uid), Ok(name), Ok(path), Ok(anchor), Ok(kind), Ok(body)) => {
+            (uid, name, path, anchor, kind, body)
+        }
+        _ => return Ok(OneIndexOutcome::Unusable),
+    };
+    let Ok(reader) = index.reader() else {
+        return Ok(OneIndexOutcome::Unusable);
+    };
+    let searcher = reader.searcher();
+
+    let query_parser = tantivy::query::QueryParser::for_index(&index, vec![body_f, name_f]);
+    let query = query_parser
+        .parse_query(query_text)
+        .map_err(|e| ToolError::BadArgs(format!("invalid search_docs query: {e}")))?;
+
+    let Ok(top_docs) = searcher.search(
+        &query,
+        &tantivy::collector::TopDocs::with_limit(limit).order_by_score(),
+    ) else {
+        return Ok(OneIndexOutcome::Unusable);
+    };
+    let Ok(snippet_generator) =
+        tantivy::snippet::SnippetGenerator::create(&searcher, &*query, body_f)
+    else {
+        return Ok(OneIndexOutcome::Unusable);
+    };
+
+    // Every term the parsed query carries (across both queried fields, deduped
+    // by text) — the pool `matched_terms` is filtered from, per hit, below.
+    let mut all_terms: Vec<String> = Vec::new();
+    {
+        // `Term::value().as_str()` is an inherent method (`ValueBytes`), not
+        // trait-provided — no `Value` import needed here (unlike `stored_str`).
+        let mut seen = std::collections::HashSet::new();
+        query.query_terms(&mut |term, _positions| {
+            if let Some(s) = term.value().as_str() {
+                if seen.insert(s.to_string()) {
+                    all_terms.push(s.to_string());
+                }
+            }
+        });
+    }
+
+    let mut hits = Vec::new();
+    for (score, addr) in top_docs {
+        let Ok(doc) = searcher.doc::<tantivy::TantivyDocument>(addr) else {
+            continue;
+        };
+        let name = stored_str(&doc, name_f);
+        let body = stored_str(&doc, body_f);
+        let snippet = snippet_generator.snippet(&body).to_html();
+
+        // The terms that actually HIT this document — a subset of `all_terms`
+        // when the query has several terms and only some occur here (the
+        // default query conjunction is OR, so a hit does not imply every term
+        // matched). Case-insensitive substring check: tantivy's default
+        // tokenizer lowercases at index time, and `all_terms`' text (read back
+        // off the parsed `Term`s) is already in that same lowercased form.
+        let name_lower = name.to_lowercase();
+        let body_lower = body.to_lowercase();
+        let matched_terms: Vec<String> = all_terms
+            .iter()
+            .filter(|t| body_lower.contains(t.as_str()) || name_lower.contains(t.as_str()))
+            .cloned()
+            .collect();
+
+        hits.push(DocsHit {
+            uid: stored_str(&doc, uid_f),
+            name,
+            path: stored_str(&doc, path_f),
+            anchor: stored_str(&doc, anchor_f),
+            kind: stored_str(&doc, kind_f),
+            score,
+            snippet,
+            matched_terms,
+        });
+    }
+    Ok(OneIndexOutcome::Hits(hits))
+}
+
+/// The `search_docs` tool: `{ query: string, limit?: number=5 (max 25) }` →
+/// `{ results: [{ uid, name, path, anchor, kind, score, snippet,
+/// matched_terms }] }`. Single-repo mode searches `ctx.repo_root`'s
+/// `docs.idx`; estate mode (`ctx.member_roots` non-empty) searches every
+/// member's `docs.idx` and merges by score descending, tie-broken by `uid`
+/// ascending for deterministic ordering across runs. No `docs.idx` reachable
+/// at all (never indexed, every one unreadable) → `{ results: [], note:
+/// "no docs index — run strata index" }`, never an error — the ONE exception
+/// is a query the tantivy syntax parser itself rejects, which IS a caller
+/// error (`BadArgs`), independent of which/whether any index exists.
+fn tool_search_docs(ctx: &ToolCtx, args: &Value) -> Result<Value, ToolError> {
+    let query_text = require_str(args, "query")?;
+    let limit = match args.get("limit") {
+        None | Some(Value::Null) => SEARCH_DOCS_DEFAULT_LIMIT,
+        Some(v) => v
+            .as_u64()
+            .ok_or_else(|| ToolError::BadArgs("`limit` must be a number".into()))?
+            as usize,
+    }
+    .clamp(1, SEARCH_DOCS_MAX_LIMIT);
+
+    let index_paths = docs_index_paths(ctx);
+    if index_paths.is_empty() {
+        return Ok(json!({ "results": [], "note": NO_DOCS_INDEX_NOTE }));
+    }
+
+    let mut all_hits: Vec<DocsHit> = Vec::new();
+    let mut any_usable = false;
+    for idx_path in &index_paths {
+        match search_one_index(idx_path, query_text, limit)? {
+            OneIndexOutcome::Hits(mut hits) => {
+                any_usable = true;
+                all_hits.append(&mut hits);
+            }
+            OneIndexOutcome::Missing | OneIndexOutcome::Unusable => continue,
+        }
+    }
+
+    if !any_usable {
+        return Ok(json!({ "results": [], "note": NO_DOCS_INDEX_NOTE }));
+    }
+
+    // Deterministic cross-index merge: score descending, `uid` ascending as
+    // the tie-break so equal-score hits (common — e.g. two exact single-term
+    // matches) sort the same way on every run/every machine, never by
+    // incidental HashMap/thread ordering.
+    all_hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    all_hits.truncate(limit);
+
+    Ok(json!({
+        "results": all_hits.iter().map(|h| json!({
+            "uid": h.uid,
+            "name": h.name,
+            "path": h.path,
+            "anchor": h.anchor,
+            "kind": h.kind,
+            "score": h.score,
+            "snippet": h.snippet,
+            "matched_terms": h.matched_terms,
+        })).collect::<Vec<_>>()
+    }))
+}
+
 // ── schemas ─────────────────────────────────────────────────────────────────────
 
-/// The 7 tools' MCP `tools/list` descriptors (name + description + inputSchema).
+/// The 8 tools' MCP `tools/list` descriptors (name + description + inputSchema).
 pub fn tool_schemas() -> Value {
     json!([
         {
@@ -619,6 +877,18 @@ pub fn tool_schemas() -> Value {
                     "force": { "type": "boolean", "description": "Proceed even if a repo-wide symbol is already named `new_name`. Default false." }
                 },
                 "required": ["symbol", "new_name"]
+            }
+        },
+        {
+            "name": "search_docs",
+            "description": "Lexical (tantivy, deterministic — no ML/embeddings) full-text search over the knowledge plane's indexed docs: markdown section bodies, doc comments, and OpenAPI/GraphQL spec descriptions. Replaces manual doc-grepping for \"how do we…?\"/\"is there guidance on X?\" questions. Every hit is a labeled TERM MATCH, never a summary or an answer — it names which query terms actually hit (`matched_terms`) and a highlighted snippet, so it is always explainable. Missing or corrupt index (never indexed yet, or `strata index` has not run since) returns an honest `{results: [], note: \"no docs index — run strata index\"}` rather than an error.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search text (tantivy query syntax over section/doc-comment/description text and names)." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 25, "description": "Max results (default 5, hard-capped at 25)." }
+                },
+                "required": ["query"]
             }
         }
     ])
@@ -1616,10 +1886,10 @@ mod tests {
     }
 
     #[test]
-    fn tool_schemas_lists_the_seven_object_schemas() {
+    fn tool_schemas_lists_the_eight_object_schemas() {
         let schemas = tool_schemas();
         let arr = schemas.as_array().unwrap();
-        assert_eq!(arr.len(), 7);
+        assert_eq!(arr.len(), 8);
         let names: Vec<&str> = arr.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
@@ -1630,7 +1900,8 @@ mod tests {
                 "query",
                 "blast",
                 "detect_changes",
-                "rename"
+                "rename",
+                "search_docs"
             ]
         );
         for t in arr {
@@ -1665,6 +1936,7 @@ mod tests {
         let g = Graph::new();
         let ctx = ToolCtx {
             repo_root: Some(std::path::PathBuf::from("/tmp")),
+            ..ToolCtx::default()
         };
         let err =
             call_tool_ctx(&g, &ctx, "detect_changes", &json!({ "staged": "yes" })).unwrap_err();
@@ -1716,6 +1988,7 @@ mod tests {
         let g = Graph::new();
         let ctx = ToolCtx {
             repo_root: Some(dir.to_path_buf()),
+            ..ToolCtx::default()
         };
         let v = call_tool_ctx(&g, &ctx, "detect_changes", &json!({})).unwrap();
         // The serialized ChangeReport shape: scope + a changed symbol `f` + a risk.
@@ -1779,6 +2052,7 @@ mod tests {
 
         let ctx = ToolCtx {
             repo_root: Some(dir.to_path_buf()),
+            ..ToolCtx::default()
         };
         let v = call_tool_ctx(
             &g,
@@ -1798,6 +2072,248 @@ mod tests {
                 .contains("function helper()"),
             "dry-run rename must not write"
         );
+    }
+
+    // ── search_docs dispatch (K5) ──
+    //
+    // The engine (writer + schema) is exhaustively tested in
+    // `strata-index/src/docs_index.rs` and `strata-index/tests/docs_index.rs`
+    // (including the real `index_repo` → `.strata/docs.idx` wiring); these pin
+    // the *dispatch* seam: `search_docs` reads `ctx.repo_root`/`ctx.member_roots`
+    // and never touches `graph`, a missing/corrupt index degrades honestly, and
+    // an estate merge across several indices is deterministic.
+
+    /// Build a real on-disk `docs.idx` at `<root>/.strata/docs.idx` from
+    /// `entries` — the same writer `index_repo` calls, so this test fixture is
+    /// byte-for-byte the shape `search_docs` reads in production.
+    fn write_test_docs_index(root: &std::path::Path, entries: &[strata_index::DocsIndexEntry]) {
+        let strata_dir = root.join(".strata");
+        std::fs::create_dir_all(&strata_dir).unwrap();
+        strata_index::write_docs_index(&strata_dir, entries).unwrap();
+    }
+
+    fn section_entry(uid: &str, anchor: &str, body: &str) -> strata_index::DocsIndexEntry {
+        strata_index::DocsIndexEntry {
+            uid: uid.to_string(),
+            name: "Retry policy".to_string(),
+            path: "README.md".to_string(),
+            anchor: anchor.to_string(),
+            kind: strata_index::DocsEntryKind::Section,
+            body: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn search_docs_returns_capped_labeled_hits() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_test_docs_index(
+            tmp.path(),
+            &[section_entry(
+                "doc|r|README.md|README.md#retry-policy|",
+                "retry-policy",
+                "Always use exponential backoff.",
+            )],
+        );
+        let g = Graph::new();
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            ..ToolCtx::default()
+        };
+        let v = call_tool_ctx(&g, &ctx, "search_docs", &json!({ "query": "backoff" })).unwrap();
+        let results = v["results"].as_array().unwrap();
+        assert!(results.len() <= 5, "default limit is 5: {results:?}");
+        assert!(!results.is_empty(), "a real hit must come back");
+        assert_eq!(results[0]["kind"], "section");
+        assert_eq!(results[0]["anchor"], "retry-policy");
+        assert!(results[0]["snippet"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("backoff"));
+        assert!(results[0]["matched_terms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "backoff"));
+        // Never labeled as anything but a term match.
+        assert!(v.get("note").is_none());
+    }
+
+    #[test]
+    fn search_docs_without_index_is_empty_not_error() {
+        let g = Graph::new();
+        let ctx = ToolCtx::default();
+        let v = call_tool_ctx(&g, &ctx, "search_docs", &json!({ "query": "x" })).unwrap();
+        assert_eq!(v["results"].as_array().unwrap().len(), 0);
+        assert_eq!(v["note"], "no docs index — run strata index");
+    }
+
+    #[test]
+    fn search_docs_on_a_configured_but_never_indexed_repo_root_is_also_empty_not_error() {
+        // `repo_root` IS set, but no `strata index` ever ran there — the
+        // "corrupt/missing index" degrade path, not the ctx-less path.
+        let tmp = tempfile::tempdir().unwrap();
+        let g = Graph::new();
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            ..ToolCtx::default()
+        };
+        let v = call_tool_ctx(&g, &ctx, "search_docs", &json!({ "query": "x" })).unwrap();
+        assert_eq!(v["results"].as_array().unwrap().len(), 0);
+        assert_eq!(v["note"], "no docs index — run strata index");
+    }
+
+    #[test]
+    fn search_docs_treats_a_corrupt_index_directory_the_same_as_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let strata_dir = tmp.path().join(".strata");
+        // A `docs.idx` directory that exists but is NOT a valid tantivy index
+        // (no meta.json etc.) — must degrade, never panic/error.
+        std::fs::create_dir_all(strata_dir.join("docs.idx")).unwrap();
+        std::fs::write(strata_dir.join("docs.idx").join("garbage.txt"), b"nope").unwrap();
+
+        let g = Graph::new();
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            ..ToolCtx::default()
+        };
+        let v = call_tool_ctx(&g, &ctx, "search_docs", &json!({ "query": "x" })).unwrap();
+        assert_eq!(v["results"].as_array().unwrap().len(), 0);
+        assert_eq!(v["note"], "no docs index — run strata index");
+    }
+
+    #[test]
+    fn search_docs_limit_is_capped_at_twenty_five_even_when_more_is_requested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries: Vec<strata_index::DocsIndexEntry> = (0..40)
+            .map(|i| {
+                section_entry(
+                    &format!("doc|r|README.md|README.md#s{i}|"),
+                    &format!("s{i}"),
+                    "widgetterm appears in every section here",
+                )
+            })
+            .collect();
+        write_test_docs_index(tmp.path(), &entries);
+
+        let g = Graph::new();
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            ..ToolCtx::default()
+        };
+        let v = call_tool_ctx(
+            &g,
+            &ctx,
+            "search_docs",
+            &json!({ "query": "widgetterm", "limit": 1000 }),
+        )
+        .unwrap();
+        assert_eq!(
+            v["results"].as_array().unwrap().len(),
+            25,
+            "limit must be hard-capped at 25 regardless of what is requested"
+        );
+    }
+
+    #[test]
+    fn search_docs_invalid_query_syntax_is_bad_args_not_a_silent_empty_result() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_test_docs_index(
+            tmp.path(),
+            &[section_entry(
+                "doc|r|README.md|README.md#h|",
+                "h",
+                "hello world",
+            )],
+        );
+        let g = Graph::new();
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            ..ToolCtx::default()
+        };
+        // An unbalanced quote is invalid tantivy query syntax — this must be a
+        // clear caller error, never silently reported as "no docs index".
+        let err = call_tool_ctx(
+            &g,
+            &ctx,
+            "search_docs",
+            &json!({ "query": "\"unterminated" }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)), "{err:?}");
+    }
+
+    #[test]
+    fn search_docs_estate_mode_merges_member_roots_deterministically() {
+        // Two separate member repos, each with their own docs.idx, both
+        // mentioning the same term with the SAME score (identical single-term
+        // content) — the merge must be deterministic: score desc, uid asc
+        // tie-break, every run.
+        let repo_a = tempfile::tempdir().unwrap();
+        let repo_b = tempfile::tempdir().unwrap();
+        write_test_docs_index(
+            repo_a.path(),
+            &[section_entry(
+                "doc|b-repo|README.md|README.md#h|",
+                "h",
+                "quorumflag appears here",
+            )],
+        );
+        write_test_docs_index(
+            repo_b.path(),
+            &[section_entry(
+                "doc|a-repo|README.md|README.md#h|",
+                "h",
+                "quorumflag appears here too",
+            )],
+        );
+
+        let g = Graph::new();
+        let ctx = ToolCtx {
+            repo_root: None,
+            member_roots: vec![repo_a.path().to_path_buf(), repo_b.path().to_path_buf()],
+        };
+        let v1 = call_tool_ctx(&g, &ctx, "search_docs", &json!({ "query": "quorumflag" })).unwrap();
+        let v2 = call_tool_ctx(&g, &ctx, "search_docs", &json!({ "query": "quorumflag" })).unwrap();
+        assert_eq!(
+            v1, v2,
+            "the same query against the same estate must merge identically every run"
+        );
+        let results = v1["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2, "both members' hits must be merged");
+        let uids: Vec<&str> = results.iter().map(|r| r["uid"].as_str().unwrap()).collect();
+        assert_eq!(
+            uids,
+            vec![
+                "doc|a-repo|README.md|README.md#h|",
+                "doc|b-repo|README.md|README.md#h|"
+            ],
+            "equal-score hits must tie-break by uid ascending: {uids:?}"
+        );
+    }
+
+    #[test]
+    fn search_docs_never_dispatches_through_the_graph_at_all() {
+        // A completely empty graph must not stop search_docs from finding a
+        // real hit — proof it is genuinely graph-independent, per its own
+        // `call_tool_ctx` doc comment.
+        let tmp = tempfile::tempdir().unwrap();
+        write_test_docs_index(
+            tmp.path(),
+            &[section_entry(
+                "doc|r|README.md|README.md#h|",
+                "h",
+                "zephyrqueue content",
+            )],
+        );
+        let g = Graph::new();
+        assert_eq!(g.node_count(), 0, "the graph really is empty");
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            ..ToolCtx::default()
+        };
+        let v = call_tool_ctx(&g, &ctx, "search_docs", &json!({ "query": "zephyrqueue" })).unwrap();
+        assert_eq!(v["results"].as_array().unwrap().len(), 1);
     }
 
     #[test]

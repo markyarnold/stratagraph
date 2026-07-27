@@ -17,6 +17,7 @@ mod changes;
 mod contract;
 mod data;
 mod differential;
+mod docs_index;
 mod estate;
 pub mod estate_marker;
 mod fs;
@@ -67,6 +68,12 @@ pub use data::{
 pub use differential::{
     accuracy_report, resolve_differential, resolve_differential_graph, AccuracyReport, Band,
     BandMetrics, ClassMetrics, SiteOutcome, ALL_BANDS, ALL_CLASSES,
+};
+// The lexical (tantivy) docs-index writer (K5): assembled index-time from the
+// three knowledge-plane sources (markdown sections, doc comments, spec
+// descriptions) by `index_impl`. `search_docs` (`strata-mcp`) is the reader.
+pub use docs_index::{
+    write_docs_index, DocsEntryKind, DocsIndexEntry, DocsIndexError, DOCS_INDEX_DIR,
 };
 pub use estate::{
     index_estate, index_estate_with_options, link_estate, load_estate, EstateError,
@@ -645,14 +652,49 @@ fn index_impl(
     // the way SQL/CFN can, so there is no diagnostics vec here. ──
     let markdown = collect_markdown(repo_path, Arc::clone(&vendored))?;
     let docs: Vec<(String, strata_knowledge::DocModel)> = markdown
-        .into_iter()
+        .iter()
         .map(|(path, content)| {
-            let model = strata_knowledge::parse_markdown(&path, &content);
-            (path, model)
+            let model = strata_knowledge::parse_markdown(path, content);
+            (path.clone(), model)
         })
         .collect();
     let knowledge_link =
         knowledge::build_knowledge_plane(&mut graph, repo_name, &combined_analyzed, &docs);
+
+    // ── Lexical docs index (K5): a tantivy full-text index at `.strata/docs.idx`,
+    // rebuilt fresh on every index run from the SAME three knowledge-plane
+    // sources `build_knowledge_plane` just linked into the graph above —
+    // markdown section bodies (sliced from `markdown`'s in-memory content via
+    // each section's `body_range`, K1), doc-comment text (sliced from each
+    // language's raw source via `RawSymbol::doc_span`'s LINE range, K3), and
+    // spec operation descriptions (K4). `docs_index::write_docs_index` is a
+    // best-effort side artifact — see its doc comment — so a write failure is
+    // logged, never propagated: `search_docs` degrades to an honest "no docs
+    // index" note rather than an otherwise-successful `strata index` run
+    // failing over a sidecar. Estate mode needs nothing extra here: each
+    // member repo is indexed through this SAME `index_impl` with its own
+    // `repo_path`, so each member naturally gets its own `docs.idx`. ──
+    let strata_dir = repo_path.join(".strata");
+    let sources_for_docs: BTreeMap<&str, &str> = files
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .chain(py_files.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .chain(cs_files.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .chain(rust_files.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .collect();
+    let mut docs_entries = docs_entries_for_sections(repo_name, &docs, &markdown);
+    docs_entries.extend(docs_entries_for_doc_comments(
+        repo_name,
+        &combined_analyzed,
+        &sources_for_docs,
+    ));
+    docs_entries.extend(docs_entries_for_operations(repo_name, &operations));
+    if let Err(e) = docs_index::write_docs_index(&strata_dir, &docs_entries) {
+        eprintln!(
+            "[index] warning: could not write lexical docs index {}: {e}",
+            strata_dir.join(docs_index::DOCS_INDEX_DIR).display()
+        );
+    }
 
     let stats = IndexStats {
         // Includes TS/JS sources, the GraphQL operation documents that became
@@ -693,8 +735,8 @@ fn index_impl(
     // reader that races a still-in-flight reindex degrades safely. A stamp-write
     // failure must not fail an otherwise-successful index (the served graph just
     // keeps using its previous staleness signal), so it is logged, not
-    // propagated.
-    let strata_dir = repo_path.join(".strata");
+    // propagated. `strata_dir` was already resolved above, for the docs-index
+    // write.
     if let Err(e) = stamp::IndexStamp::new(stats.nodes, stats.edges).write(&strata_dir) {
         eprintln!(
             "[index] warning: could not write hot-reload stamp {}: {e}",
@@ -1430,6 +1472,135 @@ fn collect_code_orm<'a>(
         }
     }
     out
+}
+
+// ── Lexical docs index (K5): assemble `docs_index::DocsIndexEntry` batches from
+// the three knowledge-plane sources. `docs_index::write_docs_index` is only the
+// WRITER (schema + atomic build) — the assembly (where each source's body text
+// lives, and how to slice it) is the index-time pipeline's job, exactly like
+// `collect_code_sql`/`collect_code_orm` above assemble the data plane's inputs.
+
+/// Markdown section entries: every section of every collected doc, body text
+/// sliced straight from `markdown`'s in-memory content via the section's
+/// `body_range` (K1) — never re-read from disk, never stored beyond this
+/// transient batch. `uid` is the exact `doc_section_uid` `build_knowledge_plane`
+/// gave the same section's graph node, so a hit correlates 1:1 with
+/// `impact`/`context`.
+fn docs_entries_for_sections(
+    repo_name: &str,
+    docs: &[(String, strata_knowledge::DocModel)],
+    markdown: &BTreeMap<String, String>,
+) -> Vec<docs_index::DocsIndexEntry> {
+    let mut out = Vec::new();
+    for (path, doc) in docs {
+        let Some(content) = markdown.get(path) else {
+            continue;
+        };
+        for section in &doc.sections {
+            let (start, end) = section.body_range;
+            // `content` is the SAME string `parse_markdown` computed this
+            // range against, so it is always in-bounds; `get` (rather than
+            // slicing directly) still degrades to an empty body instead of
+            // panicking if that were ever violated.
+            let body = content.get(start..end).unwrap_or_default().to_string();
+            out.push(docs_index::DocsIndexEntry {
+                uid: doc_section_uid(repo_name, path, &section.anchor).to_string(),
+                name: section.heading.clone(),
+                path: path.clone(),
+                anchor: section.anchor.clone(),
+                kind: docs_index::DocsEntryKind::Section,
+                body,
+            });
+        }
+    }
+    out
+}
+
+/// Extract the text of 1-based, inclusive lines `start_line..=end_line` from
+/// `source` — used to slice a doc comment's text straight from the language
+/// analyzer's already-in-memory source file content. The comment's TEXT is
+/// never captured anywhere except this transient, local batch (bodies-from-
+/// disk; `RawSymbol::doc_span` itself only ever carries the span).
+fn slice_source_lines(source: &str, start_line: u32, end_line: u32) -> String {
+    source
+        .lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let line_no = i as u32 + 1;
+            (line_no >= start_line && line_no <= end_line).then_some(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Doc-comment entries: every symbol across every language plane (TS/JS,
+/// Python, C#, Rust) whose `RawSymbol::doc_span` is set — the design's "every
+/// doc comment" (a superset of, never narrower than, what
+/// `build_knowledge_plane` manages to resolve to exactly one graph node: a
+/// `(path, fqn)` collision there skips the graph edge, per K3, but the text
+/// itself is still real and worth finding by search). `sources` maps a
+/// repo-relative path to that file's raw content — the union of the four
+/// language collection passes (`files`/`py_files`/`cs_files`/`rust_files`),
+/// whose path keys are disjoint by construction.
+fn docs_entries_for_doc_comments(
+    repo_name: &str,
+    combined_analyzed: &BTreeMap<String, AnalyzedFile>,
+    sources: &BTreeMap<&str, &str>,
+) -> Vec<docs_index::DocsIndexEntry> {
+    let mut out = Vec::new();
+    for (path, file) in combined_analyzed {
+        let Some(source) = sources.get(path.as_str()) else {
+            continue;
+        };
+        for symbol in &file.symbols {
+            let Some(span) = symbol.doc_span else {
+                continue;
+            };
+            let anchor = format!("doc:{}", symbol.fqn);
+            let body = slice_source_lines(source, span.start_line, span.end_line);
+            out.push(docs_index::DocsIndexEntry {
+                uid: doc_section_uid(repo_name, path, &anchor).to_string(),
+                name: format!("doc: {}", symbol.name),
+                path: path.clone(),
+                anchor,
+                kind: docs_index::DocsEntryKind::DocComment,
+                body,
+            });
+        }
+    }
+    out
+}
+
+/// Spec-description entries: every operation whose spec declared a
+/// `description` (K4) — indexed under the exact `contract::operation_uid` the
+/// operation's own `ApiOperation`/`GraphqlField` graph node carries (spec
+/// descriptions create no separate graph node — the design's §2 "Spec
+/// descriptions create no nodes" — so this uid IS the node's uid). `name`
+/// mirrors how the producer plane names the node
+/// (`build_producer_plane`/`canonical_operation_node`): `operationId` if the
+/// spec declared one, else `"METHOD path"`.
+fn docs_entries_for_operations(
+    repo_name: &str,
+    operations: &[strata_contract::OperationDef],
+) -> Vec<docs_index::DocsIndexEntry> {
+    operations
+        .iter()
+        .filter_map(|op| {
+            let body = op.description.clone()?;
+            let name = op
+                .operation_id
+                .clone()
+                .unwrap_or_else(|| format!("{} {}", op.method, op.path));
+            Some(docs_index::DocsIndexEntry {
+                uid: contract::operation_uid(repo_name, op).to_string(),
+                name,
+                path: op.spec_path.clone(),
+                anchor: op.key.clone(),
+                kind: docs_index::DocsEntryKind::SpecDescription,
+                body,
+            })
+        })
+        .collect()
 }
 
 /// Cap a per-plane diagnostics vec at [`MAX_INFRA_DIAGNOSTICS`], appending a single

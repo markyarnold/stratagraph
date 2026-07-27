@@ -344,6 +344,7 @@ fn help_lists_all_subcommands() {
         "mcp",
         "detect-changes",
         "rename",
+        "search-docs",
     ] {
         assert!(
             stdout.contains(sub),
