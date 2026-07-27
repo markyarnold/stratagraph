@@ -102,7 +102,7 @@ struct HookSpec {
     action: HookAction,
 }
 
-const PRE_EDIT_PROMPT: &str = "STOP: StrataGraph workflow check. Before writing to this file, confirm you have assessed its blast radius: run the blast tool ({ file }) for the whole-file view, or impact({ symbol }) for EVERY symbol, field, or operation you are about to modify. For any GraphQL field / API operation, also run context({ symbol }) and check its producers (implementers) and consumers (callers) buckets. If you have NOT done this yet, do it now before proceeding. State which symbols were analysed, their d=1/d=2 dependents, confidence bands, and risk level. NEVER present uncertain impact (<0.40 or ambiguous) as certain; say so explicitly. If risk is HIGH/CRITICAL or the change crosses a repo boundary, pause for user direction.";
+const PRE_EDIT_PROMPT: &str = "STOP: StrataGraph workflow check. Before writing to this file, confirm you have assessed its blast radius: run the blast tool ({ file }) for the whole-file view, or impact({ symbol }) for EVERY symbol, field, or operation you are about to modify. For any GraphQL field / API operation, also run context({ symbol }) and check its producers (implementers) and consumers (callers) buckets. If the injected blast output lists a docs: line at >=0.80 that you have not consulted, run the guidance tool for this file first. If you have NOT done this yet, do it now before proceeding. State which symbols were analysed, their d=1/d=2 dependents, confidence bands, and risk level. NEVER present uncertain impact (<0.40 or ambiguous) as certain; say so explicitly. If risk is HIGH/CRITICAL or the change crosses a repo boundary, pause for user direction.";
 
 /// The two lifecycle hooks Kiro ships. Both ride a **mechanically scoped**
 /// trigger — the write tools — so they never fire on read-only or shell
@@ -321,6 +321,22 @@ mod tests {
 
     fn read_json(p: &std::path::Path) -> Value {
         serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    }
+
+    /// K7 (design §5, "Kiro specifics"): the pre-edit prompt gains one clause
+    /// pointing the agent at `guidance` when the injected blast output's
+    /// `docs:` line shows unconsulted ≥ 0.80 coverage — verbatim, so the
+    /// prompt carries the SAME conditional-only rule the steering block's
+    /// Always Do bullet states (never an unconditional per-edit call).
+    #[test]
+    fn pre_edit_prompt_carries_the_docs_line_clause() {
+        assert!(
+            PRE_EDIT_PROMPT.contains(
+                "If the injected blast output lists a docs: line at >=0.80 that you have not \
+                 consulted, run the guidance tool for this file first."
+            ),
+            "PRE_EDIT_PROMPT must carry the exact docs: line clause:\n{PRE_EDIT_PROMPT}"
+        );
     }
 
     #[test]

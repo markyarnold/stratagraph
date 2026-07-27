@@ -94,7 +94,9 @@ pub fn render_steering_block(identity: &Identity, routing: &str) -> String {
     s.push_str("- **MUST check every plane the target touches.** A GraphQL field / API operation → `context` and read its `producers` (who implements it) and `consumers` (who queries it) buckets. A Lambda / handler / module → its `produces` / `consumes`. An ordinary exported symbol → `impact` for upstream dependents.\n");
     s.push_str("- **MUST warn and pause for direction** when the blast radius is HIGH or CRITICAL, when it crosses a repo boundary (estate), or when it touches contract surface consumed by another plane.\n");
     s.push_str("- **MUST treat confidence bands as trust policy:** ≥ 0.90 → act on it; 0.40–0.89 → verify in the source before relying on it; < 0.40 or `ambiguous: true` → treat as UNKNOWN and **say so explicitly; never present uncertain impact as certain.**\n");
-    s.push_str("- **MUST flag likely-dead contract surface:** a field/operation with **0 producers AND 0 consumers** is probably dead, so call it out rather than treating it as live.\n\n");
+    s.push_str("- **MUST flag likely-dead contract surface:** a field/operation with **0 producers AND 0 consumers** is probably dead, so call it out rather than treating it as live.\n");
+    s.push_str(KNOWLEDGE_STEERING_ADDITION);
+    s.push('\n');
 
     // ── Never Do ──
     s.push_str("## Never Do\n\n");
@@ -109,13 +111,44 @@ pub fn render_steering_block(identity: &Identity, routing: &str) -> String {
     s.push_str("- **`explain`** `{ symbol, affected, depth?, min_confidence?, include_contracts?, include_infra? }`: WHY is `affected` in `symbol`'s blast radius? Returns the evidence chain: each edge's kind/provenance/confidence and the running (accumulated) confidence that produces impact's number, or an honest `reachable: false` when it is not in the radius. The same toggles as `impact`, so the explained confidence matches the impact row.\n");
     s.push_str("- **`context`** `{ symbol }`: the 360° view of one symbol: `callers`, `callees`, `imports_in`/`imports_out`, `members`, `container`, and the contract buckets `producers` / `consumers` / `produces` / `consumes`.\n");
     s.push_str("- **`query`** `{ text }`: case-insensitive lexical search over name / fully-qualified name / path. Use it to find the exact symbol before `impact`/`context`.\n");
-    s.push_str("- **`detect_changes`** `{ staged? }`: the pre-commit check: git-diffs the working tree (or the staged index) vs HEAD, derives the changed symbols per plane (code / contract / infra), aggregates the blast radius over the graph, and returns `{ files, symbols, affected, risk }` with risk reasons. Use it before committing instead of running `impact` per changed symbol.\n\n");
+    s.push_str("- **`detect_changes`** `{ staged? }`: the pre-commit check: git-diffs the working tree (or the staged index) vs HEAD, derives the changed symbols per plane (code / contract / infra), aggregates the blast radius over the graph, and returns `{ files, symbols, affected, risk }` with risk reasons. Use it before committing instead of running `impact` per changed symbol.\n");
+    s.push_str(KNOWLEDGE_TOOL_LIST_ADDITION);
+    s.push('\n');
     s.push_str("> **Auto-reload (read this):** the MCP server now hot-reloads. When the on-disk index changes (the PostToolUse `strata index` hook, or a manual reindex) it swaps in the fresh graph before the next request, no session/server restart needed. The reload is degrade-safe: a reindex caught mid-write keeps the previous graph and retries, so a tool call never blocks or serves a half-loaded graph. It keys off `.strata/index.stamp`, falling back to the `graph.duckdb` mtime for indexes written before this feature. (Estate `--workspace` reloads the same way on a manifest or per-repo change.)\n\n");
 
     s.push_str(routing.trim_end());
     s.push('\n');
     s
 }
+
+/// K7 (design §5): the knowledge-plane addition to the Always Do block —
+/// three MUST bullets, verbatim from the design/plan §5 text. Kept as its own
+/// constant (rather than inlined `push_str` calls like its siblings) so the
+/// kit-token-audit guardrail (`steering_addition_stays_within_the_kit_token_audit_budget`)
+/// can measure exactly what K7 added, independent of the pre-existing block.
+///
+/// - The first bullet is the **only** conditional MUST added by the knowledge
+///   plane: it fires only off the free pre-edit hook's `docs:` line (never an
+///   unconditional per-edit `guidance` call — the token-economy governing
+///   principle, design §5).
+/// - The second extends the honesty rule: doc guidance is repo knowledge, not
+///   ground truth — the SAME confidence-band trust policy applies to a
+///   `Mentions`/`Documents` edge as to any other.
+/// - The third extends the commit rule: `detect_changes`' "docs to review"
+///   line must be reported, and any fix offered, never auto-applied.
+const KNOWLEDGE_STEERING_ADDITION: &str = "\
+- **MUST act on the `docs:` line the pre-edit blast injects.** When it lists a section at ≥ 0.80 covering the file that you have not consulted this session, fetch `guidance` for the file BEFORE editing. Never call guidance unconditionally — the hook line is the trigger.
+- **Doc guidance is repo knowledge, not ground truth.** Docs can be stale: the graph marks drift, and a mention below 0.40 or ambiguous is UNKNOWN — the same trust policy as every other band.
+- **Report `detect_changes`' \"docs to review\" line in your pre-commit summary** and offer (never auto-apply) updates for stale sections.
+";
+
+/// K7: the knowledge-plane addition to the Tools (MCP) reference — `guidance`
+/// and `search_docs`, the two new tools the pre-edit hook's `docs:` line and
+/// the honesty rule above point at.
+const KNOWLEDGE_TOOL_LIST_ADDITION: &str = "\
+- **`guidance`** `{ symbol?, file?, budget?, section? }`: a token-budgeted digest of what the repo already knows about a symbol or file — its own doc comment, then the docs that document/mention it, ordered by descending confidence, sliced from disk at query time (bodies are never stored in the graph). Default budget ~1,200 tokens (4800 chars) across all sections; pass `section` (an anchor) to fetch one section's full body, uncapped.
+- **`search_docs`** `{ query, limit? }`: lexical (tantivy, deterministic — no ML/embeddings) full-text search over the knowledge plane's indexed docs (markdown sections, doc comments, spec descriptions). Use it instead of grepping docs for \"how do we…?\"/\"is there guidance on X?\" questions — every hit names its matched terms, never a summary or an answer.
+";
 
 /// The Claude Code skill-routing table appended to the steering block.
 pub const CLAUDE_ROUTING: &str = "\
@@ -195,13 +228,16 @@ fn skill_guide() -> String {
     s.push_str("## When to Use\n\n");
     s.push_str("- You don't yet know which tool answers the question.\n");
     s.push_str("- You need the tool surface, the plane model, or the confidence-band policy.\n");
-    s.push_str("- You're about to edit and want the safe-change protocol in one place.\n\n");
+    s.push_str("- You're about to edit and want the safe-change protocol in one place.\n");
+    s.push_str("- Repo conventions / \"is there guidance on X?\" → reach for `guidance`/`search_docs` directly; no need to grep the docs tree by hand.\n\n");
 
-    s.push_str("## The three tools\n\n");
+    s.push_str("## The tools\n\n");
     s.push_str("- **`query({ text })`**: find the symbol by name / fqn / path (case-insensitive substring). Start here when you only have a name.\n");
-    s.push_str("- **`context({ symbol })`**: the 360° view: `callers`, `callees`, `imports_in`/`imports_out`, `members`, `container`, and the contract buckets `producers` / `consumers` / `produces` / `consumes`.\n");
+    s.push_str("- **`context({ symbol })`**: the 360° view: `callers`, `callees`, `imports_in`/`imports_out`, `members`, `container`, the contract buckets `producers` / `consumers` / `produces` / `consumes`, and the knowledge-plane `docs` bucket (refs only — the sections that document/mention this symbol).\n");
     s.push_str("- **`impact({ symbol, depth?, min_confidence?, include_contracts?, include_infra? })`**: reverse blast radius. Contract- and infra-aware by default (follows producer → operation → consumer, and Assumes/Routes/Runs); pass `include_contracts: false` and/or `include_infra: false` to narrow it.\n");
-    s.push_str("- **`explain({ symbol, affected, … })`**: the evidence chain proving WHY `affected` is in `symbol`'s blast radius (per-edge provenance/confidence + the running confidence), or an honest `reachable: false`.\n\n");
+    s.push_str("- **`explain({ symbol, affected, … })`**: the evidence chain proving WHY `affected` is in `symbol`'s blast radius (per-edge provenance/confidence + the running confidence), or an honest `reachable: false`.\n");
+    s.push_str("- **`guidance({ symbol? | file?, budget?, section? })`**: a token-budgeted digest of what the repo already knows about a symbol/file — doc comment first, then the docs that document/mention it, by descending confidence. Bodies are read from disk at query time, so guidance is never staler than the file. Doc guidance is repo knowledge, not ground truth: a section below 0.40 or ambiguous is UNKNOWN, same trust policy as every other band.\n");
+    s.push_str("- **`search_docs({ query, limit? })`**: lexical (tantivy, deterministic) full-text search over indexed docs — markdown sections, doc comments, spec descriptions. Every hit names its matched terms; use it instead of grepping the docs tree.\n\n");
 
     s.push_str("## Reading confidence (trust policy)\n\n");
     s.push_str(BAND_POLICY_TABLE);
@@ -237,28 +273,40 @@ fn skill_exploring() -> String {
     s.push_str("- Tracing an operation across planes: frontend consumer → GraphQL field → producer Lambda.\n");
     s.push_str("- Prefer this over grep: the graph sees cross-file, cross-plane, and cross-repo edges grep misses.\n\n");
 
+    s.push_str("## Guidance-first: check what the repo already knows\n\n");
+    s.push_str("Before reading source in an unfamiliar area, ask the knowledge plane first — the repo may already explain it, cheaper than reconstructing it from code: run `guidance({ file: \"<path>\" })` for a token-budgeted digest of the doc comments and docs that cover that file, and `search_docs({ query: \"<question>\" })` for a lexical search across the whole indexed docs tree (markdown, doc comments, spec descriptions). Both are refs-first and explainable — never a summary or an answer — so treat what they return as a lead into the source, not a replacement for reading it. Doc guidance is repo knowledge, not ground truth: a stale or ambiguous mention is UNKNOWN, same trust policy as every other band.\n\n");
+
     s.push_str("## Workflow\n\n");
     s.push_str("```\n");
+    s.push_str(
+        "0. guidance({ file })            → what does the repo already say about this file?\n",
+    );
+    s.push_str("   search_docs({ query })         → or search the whole docs tree by question\n");
     s.push_str("1. query({ text: \"concept\" })   → find candidate symbols/fields\n");
-    s.push_str("2. context({ symbol })           → callers/callees + producers/consumers\n");
+    s.push_str("2. context({ symbol })           → callers/callees + producers/consumers + docs\n");
     s.push_str("3. follow the buckets outward     → walk the flow across planes\n");
     s.push_str("```\n\n");
 
     s.push_str("## Checklist\n\n");
     s.push_str("```\n");
+    s.push_str(
+        "- [ ] for an unfamiliar file/area, try guidance()/search_docs() before reading source\n",
+    );
     s.push_str("- [ ] query() to locate the entry symbol (don't guess the fqn)\n");
     s.push_str("- [ ] context() to see callers (who reaches it) and callees (what it reaches)\n");
     s.push_str(
         "- [ ] for a field/operation, read producers (implementers) + consumers (callers)\n",
     );
     s.push_str("- [ ] follow produces/consumes to cross from code into the contract plane\n");
+    s.push_str("- [ ] check the docs bucket for sections that document/mention the symbol\n");
     s.push_str("- [ ] state confidence honestly per the band policy\n");
     s.push_str("```\n\n");
 
     s.push_str("## Understanding Output\n\n");
     s.push_str("`context` buckets, by plane:\n");
     s.push_str("- **code:** `callers` (who calls it), `callees` (what it calls), `imports_in`/`imports_out`, `members`, `container`.\n");
-    s.push_str("- **contract:** `producers` (who implements this field/op), `consumers` (who queries it); `produces`/`consumes` are the outgoing views from a Lambda/module.\n\n");
+    s.push_str("- **contract:** `producers` (who implements this field/op), `consumers` (who queries it); `produces`/`consumes` are the outgoing views from a Lambda/module.\n");
+    s.push_str("- **knowledge:** `docs` — every doc section that documents (a doc comment) or mentions this symbol, refs only (`uid`, `name`, `anchor`, `provenance`, `confidence`); fetch a section's body with `guidance({ symbol, section: <anchor> })`.\n\n");
     s.push_str(BAND_POLICY_TABLE);
     s.push_str("\n\n");
 
@@ -539,5 +587,121 @@ mod tests {
         // Never embeds per-repo counts in a global block.
         assert!(!line.contains("nodes"));
         assert!(!line.contains("indexed by StrataGraph as"));
+    }
+
+    // ── K7: knowledge-plane steering additions (design §5) ──────────────────
+
+    /// The three exact knowledge-plane steering lines (spec/plan §5) must be
+    /// present in the Always Do block, verbatim — this is pinned contract
+    /// text, not a paraphrase the implementation is free to reword.
+    #[test]
+    fn steering_block_carries_the_knowledge_plane_always_do_lines() {
+        let block = render_steering_block(&Identity::NotIndexed, CLAUDE_ROUTING);
+        assert!(
+            block.contains("MUST act on the `docs:` line the pre-edit blast injects."),
+            "missing the conditional guidance-fetch MUST:\n{block}"
+        );
+        assert!(
+            block.contains(
+                "fetch `guidance` for the file BEFORE editing. Never call guidance \
+                 unconditionally — the hook line is the trigger."
+            ),
+            "the conditional MUST must state the hook line (never unconditional) is the trigger:\n{block}"
+        );
+        assert!(
+            block.contains("Doc guidance is repo knowledge, not ground truth."),
+            "missing the honesty rule for doc guidance:\n{block}"
+        );
+        assert!(
+            block.contains(
+                "a mention below 0.40 or ambiguous is UNKNOWN — the same trust policy as every other band"
+            ),
+            "the honesty rule must tie doc mentions to the SAME band policy as every other edge:\n{block}"
+        );
+        assert!(
+            block.contains(
+                "Report `detect_changes`' \"docs to review\" line in your pre-commit summary"
+            ),
+            "missing the commit-rule extension for docs to review:\n{block}"
+        );
+        assert!(
+            block.contains("offer (never auto-apply) updates for stale sections"),
+            "the commit rule must say offer, never auto-apply:\n{block}"
+        );
+    }
+
+    /// The Tools (MCP) reference must list `guidance` and `search_docs`
+    /// alongside the original five — Kiro has no skills to fall back on, so
+    /// the shared steering block is the only place it learns these exist.
+    #[test]
+    fn steering_block_tool_reference_lists_guidance_and_search_docs() {
+        let block = render_steering_block(&Identity::NotIndexed, CLAUDE_ROUTING);
+        assert!(
+            block.contains("**`guidance`**"),
+            "tool reference must document guidance:\n{block}"
+        );
+        assert!(
+            block.contains("**`search_docs`**"),
+            "tool reference must document search_docs:\n{block}"
+        );
+        // Both kits share this body — the SAME two entries must reach Kiro's
+        // steering file too (Kiro reads steering only, never skills).
+        let kiro_block = render_steering_block(&Identity::NotIndexed, KIRO_ROUTING);
+        assert!(kiro_block.contains("**`guidance`**") && kiro_block.contains("**`search_docs`**"));
+    }
+
+    /// Kit token audit (design §5): the K7 steering ADDITION — the three new
+    /// Always Do bullets plus the two new tool-list entries — must stay small
+    /// (design target ~8 lines, hard-capped here at 10) so the per-session
+    /// context cost stays bounded.
+    #[test]
+    fn steering_addition_stays_within_the_kit_token_audit_budget() {
+        let total_lines = KNOWLEDGE_STEERING_ADDITION.lines().count()
+            + KNOWLEDGE_TOOL_LIST_ADDITION.lines().count();
+        assert!(
+            total_lines <= 10,
+            "K7 steering addition must stay ≤10 lines (design target ~8), got {total_lines}"
+        );
+    }
+
+    /// K7 (design §5, "Claude Code specifics"): `strata-guide` gains a routing
+    /// pointer for repo-conventions questions straight at the two new tools
+    /// (no fifth skill — the content extends the existing two), plus tool-list
+    /// rows for `guidance`/`search_docs` alongside query/context/impact/explain.
+    #[test]
+    fn guide_skill_routes_repo_conventions_to_guidance_and_search_docs() {
+        let body = skill_guide();
+        assert!(
+            body.contains("Repo conventions") && body.contains("is there guidance on X?"),
+            "strata-guide must route repo-conventions questions to the new tools:\n{body}"
+        );
+        assert!(
+            body.contains("`guidance(") && body.contains("`search_docs("),
+            "strata-guide's tool list must cover guidance/search_docs:\n{body}"
+        );
+    }
+
+    /// K7: `strata-exploring` teaches guidance-first exploration of an
+    /// unfamiliar file/area — try `guidance`/`search_docs` before reading
+    /// source, the same "cheap references first" discipline the design's
+    /// two-stage retrieval principle states for the engine itself.
+    #[test]
+    fn exploring_skill_recommends_guidance_first_for_unfamiliar_areas() {
+        let body = skill_exploring();
+        assert!(
+            body.contains("`guidance(") && body.contains("`search_docs("),
+            "strata-exploring must mention guidance/search_docs:\n{body}"
+        );
+        assert!(
+            body.to_lowercase().contains("before reading"),
+            "strata-exploring must recommend guidance/search_docs BEFORE reading source:\n{body}"
+        );
+    }
+
+    /// No fifth skill (design §5): the knowledge-plane content extends the
+    /// existing two skills; the skill set itself must stay at exactly four.
+    #[test]
+    fn still_exactly_four_skills_no_fifth_added() {
+        assert_eq!(skills().len(), 4, "no fifth skill for the knowledge plane");
     }
 }
