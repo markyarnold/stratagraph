@@ -24,14 +24,14 @@ The third line is the symbol's **uid**, its stable identity. Keep it; you'll nee
 ```console
 $ strata impact cmd_impact
 Impact of cmd_impact (crates/strata-cli/src/lib.rs) — 7 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  cmd_impact_ambiguous_lists_candidates_with_uid_hint (crates/strata-cli/src/lib.rs)
-      1  0.95   no  WILL BREAK  cmd_impact_dead_table_keeps_bare_message (crates/strata-cli/src/lib.rs)
-      1  0.95   no  WILL BREAK  cmd_impact_member_bearing_target_hints_at_member_dependents (crates/strata-cli/src/lib.rs)
-      1  0.95   no  WILL BREAK  cmd_impact_truly_dead_container_keeps_bare_message (crates/strata-cli/src/lib.rs)
-      1  0.95   no  WILL BREAK  cmd_impact_unknown_uid_is_symbol_not_found (crates/strata-cli/src/lib.rs)
-      1  0.95   no  WILL BREAK  cmd_impact_with_uid_resolves_the_exact_node (crates/strata-cli/src/lib.rs)
-      1  0.80   no  WILL BREAK  main (crates/strata-cli/src/main.rs)
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  WILL BREAK    cmd_impact_ambiguous_lists_candidates_with_uid_hint (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_dead_table_keeps_bare_message (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_member_bearing_target_hints_at_member_dependents (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_truly_dead_container_keeps_bare_message (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_unknown_uid_is_symbol_not_found (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_with_uid_resolves_the_exact_node (crates/strata-cli/src/lib.rs)
+      1  0.80   no  WILL BREAK    main (crates/strata-cli/src/main.rs)
 ```
 
 Each row is one dependent. Read the columns left to right; they're the whole point.
@@ -51,10 +51,10 @@ You can see both halves of that rule in one result:
 ```console
 $ strata impact reload --uid 'rust|strata|crates/strata-cli/src/reload.rs|SingleDbReloader::reload|'
 Impact of reload (crates/strata-cli/src/reload.rs) — 12 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.35  yes  may affect  single_db_reloader_degrades_safely_on_corrupt_db (crates/strata-cli/tests/hot_reload.rs)
-      1  0.35  yes  may affect  single_db_reloader_picks_up_an_external_reindex (crates/strata-cli/tests/hot_reload.rs)
-      2  0.33  yes  may affect  serve_stdio_reloadable (crates/strata-mcp/src/server.rs)
+  depth  conf  amb  verdict       name (path)
+      1  0.35  yes  may affect    single_db_reloader_degrades_safely_on_corrupt_db (crates/strata-cli/tests/hot_reload.rs)
+      1  0.35  yes  may affect    single_db_reloader_picks_up_an_external_reindex (crates/strata-cli/tests/hot_reload.rs)
+      2  0.33  yes  may affect    serve_stdio_reloadable (crates/strata-mcp/src/server.rs)
       ...
 ```
 
@@ -152,7 +152,7 @@ Editing crates/strata-index/src/changes.rs touches 61 symbol(s); blast radius 13
     - classify_risk [Function]
     - detect_changes [Function]
     ...
-  depth  conf  amb  verdict     name (path)
+  depth  conf  amb  verdict       name (path)
       ...
 Risk: HIGH — 1332 affected
 ```

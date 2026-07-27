@@ -20,11 +20,11 @@ Ask what depends on a function, and StrataGraph returns the dependents ordered b
 ```text
 $ strata impact "classify_risk"
 Impact of classify_risk (crates/strata-index/src/changes.rs) — 76 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  detect_changes (crates/strata-index/src/changes.rs)
-      1  0.95   no  WILL BREAK  blast_for_file (crates/strata-index/src/changes.rs)
-      2  0.76   no  WILL BREAK  tool_blast (crates/strata-mcp/src/tools.rs)
-      4  0.69   no  WILL BREAK  call_tool (crates/strata-mcp/src/tools.rs)
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  WILL BREAK    detect_changes (crates/strata-index/src/changes.rs)
+      1  0.95   no  WILL BREAK    blast_for_file (crates/strata-index/src/changes.rs)
+      2  0.76   no  WILL BREAK    tool_blast (crates/strata-mcp/src/tools.rs)
+      4  0.69   no  WILL BREAK    call_tool (crates/strata-mcp/src/tools.rs)
       ...
 ```
 

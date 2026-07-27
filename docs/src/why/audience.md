@@ -11,9 +11,9 @@ Before you touch a symbol, run `impact` on it and see exactly what depends on it
 ```text
 $ strata impact "classify_risk"
 Impact of classify_risk (crates/strata-index/src/changes.rs) — 76 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  detect_changes (crates/strata-index/src/changes.rs)
-      2  0.76   no  WILL BREAK  tool_blast (crates/strata-mcp/src/tools.rs)
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  WILL BREAK    detect_changes (crates/strata-index/src/changes.rs)
+      2  0.76   no  WILL BREAK    tool_blast (crates/strata-mcp/src/tools.rs)
       ...
 ```
 

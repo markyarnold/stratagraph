@@ -8,6 +8,28 @@ the `engine:` line of every index summary print the exact build id.)
 
 ## Unreleased — on `main`
 
+**The knowledge plane: your own docs are now part of the graph.** `strata
+index` links markdown under `docs/`, READMEs, code doc comments, and
+OpenAPI/GraphQL descriptions into the graph as `Doc`/`DocSection` nodes and
+banded `Documents`/`Mentions` edges — the same Extracted/Inferred/Ambiguous
+discipline as every other plane, never a confident guess at what a doc means.
+This closes the loop in both directions: `impact`/`detect-changes` now
+surface the documentation a change puts at risk (a doc dependent renders
+`needs review` rather than `WILL BREAK`, and `detect-changes` gains a "docs
+to review" line), and a doc reference that no longer resolves to anything is
+counted as a stale mention instead of silently trusted. Two new tools query
+the plane directly: `strata guidance <symbol|file>` returns a token-budgeted
+digest of what the repo already knows (doc comment first, then the docs that
+mention it, bodies read live from disk so it's never stale); `strata
+search-docs "<query>"` is a lexical (tantivy, deterministic — no ML) search
+over the whole indexed docs tree, every hit naming its matched terms. The
+pre-edit blast now carries a capped `docs:` line naming the highest-confidence
+sections covering the file, and both agent kits (Claude Code, Kiro) teach an
+agent to fetch `guidance` only when that line shows coverage it hasn't
+consulted yet — never an unconditional call on every edit. Re-run `strata
+index .` to build the docs index (`.strata/docs.idx`), and `strata init
+claude` / `strata init kiro` to pick up the updated steering and skills.
+
 **Kiro agent kit: pre-commit hook removed; hook format auto-detected.** Kiro can
 only trigger a hook by tool name and has no "git commit" tool, so a pre-commit
 hook fired on *every* shell command (and could intercept its own `detect_changes`

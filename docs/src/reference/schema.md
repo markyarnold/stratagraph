@@ -33,7 +33,7 @@ A node is one entity in the graph. Every node carries the fields below
 | `provenance` | `Provenance` | How the node was established (see [Provenance](#provenance)). |
 | `confidence` | `Confidence` | A float clamped to `0.0..=1.0` (see [Confidence](#confidence)). |
 
-The 19 node kinds, grouped by plane:
+The 21 node kinds, grouped by plane:
 
 | NodeKind | Plane | Meaning |
 |---|---|---|
@@ -56,10 +56,13 @@ The 19 node kinds, grouped by plane:
 | `Table` | data | A database table, from a committed `CREATE TABLE` / cumulative `ALTER`. |
 | `Column` | data | A table column. |
 | `CloudAction` | infra (security) | One IAM action a role grants: a concrete action `dynamodb:PutItem`, a wildcard pattern `dynamodb:*` / `*`, or an `<opaque:reason>` indeterminacy marker for grants that could not be enumerated. The shared node where `Grants` (role → action) and `RequiresPermission` (code → action) meet. |
+| `Doc` | knowledge | An ingested markdown file (`docs/**`, a root `*.md`, or a nested `README.md`). `name` is the filename; `fqn`/`path` are the repo-relative path. |
+| `DocSection` | knowledge | A markdown heading section, **or** a doc comment's section (one per documented symbol — `fqn` is `<source-path>#doc:<symbol-fqn>`, distinguishing it from a markdown section's `<path>#<anchor>`). See [The knowledge plane](../concepts/knowledge.md#nodes). |
 
 The plane of each kind is assigned by `plane_of` in
 `apps/strata-desktop/src-tauri/src/subgraph.rs`: the single source of truth for
-the plane↔kind mapping. The four planes are `code`, `contract`, `infra`, `data`.
+the plane↔kind mapping. The five planes are `code`, `contract`, `infra`,
+`data`, `knowledge`.
 
 > The graph handles every kind **generically**: there are no per-kind match arms
 > in the graph, store, or traversal. New node kinds are therefore additive.
@@ -76,7 +79,7 @@ An edge is a directed relationship between two nodes (`strata_core::Edge`):
 | `provenance` | `Provenance` | How the edge was established. |
 | `confidence` | `Confidence` | A float clamped to `0.0..=1.0`. |
 
-The 19 edge kinds:
+The 21 edge kinds:
 
 | EdgeKind | Direction (src → dst) | Dependency edge? | Meaning |
 |---|---|---|---|
@@ -91,7 +94,7 @@ The 19 edge kinds:
 | `Assumes` | `LambdaFn` → `IamRole` | yes (infra) | A Lambda assumes the role it references. |
 | `Runs` | `LambdaFn` → code `Module` | yes (infra) | A Lambda's resolved handler module (`CodeUri` + `Handler`). |
 | `Routes` | `AppSyncResolver` → `AppSyncDataSource`, and `AppSyncDataSource` → `LambdaFn` | yes (infra) | Resolver→datasource→Lambda wiring. |
-| `Contains` | `AppSyncApi` → its resolvers/datasources | no (membership) | API containment from `ApiId`. Lights up `context.members`; `impact` does **not** traverse it. |
+| `Contains` | `AppSyncApi` → its resolvers/datasources, or `Doc` → its `DocSection`s | no (membership) | Structural containment: API containment from `ApiId`, or a markdown file's heading sections. Lights up `context.members`; `impact` does **not** traverse it. |
 | `HasColumn` | `Table` → `Column` | no (membership) | Table containment. Lights up `context.members`; a changed `Column` reaches its owning `Table` (incoming reverse walk), but `impact(table)` does not re-list columns. |
 | `ForeignKey` | `Column` → referenced `Column` | yes | An explicit `REFERENCES` / table-level `FOREIGN KEY`. |
 | `Reads` | code symbol → `Table` | yes | A raw-SQL `SELECT … FROM t` / `JOIN t` read, emitted only when the table name matches a declared `Table` node. |
@@ -99,6 +102,8 @@ The 19 edge kinds:
 | `MapsTo` | ORM model class → `Table` | yes | An ORM model maps to its table (SQLAlchemy `__tablename__`, Django `Meta.db_table`, TypeORM `@Entity("…")`). Emitted only when the model's table name matches a declared `Table`. |
 | `Grants` | `IamRole` (or a SAM `LambdaFunction` via its implicit execution role) → `CloudAction` | no (reconciliation) | An IAM policy statement `Allow`s a role an action (concrete, a `dynamodb:*`/`*` wildcard, or an `<opaque:reason>` marker). The supply side of IAM permission-gap detection; `impact` does **not** traverse it (it is reconciliation input, not a blast-radius edge). |
 | `RequiresPermission` | code `Function`/`Method` → `CloudAction` |  | **Reserved; not yet emitted by any analyzer.** The demand side of IAM permission-gap detection. See [reserved edges](#reserved-edges). |
+| `Documents` | `DocSection` → symbol | yes | A doc comment syntactically adjacent to its symbol's declaration. Extracted `0.95` only — markdown prose about a symbol is a `Mentions`, never this tier. |
+| `Mentions` | `DocSection` → any node | yes | A markdown reference to a node: an exact path (Extracted `0.95`), a unique fqn in a fence/inline code (Inferred `0.80`), a unique bare name in inline code only (Inferred `0.70`), or several candidates (Ambiguous `0.35` fan-out, one edge per candidate). See [The knowledge plane](../concepts/knowledge.md#edges-the-confidence-bands). |
 
 "Dependency edge?" indicates whether [`impact`](cli.md#impact) reverse-walks the
 edge (it walks edges **incoming** to the target, so a dependency edge from
@@ -150,6 +155,7 @@ The five slots are filled differently per plane:
 | contract (estate-canonical) | `contract` | estate name | `{api_id}/{format}` | the operation `key` | empty |
 | infra | `infra` | repo name | template/unit path | the resource logical id | empty |
 | data | `data` | repo name | schema file path | the table name | empty |
+| knowledge | `doc` | repo name | the doc's (or documented symbol's source) file path | `Doc`: the path itself; `DocSection`: `{path}#{anchor}`; a doc-comment section: `{source-path}#doc:{symbol-fqn}` | empty |
 
 Notes:
 

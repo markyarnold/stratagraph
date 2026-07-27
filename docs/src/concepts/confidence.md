@@ -161,9 +161,9 @@ You can see all of this in one command. On this repository:
 ```text
 $ strata impact will_break_label
 Impact of will_break_label (crates/strata-core/src/traverse.rs) — 161 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  impact (crates/strata-core/src/traverse.rs)
-      2  0.90   no  WILL BREAK  members_with_dependents (...)
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  WILL BREAK    impact (crates/strata-core/src/traverse.rs)
+      2  0.90   no  WILL BREAK    members_with_dependents (...)
       ...
 ```
 

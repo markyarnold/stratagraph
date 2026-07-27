@@ -18,11 +18,11 @@ Changes (working scope)
   code symbols (1):
     modified  cmd_impact  (crates/strata-cli/src/lib.rs)
   affected (7):
-    depth  conf  amb  verdict     name (path)
-        1  0.95   no  WILL BREAK  cmd_impact_ambiguous_lists_candidates_with_uid_hint (crates/strata-cli/src/lib.rs)
-        1  0.95   no  WILL BREAK  cmd_impact_dead_table_keeps_bare_message (crates/strata-cli/src/lib.rs)
+    depth  conf  amb  verdict       name (path)
+        1  0.95   no  WILL BREAK    cmd_impact_ambiguous_lists_candidates_with_uid_hint (crates/strata-cli/src/lib.rs)
+        1  0.95   no  WILL BREAK    cmd_impact_dead_table_keeps_bare_message (crates/strata-cli/src/lib.rs)
         ...
-        1  0.80   no  WILL BREAK  main (crates/strata-cli/src/main.rs)
+        1  0.80   no  WILL BREAK    main (crates/strata-cli/src/main.rs)
 Risk: MEDIUM — 7 affected
 ```
 

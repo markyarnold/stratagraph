@@ -147,6 +147,7 @@ By default each indexed repo carries a `.strata/` directory at its root:
 |---|---|---|
 | `.strata/graph.duckdb` | `strata index` | The on-disk graph database (the `DEFAULT_DB` constant, `.strata/graph.duckdb`). The default for `--db`; the repo root is its **grandparent**. |
 | `.strata/index.stamp` | `strata index` (last, after every persist) | The hot-reload change signal (`STAMP_FILE = "index.stamp"`), carrying the node/edge counts. Written last so a reader only learns of the new graph once it is fully persisted. |
+| `.strata/docs.idx` | `strata index` | The knowledge plane's lexical (tantivy) index over section bodies, doc-comment text, and spec descriptions — what `search_docs` reads. **Local-only**: never part of a shared/synced graph artifact. See [The knowledge plane](../concepts/knowledge.md#the-lexical-index). |
 
 The `index.stamp` is the signal the MCP server keys its hot-reload off; see
 [MCP → Hot-reload](mcp.md#hot-reload). A reader that races a still-in-flight

@@ -88,9 +88,12 @@ payload** rather than an error, so a client can pin one and re-run:
 
 ## Tools
 
-`tools/list` returns exactly these seven, in this order: `context`, `impact`,
-`explain`, `query`, `blast`, `detect_changes`, `rename`. Every node in a payload
-uses the compact shape `{ "uid", "name", "kind", "path" }`.
+`tools/list` returns exactly these nine, in this order: `context`, `impact`,
+`explain`, `query`, `blast`, `detect_changes`, `rename`, `search_docs`,
+`guidance`. Every node in a payload uses the compact shape `{ "uid", "name",
+"kind", "path" }` — except a knowledge-plane doc reference (`context`'s `docs`
+bucket, `search_docs`'s hits, `guidance`'s sections), which is not a graph
+node and carries its own shape (see each tool below).
 
 ### context
 
@@ -100,15 +103,22 @@ The 360° view of one symbol.
 |---|---|---|---|
 | `symbol` | string | yes | Identifier (fqn preferred, else name) to inspect. |
 
-Output (resolved to one node): a `node` plus these buckets, each an array of
-nodes (all always present):
+Output (resolved to one node): a `node` plus these buckets (all always
+present):
 
 - **code:** `callers`, `callees`, `imports_in`, `imports_out`, `members`,
-  `container` (a single node or `null`).
-- **contract:** `producers`, `consumers`, `produces`, `consumes`.
+  `container` (a single node or `null`) — each an array of nodes.
+- **contract:** `producers`, `consumers`, `produces`, `consumes` — nodes.
 - **infra:** `assumes`, `assumed_by`, `routes_to`, `routed_from`, `runs`,
-  `run_by`.
-- **data:** `mapped_by`, `maps_to`.
+  `run_by` — nodes.
+- **data:** `mapped_by`, `maps_to` — nodes.
+- **knowledge:** `docs` — every doc section that documents (a doc comment) or
+  mentions this symbol, sorted by uid. NOT the compact node shape: a
+  `DocSection` node itself carries no notion of "how confidently does this
+  reference its target," so each entry carries the *edge's* own
+  provenance/confidence instead: `{ "uid", "name", "anchor", "path",
+  "provenance", "confidence" }`. Refs only, never body text — fetch a
+  section's body with [`guidance`](#guidance) `{ symbol, section: <anchor> }`.
 
 All four contract buckets and all six infra buckets are present even when empty:
 `producers (0) / consumers (0)` is the live dead-surface signal.
@@ -255,6 +265,96 @@ call/import edge), and is **dry-run by default**. **Needs the repo root.**
 
 Output: the serialized `strata_index::RenameOutcome`: either a `candidates` list
 (ambiguous target) or a `plan` (the edit set; `applied` is true iff written).
+
+### search_docs
+
+Lexical (tantivy, deterministic — no ML/embeddings) full-text search over the
+knowledge plane's indexed docs: markdown section bodies, doc comments, and
+OpenAPI/GraphQL spec descriptions. Replaces manual doc-grepping for "how do
+we…?"/"is there guidance on X?" questions. **Index-only**: it opens
+`.strata/docs.idx` read-only and never touches the graph, so it needs no repo
+root and no loaded graph.
+
+| Arg | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `query` | string | yes |  | Search text (tantivy query syntax over section/doc-comment/description text and names). |
+| `limit` | integer (`minimum: 1`, `maximum: 25`) | no | `5` | Max results, hard-capped at 25 even if a larger value is requested. |
+
+Output:
+
+```json
+{
+  "results": [
+    { "uid", "name", "path", "anchor", "kind", "score", "snippet", "matched_terms": [ "…" ] }, …
+  ],
+  "note"?: "no docs index — run strata index"
+}
+```
+
+Every hit is a labeled TERM MATCH, never a summary or an answer: `matched_terms`
+names exactly which query terms hit, and `snippet` is a highlighted excerpt
+around them, so a result is always explainable. A missing or corrupt index
+(never indexed yet, or `strata index` has not run since — including a fresh
+repo with no `.strata/` at all) degrades to an honest `{ "results": [],
+"note": "no docs index — run strata index" }`, never an error and never a
+silent empty page. Estate (`--workspace`) mode searches and merges every
+member's own `docs.idx`, deterministically ordered, without needing `--repo`
+to pick one.
+
+### guidance
+
+Token-budgeted digest of what the repo already knows about a symbol or file:
+its own doc comment, the docs that document/mention it, and — for an
+`ApiOperation`/`GraphqlField` — its spec description **re-extracted live from
+the spec file** (never stale, because it is never cached in the graph).
+Bodies are sliced from disk at query time, the same freshness rule as
+[Bodies-from-disk](../concepts/knowledge.md#bodies-from-disk-the-freshness-rule) —
+never stored in the graph.
+
+| Arg | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `symbol` | string | exactly one of `symbol`/`file` |  | The symbol to summarize (fqn preferred, else name). |
+| `file` | string | exactly one of `symbol`/`file` |  | Aggregate over this file's symbols instead of one symbol (repo-relative path). |
+| `uid` | string | no |  | Pin one candidate when `symbol` resolves to several nodes. |
+| `budget` | integer (`minimum: 0`) | no | `4800` | Total character budget across all sections. Ignored when `section` is given. |
+| `section` | string | no |  | An anchor (from a prior `guidance`/`context`/`search_docs` result) — return that ONE section's FULL body, uncapped, no budget applied. |
+
+Ordering: a contract target's spec description, or a symbol's own doc comment,
+first; then `Documents`; then `Mentions` by descending confidence.
+
+Output:
+
+```json
+{
+  "target": { "uid", "name", "kind", "path" },
+  "sections": [
+    {
+      "uid", "name", "path", "anchor", "provenance", "confidence",
+      "text", "truncated": <bool>, "ref_only": <bool>,
+      "note"?: "…"
+    }, …
+  ],
+  "budget_used": <number>,
+  "note"?: "…"
+}
+```
+
+`target` is the standard compact node shape for a `symbol` target; for a
+`file` target (no single node to resolve to) it is instead `{ "uid": <file>,
+"name": <file>, "kind": "File" }`, both `uid`/`name` set to the file argument
+itself. `truncated` and `ref_only` are always present booleans (never
+omitted); `note` is present only on an entry (or top-level) that needs one.
+Each section's
+`text` is capped at **1200 characters**; a cut section carries `"truncated":
+true` and its text ends with a `… [truncated — fetch <path>#<anchor>]` marker.
+A section that would exceed the total **4800-character** default budget still
+appears — as a `"ref_only": true` entry with empty `text`, never silently
+dropped — so a caller can fetch it individually via `section`. An ambiguous
+`symbol` returns the same `{ "ambiguous": true, "candidates": […] }` payload
+`context`/`impact` use. An unreadable or missing body file degrades that one
+entry to `"note": "body unavailable"` (never an error, never silence); no
+repo root configured degrades every disk-backed entry the same way, plus a
+top-level `note`.
 
 ## The `strata://schema` resource
 

@@ -25,9 +25,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use strata_core::{AffectedNode, AnalyzedFile, Direction, EdgeKind, Graph, Provenance, Uid};
-use strata_index::{assemble_graph_with_knowledge, doc_section_uid, KnowledgeLinkCoverage};
+use strata_index::{
+    assemble_graph_with_knowledge, doc_section_uid, index_repo_with_options, IndexOptions,
+    KnowledgeLinkCoverage,
+};
 use strata_knowledge::{parse_markdown, DocModel};
 use strata_lang_ts::{analyze, ResolveOptions};
+use strata_store::DuckGraphStore;
 
 const REPO: &str = "knowledge-repo";
 
@@ -322,4 +326,43 @@ fn doc_and_docsection_nodes_exist_with_the_designed_shape() {
     assert_eq!(contains.len(), 1);
     assert_eq!(contains[0].provenance, Provenance::Extracted);
     assert!((contains[0].confidence.value() - 1.0).abs() < 1e-6);
+}
+
+// ── K7 dogfood measurement (NOT a fixture test) ─────────────────────────────
+//
+// Every other accuracy report in `docs/accuracy/` is measured against a
+// committed, hermetic fixture with a CI floor gate. The knowledge-linking
+// report is deliberately different (design §6, "Dogfood: the strata repo
+// itself, then the usual real-repo verification pass"): it measures THIS
+// repository's own live `docs/` tree, doc comments, and spec descriptions —
+// a moving target as the repo evolves, not a frozen corpus. So there is no
+// `_matches_committed_numbers` sibling and no CI floor here; this is a
+// regenerate-on-demand measurement tool, exactly like `print_rust_coverage`
+// and friends, minus the floor gate that only makes sense for a fixed corpus.
+
+/// Index THIS repository (the live working tree) via the exact production
+/// path `strata index .` uses — [`index_repo_with_options`] over an
+/// in-memory store — and print the real [`KnowledgeLinkCoverage`], including
+/// `doc_comments`, which the CLI's human-readable `knowledge:` summary line
+/// does not print (see `crates/strata-cli/src/lib.rs::cmd_index`). Feeds the
+/// measured counts in `docs/accuracy/knowledge-linking.md`.
+///
+/// Regenerate with:
+/// `cargo test -p strata-index --test knowledge_linking print_self_repo_knowledge_coverage -- --ignored --nocapture`
+#[test]
+#[ignore = "run with --ignored --nocapture to print the live self-repo knowledge coverage"]
+fn print_self_repo_knowledge_coverage() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("crates/strata-index has two ancestors up to the repo root")
+        .to_path_buf();
+    let mut store = DuckGraphStore::open_in_memory().expect("open in-memory store");
+    let stats = index_repo_with_options(&repo_root, &mut store, &IndexOptions::default())
+        .expect("index this repository");
+    println!("self-repo knowledge coverage = {:#?}", stats.knowledge_link);
+    println!(
+        "self-repo totals: files_indexed={} nodes={} edges={}",
+        stats.files_indexed, stats.nodes, stats.edges
+    );
 }
