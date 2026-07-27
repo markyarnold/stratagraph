@@ -47,6 +47,7 @@ fn extract_proto3_service_three_rpcs() {
             norm_path: "GetUser".into(),
             operation_id: None,
             spec_path: "user.proto".into(),
+            description: None,
         }
     );
 

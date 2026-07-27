@@ -262,6 +262,7 @@ fn routed_operations() -> Vec<OperationDef> {
         norm_path: path.replace("{id}", "{}"),
         operation_id: Some(key.to_string()),
         spec_path: spec.to_string(),
+        description: None,
     };
     vec![
         op("getUser", "/users/{id}", "openapi.yaml"),
@@ -356,6 +357,7 @@ fn consumer_operations() -> Vec<OperationDef> {
         norm_path: path.replace("{id}", "{}"),
         operation_id: Some(key.to_string()),
         spec_path: spec.to_string(),
+        description: None,
     };
     vec![
         op("getUser", "/users/{id}", "openapi.yaml"),
@@ -451,6 +453,7 @@ fn gql_op(key: &str, method: &str, field: &str) -> OperationDef {
         norm_path: field.to_string(),
         operation_id: None,
         spec_path: "schema.graphql".to_string(),
+        description: None,
     }
 }
 

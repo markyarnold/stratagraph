@@ -103,6 +103,7 @@ fn extract_operations(paths: &Map<String, Value>, spec_path: &str) -> Vec<Operat
                 Some(id) => id.clone(),
                 None => format!("{method_upper} {norm_path}"),
             };
+            let description = extract_description(op_obj.as_object());
 
             ops.push(OperationDef {
                 format: ContractFormat::OpenApi,
@@ -112,10 +113,35 @@ fn extract_operations(paths: &Map<String, Value>, spec_path: &str) -> Vec<Operat
                 norm_path,
                 operation_id,
                 spec_path: spec_path.to_string(),
+                description,
             });
         }
     }
     ops
+}
+
+/// An operation's human-readable spec text (knowledge plane, K4): `summary` and
+/// `description` are both optional OpenAPI/Swagger operation-object fields.
+///
+/// - Both present → joined with a blank line (`"{summary}\n\n{description}"`),
+///   then the whole thing trimmed.
+/// - Only one present → that one, trimmed.
+/// - Neither present, or empty after trimming → `None` (never `Some("")`).
+fn extract_description(op_map: Option<&Map<String, Value>>) -> Option<String> {
+    let summary = op_map
+        .and_then(|o| o.get("summary"))
+        .and_then(Value::as_str);
+    let description = op_map
+        .and_then(|o| o.get("description"))
+        .and_then(Value::as_str);
+    let combined = match (summary, description) {
+        (Some(s), Some(d)) => format!("{s}\n\n{d}"),
+        (Some(s), None) => s.to_string(),
+        (None, Some(d)) => d.to_string(),
+        (None, None) => return None,
+    };
+    let trimmed = combined.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Parse spec text into a generic [`serde_json::Value`]. Tries JSON first (a
