@@ -291,6 +291,17 @@ pub struct BlastReport {
     /// (K6), sorted by confidence desc then uid asc. Empty when the file has no
     /// doc links — the CLI's agent-format `docs:` line is absent entirely in
     /// that case (silent-when-clean).
+    ///
+    /// **Depth-1 direct links only** — a fresh traversal from the file's OWN
+    /// symbol nodes, NOT derived from [`Self::affected`]. `affected` is the
+    /// full transitive blast radius and CAN legitimately disagree: a doc
+    /// section that mentions some OTHER file's symbol (say, a caller of one
+    /// of THIS file's symbols) shows up in `affected` at depth 2+ via that
+    /// caller, but never in `docs` — `docs` only looks at direct edges into
+    /// this file's own symbols. Neither view is wrong; they answer different
+    /// questions ("what does impact reach?" vs "what directly documents
+    /// this file?"). See `blast_docs_is_depth_one_only_affected_can_reach_a_doc_transitively_docs_does_not`
+    /// for a pinned example of the disagreement.
     pub docs: Vec<BlastDocRef>,
 }
 
@@ -1832,5 +1843,50 @@ mod tests {
         let report = blast_for_file(&g, "brand/new.ts");
         assert!(report.note.is_some());
         assert!(report.docs.is_empty());
+    }
+
+    /// Minor (b) review: a PINNED, legitimate disagreement between
+    /// `BlastReport.affected` (the full transitive blast radius) and
+    /// `BlastReport.docs` (depth-1 direct links into THIS file's own
+    /// symbols only) — see `BlastReport::docs`'s own doc comment.
+    #[test]
+    fn blast_docs_is_depth_one_only_affected_can_reach_a_doc_transitively_docs_does_not() {
+        use strata_core::{Confidence, EdgeKind, NodeKind, Provenance};
+        // `caller` (b.ts) depends on `target` (a.ts); a DocSection mentions
+        // CALLER (not target) — so `impact(target)` reaches it TRANSITIVELY
+        // at depth 2 (via caller), landing it in `affected`, but `docs` —
+        // which only looks at a.ts's OWN symbols' direct incoming links —
+        // must NOT list it.
+        let mut g = Graph::new();
+        g.add_node(blast_node("a|target", "target", "a.ts", NodeKind::Function));
+        g.add_node(blast_node("b|caller", "caller", "b.ts", NodeKind::Function));
+        g.add_edge(blast_edge("b|caller", "a|target", EdgeKind::Calls));
+        g.add_node(blast_node(
+            "doc|r|docs/g.md|docs/g.md#about-caller",
+            "docs/g.md#about-caller",
+            "docs/g.md",
+            NodeKind::DocSection,
+        ));
+        g.add_edge(strata_core::Edge {
+            src: strata_core::Uid("doc|r|docs/g.md|docs/g.md#about-caller".into()),
+            dst: strata_core::Uid("b|caller".into()),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.80),
+        });
+
+        let report = blast_for_file(&g, "a.ts");
+        assert!(
+            report.affected.iter().any(|a| a.kind == "DocSection"),
+            "affected reaches the doc transitively via caller: {:?}",
+            report.affected
+        );
+        assert!(
+            report.docs.is_empty(),
+            "docs is depth-1 direct-only — a.ts's own symbol (target) has no \
+             direct Documents/Mentions edge; only caller (a DIFFERENT file) \
+             does: {:?}",
+            report.docs
+        );
     }
 }

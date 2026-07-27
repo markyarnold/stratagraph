@@ -1022,14 +1022,43 @@ fn guidance_candidates_for_symbol(
     out
 }
 
+/// Whether a graph node's `path` matches the guidance `file` target — an
+/// exact match, or a **path-component-boundary** suffix either way (mirrors
+/// `strata-index::changes`'s private `node_in_file`, same contract, not
+/// importable since it's private and small enough to duplicate here). So
+/// `src/a.ts` matches a stored `src/a.ts` AND an absolute
+/// `/repo/src/a.ts` (the PreToolUse hook passes absolute paths) — but
+/// `a.ts` does NOT match `schema.ts`, and an empty `node_path` matches
+/// nothing (a structural container, never a real file member).
+///
+/// **C3 fix (review):** the OLD code required byte-exact `n.path == file`,
+/// so `guidance --file <absolute path>` silently found nothing on a real
+/// repo (`blast` on the SAME file found 11 dependents) — the PreToolUse hook
+/// always passes an absolute `tool_input.file_path`, so this was the common
+/// case failing, not an edge case.
+fn node_in_file(node_path: &str, file: &str) -> bool {
+    if node_path.is_empty() {
+        return false;
+    }
+    if node_path == file {
+        return true;
+    }
+    let boundary_suffix = |longer: &str, shorter: &str| -> bool {
+        longer.len() > shorter.len()
+            && longer.ends_with(shorter)
+            && longer.as_bytes()[longer.len() - shorter.len() - 1] == b'/'
+    };
+    boundary_suffix(file, node_path) || boundary_suffix(node_path, file)
+}
+
 /// Every candidate for a FILE target: the union of every node's (symbols +
-/// the file's own Module — anything whose `path == file`) incoming Documents/
-/// Mentions, deduped by section uid keeping the MAX confidence (a section can
-/// link to several of the file's symbols).
+/// the file's own Module — anything whose `path` [`node_in_file`]-matches
+/// `file`) incoming Documents/Mentions, deduped by section uid keeping the
+/// MAX confidence (a section can link to several of the file's symbols).
 fn guidance_candidates_for_file(graph: &Graph, file: &str) -> Vec<GuidanceCandidate> {
     let mut by_uid: std::collections::BTreeMap<String, GuidanceCandidate> =
         std::collections::BTreeMap::new();
-    for n in graph.nodes().filter(|n| n.path == file) {
+    for n in graph.nodes().filter(|n| node_in_file(&n.path, file)) {
         let mut local = Vec::new();
         push_doc_edge_candidates(graph, &n.uid, &mut local);
         for cand in local {
@@ -1130,13 +1159,34 @@ fn guidance_section_json(
     Value::Object(obj)
 }
 
-/// The budget-mechanics core: iterate `ordered` (already sorted), taking
-/// `min(1200, remaining)` bytes of each section's body at a char boundary;
-/// append the truncation marker when a section is cut; stop CONSUMING budget
-/// once exhausted but ALWAYS emit a `ref_only` entry for every remaining
-/// candidate so nothing is invisible. Returns the section JSON values plus the
-/// total bytes actually taken (`budget_used` — the slice portions only, never
-/// the marker text, so it stays a meaningful "how much of your budget" number).
+/// The budget-mechanics core: iterate `ordered` (already sorted), taking a
+/// slice of each section's body at a char boundary; append the truncation
+/// marker when a section is cut; stop CONSUMING budget once exhausted but
+/// ALWAYS emit a `ref_only` entry for every remaining candidate so nothing is
+/// invisible. Returns the section JSON values plus the total bytes actually
+/// taken (`budget_used`).
+///
+/// **C1 fix (review):** the marker's own bytes are reserved and charged
+/// BEFORE slicing — `cap = min(1200, remaining).saturating_sub(marker.len())`,
+/// `remaining -= slice.len() + marker.len()` whenever the marker is actually
+/// used — so `budget_used`/`remaining` account for exactly what lands in
+/// `text`. The old code sliced against the full `min(1200, remaining)` cap
+/// and appended the marker ON TOP, uncounted: on a real repo with long
+/// path/anchor strings the reviewer measured a **5,492-byte** response
+/// against the 4,800 covenant (a leak that scales with path length, worse
+/// the longer the repo's paths are).
+///
+/// **C2 fix (review):** reserving marker space can itself collapse `cap` to
+/// (near) zero, and separately a multibyte-starting body can back off to an
+/// EMPTY slice at a small-but-nonzero cap (`guidance_truncate`'s char-
+/// boundary search never overshoots forward). Either way, a non-empty body
+/// that yields an empty slice must NOT emit a marker-only "section" that
+/// silently eats budget for zero content (the old code did exactly this —
+/// `budget: 1` against a real repo returned 1,663 bytes of pure markers,
+/// zero content, `budget_used: 0`). The fix: empty slice + non-empty body ⇒
+/// `ref_only: true`, NO marker, and `remaining` forced to 0 so every
+/// remaining candidate degrades the same honest way instead of each taking
+/// its own free marker.
 fn guidance_budgeted_sections(
     ctx: &ToolCtx,
     ordered: Vec<GuidanceCandidate>,
@@ -1166,17 +1216,53 @@ fn guidance_budgeted_sections(
                     Some(note),
                 ));
             }
+            Ok(body) if body.is_empty() => {
+                // A legitimately empty body (e.g. a zero-line span) — nothing
+                // to slice, nothing to charge, no marker possible.
+                sections.push(guidance_section_json(
+                    &cand,
+                    String::new(),
+                    false,
+                    false,
+                    None,
+                ));
+            }
             Ok(body) => {
-                let cap = GUIDANCE_SECTION_CAP.min(remaining);
+                let marker = guidance_marker(&cand.path, &cand.anchor);
+                // C1: reserve the marker's bytes BEFORE slicing.
+                let cap = GUIDANCE_SECTION_CAP
+                    .min(remaining)
+                    .saturating_sub(marker.len());
                 let (slice, cut) = guidance_truncate(&body, cap);
-                remaining -= slice.len();
-                budget_used += slice.len();
-                let text = if cut {
-                    format!("{slice}{}", guidance_marker(&cand.path, &cand.anchor))
+                if slice.is_empty() {
+                    // C2: zero progress possible (cap collapsed to 0 from
+                    // marker reservation, or a multibyte-starting body
+                    // couldn't fit even one char at this cap) — ref-only,
+                    // no marker, treat the budget as genuinely exhausted.
+                    sections.push(guidance_section_json(
+                        &cand,
+                        String::new(),
+                        false,
+                        true,
+                        None,
+                    ));
+                    remaining = 0;
+                } else if cut {
+                    let taken = slice.len() + marker.len();
+                    remaining -= taken;
+                    budget_used += taken;
+                    sections.push(guidance_section_json(
+                        &cand,
+                        format!("{slice}{marker}"),
+                        true,
+                        false,
+                        None,
+                    ));
                 } else {
-                    slice
-                };
-                sections.push(guidance_section_json(&cand, text, cut, false, None));
+                    remaining -= slice.len();
+                    budget_used += slice.len();
+                    sections.push(guidance_section_json(&cand, slice, false, false, None));
+                }
             }
         }
     }
@@ -1258,7 +1344,7 @@ fn tool_guidance(graph: &Graph, ctx: &ToolCtx, args: &Value) -> Result<Value, To
         None | Some(Value::Null) => GUIDANCE_DEFAULT_BUDGET,
         Some(v) => v
             .as_u64()
-            .ok_or_else(|| ToolError::BadArgs("`budget` must be a number".into()))?
+            .ok_or_else(|| ToolError::BadArgs("`budget` must be a non-negative integer".into()))?
             as usize,
     };
 
@@ -1607,6 +1693,33 @@ mod tests {
         assert!(names(&v, "producers").is_empty());
         assert!(names(&v, "consumers").is_empty());
         assert!(names(&v, "produces").is_empty());
+    }
+
+    /// **I5 review: the dispatch-level seam guardrail.** `ContextResult.docs`
+    /// itself stays fully covered by `strata-core`'s own unit tests AND the
+    /// real-pipeline `knowledge_linking.rs` integration test — but NONE of
+    /// those exercise the JSON DISPATCH seam (`tool_context`'s `"docs":
+    /// ctx.docs.iter().map(doc_ref_json)...` line). Deleting that one line
+    /// leaves every other K6 test green (they don't call `context` at all).
+    /// This test closes that gap: it asserts the `"docs"` key is present in
+    /// the ACTUAL JSON `call_tool` returns, with the fixture's one ref.
+    ///
+    /// Revert-checked (not just written): temporarily deleting the `"docs":
+    /// …` line from `tool_context` makes this test fail with a `.expect()`
+    /// panic on the missing key (confirmed locally, then restored) — see
+    /// the task report's "I5 revert-check" section.
+    #[test]
+    fn context_dispatch_payload_carries_the_docs_bucket() {
+        let mut g = Graph::new();
+        g.add_node(node("target", "target"));
+        g.add_node(node_kind("sec", "Heading", NodeKind::DocSection));
+        g.add_edge(edge("sec", "target", EdgeKind::Mentions));
+        let v = call_tool(&g, "context", &json!({ "symbol": "target" })).unwrap();
+        let docs = v["docs"]
+            .as_array()
+            .expect("the \"docs\" key must be a JSON array in the context dispatch payload");
+        assert_eq!(docs.len(), 1, "the fixture's one Mentions ref: {v}");
+        assert_eq!(docs[0]["name"], "Heading");
     }
 
     // ── infra-plane context buckets on the MCP dispatch (Slice 10, B1a) ──
@@ -3027,25 +3140,52 @@ mod tests {
         std::fs::write(full, content).unwrap();
     }
 
-    /// **The budget guardrail.** One doc comment (Documents) + three Mentions
-    /// sections, each ~2000 bytes on disk (well over the 1200/section cap) —
-    /// pins the exact contract the plan's Global Constraints table specifies:
-    /// own doc comment first, default total budget holds (small marker slack),
-    /// fat sections truncate with the exact marker.
+    /// A LONG, realistic-scale repo-relative path — deliberately not a short
+    /// synthetic one (C1 review): the truncation marker's cost is
+    /// `27 (fixed text) + path.len() + anchor.len()` bytes, and a short path
+    /// makes that overhead trivial enough to hide a leak. This one alone is
+    /// ~74 bytes.
+    fn long_src_path() -> String {
+        "packages/very-long-service-directory-name-for-realism/src/handlers/lib.rs".to_string()
+    }
+    /// ~76 bytes, mirroring a real exported symbol's fully-qualified doc
+    /// anchor rather than a two-word placeholder.
+    fn long_doc_comment_anchor() -> String {
+        "doc:aVeryLongAndDescriptiveExportedSymbolNameMirroringRealWorldConventions".to_string()
+    }
+    /// ~89 bytes.
+    fn long_docs_path() -> String {
+        "docs/architecture/decisions/very-long-adr-directory-name-for-testing-realism/guide.md"
+            .to_string()
+    }
+
+    /// **The budget guardrail (C1/C2 review).** One doc comment (Documents) +
+    /// three Mentions sections, each ~2000 bytes on disk (well over the
+    /// 1200/section cap), all at LONG paths/anchors (~150-190 bytes of marker
+    /// overhead PER section — see [`long_src_path`]/[`long_doc_comment_anchor`]/
+    /// [`long_docs_path`]) — pins the exact contract the plan's Global
+    /// Constraints table specifies: own doc comment first, default total
+    /// budget holds EXACTLY (no marker slack — the old accounting would have
+    /// overshot by roughly 4 × marker_len ≈ 700+ bytes here, landing well
+    /// past 4800, matching the shape of the reviewer's real-repo measurement
+    /// of 5,492B), fat sections truncate with the exact marker.
     fn fixture_with_fat_docs() -> (Graph, ToolCtx, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
-        // `src/lib.rs` line 2 is the doc-comment section's ~2000-byte body;
-        // `docs/guide.md` lines 1-3 are the three Mentions sections' bodies —
-        // one line each, so `slice_body_lines` returns exactly that many bytes
+        let src_path = long_src_path();
+        let doc_anchor = long_doc_comment_anchor();
+        let docs_path = long_docs_path();
+        // The doc-comment section's body lives at `src_path` line 2; the
+        // three Mentions sections' bodies live at `docs_path` lines 1-3 — one
+        // line each, so `slice_body_lines` returns exactly that many bytes
         // (no `\n` join overhead).
         write_body_file(
             tmp.path(),
-            "src/lib.rs",
+            &src_path,
             &format!("pub fn alphaOne() {{}}\n{}\n", "x".repeat(2000)),
         );
         write_body_file(
             tmp.path(),
-            "docs/guide.md",
+            &docs_path,
             &format!(
                 "{}\n{}\n{}\n",
                 "a".repeat(2000),
@@ -3056,57 +3196,37 @@ mod tests {
 
         let mut g = Graph::new();
         g.add_node(node_kind("alphaOne", "alphaOne", NodeKind::Function));
-        g.add_node(doc_section(
-            "doc|kt|src/lib.rs|src/lib.rs#doc:alphaOne|",
-            "src/lib.rs",
-            "doc:alphaOne",
-            2,
-            2,
-        ));
-        g.add_node(doc_section(
-            "doc|kt|docs/guide.md|docs/guide.md#m-high|",
-            "docs/guide.md",
-            "m-high",
-            1,
-            1,
-        ));
-        g.add_node(doc_section(
-            "doc|kt|docs/guide.md|docs/guide.md#m-mid|",
-            "docs/guide.md",
-            "m-mid",
-            2,
-            2,
-        ));
-        g.add_node(doc_section(
-            "doc|kt|docs/guide.md|docs/guide.md#m-low|",
-            "docs/guide.md",
-            "m-low",
-            3,
-            3,
-        ));
+        let doc_comment_uid = format!("doc|kt|{src_path}|{src_path}#{doc_anchor}|");
+        g.add_node(doc_section(&doc_comment_uid, &src_path, &doc_anchor, 2, 2));
+        let m_high_uid = format!("doc|kt|{docs_path}|{docs_path}#m-high|");
+        g.add_node(doc_section(&m_high_uid, &docs_path, "m-high", 1, 1));
+        let m_mid_uid = format!("doc|kt|{docs_path}|{docs_path}#m-mid|");
+        g.add_node(doc_section(&m_mid_uid, &docs_path, "m-mid", 2, 2));
+        let m_low_uid = format!("doc|kt|{docs_path}|{docs_path}#m-low|");
+        g.add_node(doc_section(&m_low_uid, &docs_path, "m-low", 3, 3));
         g.add_edge(doc_edge(
-            "doc|kt|src/lib.rs|src/lib.rs#doc:alphaOne|",
+            &doc_comment_uid,
             "alphaOne",
             EdgeKind::Documents,
             Provenance::Extracted,
             0.95,
         ));
         g.add_edge(doc_edge(
-            "doc|kt|docs/guide.md|docs/guide.md#m-high|",
+            &m_high_uid,
             "alphaOne",
             EdgeKind::Mentions,
             Provenance::Inferred,
             0.80,
         ));
         g.add_edge(doc_edge(
-            "doc|kt|docs/guide.md|docs/guide.md#m-mid|",
+            &m_mid_uid,
             "alphaOne",
             EdgeKind::Mentions,
             Provenance::Inferred,
             0.70,
         ));
         g.add_edge(doc_edge(
-            "doc|kt|docs/guide.md|docs/guide.md#m-low|",
+            &m_low_uid,
             "alphaOne",
             EdgeKind::Mentions,
             Provenance::Ambiguous,
@@ -3134,9 +3254,17 @@ mod tests {
             .iter()
             .map(|s| s["text"].as_str().unwrap().len())
             .sum();
+        // C1: tightened to the EXACT covenant, no marker slack. Measured:
+        // total == 4800 exactly (4 sections × 1200 bytes, content+marker
+        // packed to fill each section's own cap). The four markers here are
+        // 174/118/117/117 bytes (526 total) — under the OLD accounting
+        // (marker appended ON TOP of a full 1200-byte content slice,
+        // uncounted) this exact fixture would have produced 4800 + 526 =
+        // 5326 bytes, the same order of magnitude as the reviewer's
+        // real-repo measurement of 5,492B.
         assert!(
-            total <= 4800 + 200,
-            "default budget holds (marker slack), got {total}"
+            total <= 4800,
+            "default budget holds EXACTLY (no marker slack), got {total}"
         );
         assert!(
             sections.iter().any(|s| s["truncated"] == true),
@@ -3145,8 +3273,92 @@ mod tests {
         assert!(sections
             .iter()
             .any(|s| s["text"].as_str().unwrap().contains("[truncated — fetch")));
-        // budget_used tracks the slice portions only (never the markers).
+        // budget_used now includes marker bytes for a cut section (C1) — it
+        // must still never exceed the requested budget.
         assert!(v["budget_used"].as_u64().unwrap() <= 4800);
+    }
+
+    /// **C2 review.** `budget: 1` against sections whose bodies START with a
+    /// multi-byte (CJK) character: the old code's `cap = min(1200,
+    /// remaining)` (here, 1) landed inside the FIRST character's byte
+    /// sequence, so `guidance_truncate`'s char-boundary backoff walked all
+    /// the way down to an EMPTY slice — `slice.is_empty()` but `cut` was
+    /// still `true` (0 < body.len()), so the OLD code appended a marker
+    /// anyway: a "section" with a marker but ZERO content, `remaining`
+    /// unchanged at 1 (nothing was ever subtracted for an empty slice), so
+    /// EVERY subsequent candidate repeated the same free-marker "storm" (the
+    /// reviewer measured 1,663B of pure markers on a real repo at
+    /// `budget: 1`). The fix must instead degrade every one of these to a
+    /// clean `ref_only` entry — tiny, honest, no markers, `budget_used: 0`.
+    #[test]
+    fn guidance_multibyte_body_at_tiny_budget_never_storms_free_markers() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Emoji ("😀", 4 bytes/char in UTF-8) bodies — every char boundary is
+        // a multiple of 4, so no cap in [1,3] can ever land on one.
+        write_body_file(
+            tmp.path(),
+            "docs/g.md",
+            &format!("{}\n{}\n", "😀".repeat(500), "😀".repeat(500)),
+        );
+        let mut g = Graph::new();
+        g.add_node(node_kind("target", "target", NodeKind::Function));
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#one",
+            "docs/g.md",
+            "one",
+            1,
+            1,
+        ));
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#two",
+            "docs/g.md",
+            "two",
+            2,
+            2,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#one",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.80,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#two",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.70,
+        ));
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        let v = call_tool_ctx(
+            &g,
+            &ctx,
+            "guidance",
+            &json!({"symbol": "target", "budget": 1}),
+        )
+        .unwrap();
+        let sections = v["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 2, "got {sections:?}");
+        assert_eq!(v["budget_used"], 0, "zero progress ⇒ zero spent: {v}");
+        for s in sections {
+            assert_eq!(s["ref_only"], true, "every entry is ref-only: {s:?}");
+            assert_eq!(s["text"], "", "no free marker-only content: {s:?}");
+            assert_eq!(s["truncated"], false, "never falsely marked cut: {s:?}");
+            assert!(
+                !s["text"].as_str().unwrap().contains("[truncated"),
+                "NO markers at all — that was the storm: {s:?}"
+            );
+        }
+        // The whole response stays tiny — no marker text for either section.
+        let response_len = serde_json::to_string(&v).unwrap().len();
+        assert!(
+            response_len < 500,
+            "tiny response, no marker storm: {response_len} bytes"
+        );
     }
 
     #[test]
@@ -3281,6 +3493,77 @@ mod tests {
         assert_eq!(v["target"]["name"], "src/multi.ts");
     }
 
+    // ── C3 review: absolute-path matching ──────────────────────────────────
+
+    #[test]
+    fn node_in_file_matches_component_boundary_suffix_both_ways() {
+        assert!(node_in_file("src/a.ts", "src/a.ts"), "exact match");
+        assert!(
+            node_in_file("src/a.ts", "/repo/src/a.ts"),
+            "a stored relative path matches an absolute one ending in it"
+        );
+        assert!(
+            node_in_file("/repo/src/a.ts", "src/a.ts"),
+            "and the reverse direction"
+        );
+        assert!(
+            !node_in_file("a.ts", "schema_a.ts"),
+            "must be a path-COMPONENT boundary, not a bare suffix"
+        );
+        assert!(
+            !node_in_file("", "src/a.ts"),
+            "empty node_path matches nothing"
+        );
+    }
+
+    #[test]
+    fn guidance_file_mode_matches_an_absolute_path_the_same_as_relative() {
+        // C3: the OLD exact `n.path == file` match meant an absolute `--file`
+        // found nothing even though the SAME repo-relative node exists —
+        // the PreToolUse hook always passes an absolute `tool_input.file_path`.
+        let tmp = tempfile::tempdir().unwrap();
+        write_body_file(tmp.path(), "src/a.ts", "one\n");
+        write_body_file(tmp.path(), "docs/g.md", "mentions a.ts\n");
+        let mut g = Graph::new();
+        g.add_node(Node {
+            path: "src/a.ts".into(),
+            ..node_kind("target", "target", NodeKind::Function)
+        });
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#h",
+            "docs/g.md",
+            "h",
+            1,
+            1,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#h",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.80,
+        ));
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        let absolute = tmp.path().join("src/a.ts");
+        let v = call_tool_ctx(
+            &g,
+            &ctx,
+            "guidance",
+            &json!({"file": absolute.to_str().unwrap()}),
+        )
+        .unwrap();
+        let sections = v["sections"].as_array().unwrap();
+        assert_eq!(
+            sections.len(),
+            1,
+            "an absolute --file path must find the same section a relative one does: {v}"
+        );
+        assert_eq!(sections[0]["anchor"], "h");
+    }
+
     #[test]
     fn guidance_section_arg_returns_one_full_body_with_no_budget_applied() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3402,6 +3685,74 @@ mod tests {
         assert_eq!(sections[1]["ref_only"], true);
         assert_eq!(sections[1]["text"], "");
         assert_eq!(v["budget_used"], 400);
+    }
+
+    /// Minor (c) review: the error message for a non-numeric `budget` must
+    /// name the exact expected shape, matching `depth`'s sibling message.
+    #[test]
+    fn guidance_non_numeric_budget_names_the_expected_shape() {
+        let g = bar_calls_foo();
+        let err =
+            call_tool(&g, "guidance", &json!({"symbol": "foo", "budget": "lots"})).unwrap_err();
+        match err {
+            ToolError::BadArgs(msg) => assert_eq!(msg, "`budget` must be a non-negative integer"),
+            other => panic!("expected BadArgs, got {other:?}"),
+        }
+    }
+
+    /// Minor (d) review: estate-mode's honest degradation when NO configured
+    /// member root's basename matches the section's own uid `package` field —
+    /// `resolve_root_for_repo` must refuse to guess (never read a DIFFERENT
+    /// repo's file under the same relative path), so the section degrades to
+    /// "body unavailable" rather than risking a WRONG body. (Full estate
+    /// root-name mapping — matching by manifest-declared name rather than
+    /// directory basename — is a named follow-up, out of K6's scope; this
+    /// test only pins that the CURRENT mismatch case degrades honestly.)
+    #[test]
+    fn guidance_estate_mode_basename_mismatch_degrades_to_body_unavailable_never_a_wrong_body() {
+        let wrong_a = tempfile::tempdir().unwrap();
+        let wrong_b = tempfile::tempdir().unwrap();
+        // A file at the SAME relative path exists under a wrong root, with
+        // DIFFERENT content — if resolve_root_for_repo ever guessed wrong,
+        // this test would catch it reading the WRONG body, not just a
+        // missing one.
+        write_body_file(
+            wrong_a.path(),
+            "docs/g.md",
+            "WRONG CONTENT — must never be returned\n",
+        );
+        let mut g = Graph::new();
+        g.add_node(node_kind("target", "target", NodeKind::Function));
+        g.add_node(doc_section(
+            "doc|realrepo|docs/g.md|docs/g.md#h|",
+            "docs/g.md",
+            "h",
+            1,
+            1,
+        ));
+        g.add_edge(doc_edge(
+            "doc|realrepo|docs/g.md|docs/g.md#h|",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.80,
+        ));
+        let ctx = ToolCtx {
+            repo_root: None,
+            member_roots: vec![wrong_a.path().to_path_buf(), wrong_b.path().to_path_buf()],
+        };
+        let v = call_tool_ctx(&g, &ctx, "guidance", &json!({"symbol": "target"})).unwrap();
+        let sections = v["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0]["text"], "", "never a wrong body: {v}");
+        assert_eq!(sections[0]["note"], "body unavailable");
+        assert!(
+            !sections[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("WRONG CONTENT"),
+            "must never leak a different repo's file content: {v}"
+        );
     }
 
     #[test]

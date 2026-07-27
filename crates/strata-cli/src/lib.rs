@@ -1312,9 +1312,18 @@ pub fn cmd_guidance(
         }
     };
 
+    // C3 fix (review): normalize an absolute `--file` path to repo-relative
+    // the SAME way `cmd_blast` does (`blast_rel_path`) — the PreToolUse hook
+    // always passes an absolute `tool_input.file_path`, so without this a
+    // real repo's `guidance --file <absolute>` silently found nothing while
+    // `blast` on the identical path found dependents. A no-op for `--symbol`
+    // targets and for estate mode (`ctx.repo_root` is `None` there; the
+    // `node_in_file` boundary-suffix match in `guidance_candidates_for_file`
+    // still matches an unnormalized absolute path regardless).
     let mut args = serde_json::Map::new();
     if as_file {
-        args.insert("file".into(), serde_json::json!(target));
+        let rel = blast_rel_path(ctx.repo_root.as_deref(), target);
+        args.insert("file".into(), serde_json::json!(rel));
     } else {
         args.insert("symbol".into(), serde_json::json!(target));
     }
@@ -1519,6 +1528,19 @@ fn detect_changes_estate(
         .map_err(|e| CliError::Other(e.to_string()))
 }
 
+/// The display label for a [`Plane`] — an EXHAUSTIVE match (review minor: the
+/// per-plane render loop used to be a bare array literal that silently
+/// dropped `Plane::Knowledge` when it was added; a future `Plane` variant now
+/// fails to compile here until it is labeled).
+fn plane_label(plane: Plane) -> &'static str {
+    match plane {
+        Plane::Code => "code",
+        Plane::Contract => "contract",
+        Plane::Infra => "infra",
+        Plane::Knowledge => "knowledge",
+    }
+}
+
 /// Render a [`strata_index::ChangeReport`] as the human-readable CLI output:
 /// changed files, changed symbols grouped per plane, the affected table
 /// (depth/conf/amb), and the `Risk: LEVEL — reasons` line.
@@ -1544,11 +1566,15 @@ fn render_change_report(report: &strata_index::ChangeReport) -> String {
     }
 
     // ── Changed symbols, grouped per plane. ──
-    for (plane, label) in [
-        (Plane::Code, "code"),
-        (Plane::Contract, "contract"),
-        (Plane::Infra, "infra"),
-    ] {
+    // Minor (review): the old bare array literal silently dropped
+    // `Plane::Knowledge` when it was added — `plane_label` is an EXHAUSTIVE
+    // match instead, so a future `Plane` variant fails to compile here until
+    // it is labeled, and the iterated list below now names Knowledge too (a
+    // no-op today — `detect_changes`'s real git-diff path never produces a
+    // Knowledge-plane symbol, see `Plane::Knowledge`'s own doc comment — but
+    // honest/complete regardless of what currently populates it).
+    for plane in [Plane::Code, Plane::Contract, Plane::Infra, Plane::Knowledge] {
+        let label = plane_label(plane);
         let in_plane: Vec<_> = report.symbols.iter().filter(|s| s.plane == plane).collect();
         if in_plane.is_empty() {
             continue;
@@ -1921,48 +1947,86 @@ const BLAST_DOCS_LINE_MAX: usize = 200;
 /// How many top (by-confidence) doc refs the line shows before "+N more".
 const BLAST_DOCS_TOP_N: usize = 3;
 
+/// Truncate `s` to at most `max` BYTES at a char boundary — never splitting a
+/// multi-byte UTF-8 sequence — appending "…" (itself 3 bytes) when cut.
+/// Mirrors `strata-mcp`'s `guidance_truncate` contract; duplicated here since
+/// this module has no MCP dependency (small, pure, file-local).
+fn elide(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
 /// The capped `docs:` line for [`render_blast_agent`]: `docs: {name} §{anchor}
 /// (conf) · … · +N more — guidance {file} for detail`, HARD capped at
 /// [`BLAST_DOCS_LINE_MAX`] bytes. `None` when the file has no doc links
 /// (silent-when-clean: the line is absent entirely, never a bare `docs: (0)`).
 ///
-/// Fits as many of the top-3-by-confidence entries as the cap allows,
-/// dropping from the tail (never blowing past the cap) before ever touching
-/// the leading `docs:` tag or the trailing `guidance … for detail` hint — the
-/// `+N more` count always reflects exactly how many entries did NOT make it
-/// into the line (rank >3 originally, plus any of the top-3 dropped for
-/// length).
+/// **I7 fix (review):** long section names/anchors and a long file path used
+/// to make the OLD (entry-dropping) algorithm degrade top-3 → top-1 → top-0,
+/// hiding entries that DO exist rather than just shortening their labels.
+/// This version instead ELIDES — name and anchor are each independently
+/// truncated with "…" (so the `§` separator always survives; a long NAME can
+/// never swallow the anchor), and the hint's file-path display is elided too
+/// — trying progressively tighter caps until the whole line fits, so all of
+/// `top` (up to 3 entries) ALWAYS stay visible whenever 3+ exist. The leading
+/// `docs:` tag, the ` · +N more` count, and the ` — guidance … for detail`
+/// hint's fixed text are never touched — only entry labels and the path are
+/// candidates for eliding.
 fn render_blast_docs_line(docs: &[strata_index::BlastDocRef], file: &str) -> Option<String> {
     if docs.is_empty() {
         return None;
     }
     let total = docs.len();
     let top: Vec<&strata_index::BlastDocRef> = docs.iter().take(BLAST_DOCS_TOP_N).collect();
-    let hint = format!(" — guidance {file} for detail");
-
-    let render_with = |shown: usize| -> String {
-        let mut body = top[..shown]
-            .iter()
-            .map(|d| format!("{} §{} ({:.2})", d.name, d.anchor, d.confidence))
-            .collect::<Vec<_>>()
-            .join(" · ");
-        let hidden = total - shown;
-        if hidden > 0 {
-            if !body.is_empty() {
-                body.push_str(" · ");
-            }
-            body.push_str(&format!("+{hidden} more"));
-        }
-        format!("docs: {body}{hint}")
+    let hidden = total - top.len();
+    let count_suffix = if hidden > 0 {
+        format!(" · +{hidden} more")
+    } else {
+        String::new()
     };
 
-    for shown in (0..=top.len()).rev() {
-        let line = render_with(shown);
-        if line.len() <= BLAST_DOCS_LINE_MAX || shown == 0 {
-            return Some(line);
+    for entry_cap in [usize::MAX, 30, 20, 14, 10, 6, 3] {
+        for path_cap in [usize::MAX, 40, 24, 16, 8, 3] {
+            let body = top
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{} §{} ({:.2})",
+                        elide(&d.name, entry_cap),
+                        elide(&d.anchor, entry_cap),
+                        d.confidence
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let line = format!(
+                "docs: {body}{count_suffix} — guidance {} for detail",
+                elide(file, path_cap)
+            );
+            if line.len() <= BLAST_DOCS_LINE_MAX {
+                return Some(line);
+            }
         }
     }
-    unreachable!("the shown == 0 iteration above always returns")
+    // Last-resort safety net — should not be reached (the tightest grid point
+    // above comfortably fits any realistic input; pinned by
+    // `render_blast_docs_line_elides_long_entries_and_path_to_keep_three_shown`)
+    // but this still NEVER panics and NEVER exceeds the hard cap, even for a
+    // pathological input (e.g. an enormous hidden count).
+    let mut line = format!(
+        "docs: +{total} more — guidance {} for detail",
+        elide(file, 3)
+    );
+    if line.len() > BLAST_DOCS_LINE_MAX {
+        line = elide(&line, BLAST_DOCS_LINE_MAX.saturating_sub(1));
+    }
+    Some(line)
 }
 
 /// Render a [`BlastReport`] as the terse, token-lean block the PreToolUse hook
@@ -2002,14 +2066,24 @@ fn render_blast_agent(report: &BlastReport) -> String {
         out.push_str(&format!("\n  symbols: {}", names.join(", ")));
     }
 
-    // The top dependents (highest confidence first; affected is already sorted).
-    if report.affected.is_empty() {
+    // The top dependents (highest confidence first; affected is already
+    // sorted). C4 (review): doc-kind entries are EXCLUDED here — they have
+    // their own dedicated `docs:` line below, and competing for the same
+    // TOP_N slots let a run of tied-confidence doc sections evict a real
+    // WILL BREAK caller behind "+N more" (the caller then never showed
+    // anywhere in the block) while the SAME docs repeated on the docs: line.
+    let non_doc_affected: Vec<&strata_index::AffectedNode> = report
+        .affected
+        .iter()
+        .filter(|a| !is_doc_kind_name(&a.kind))
+        .collect();
+    if non_doc_affected.is_empty() {
         out.push_str(
             "\n  dependents: none in the loaded graph (NOT a guarantee — the index may be stale).",
         );
     } else {
         out.push_str("\n  top dependents (depth/conf/verdict):");
-        for a in report.affected.iter().take(TOP_N) {
+        for a in non_doc_affected.iter().take(TOP_N) {
             out.push_str(&format!(
                 "\n    - {} ({}) d={} conf={:.2}{} {}",
                 a.name,
@@ -2020,10 +2094,10 @@ fn render_blast_agent(report: &BlastReport) -> String {
                 break_verdict(is_doc_kind_name(&a.kind), a.will_break),
             ));
         }
-        if report.affected.len() > TOP_N {
+        if non_doc_affected.len() > TOP_N {
             out.push_str(&format!(
                 "\n    … and {} more",
-                report.affected.len() - TOP_N
+                non_doc_affected.len() - TOP_N
             ));
         }
     }
@@ -2696,6 +2770,63 @@ mod tests {
         );
     }
 
+    /// **C4 review.** 8 doc-kind entries all tied at 0.80 confidence (which,
+    /// under the OLD code's bare `.take(TOP_N)` over the WHOLE `affected`
+    /// list, would occupy every one of the 8 "top dependents" slots) plus one
+    /// REAL `Function` caller (also 0.80, `will_break: true`) — the caller
+    /// must survive: docs have their own dedicated `docs:` line now and must
+    /// never compete for (or evict anything from) the top-dependents slots.
+    #[test]
+    fn render_blast_agent_docs_never_evict_a_will_break_caller_from_top_dependents() {
+        use strata_index::{AffectedNode, BlastSymbol, Risk, RiskLevel};
+        let mut affected: Vec<AffectedNode> = (0..8)
+            .map(|i| AffectedNode {
+                uid: format!("doc|r|docs/g.md|docs/g.md#s{i}|"),
+                name: format!("Section {i}"),
+                kind: "DocSection".into(),
+                path: "docs/g.md".into(),
+                depth: 1,
+                confidence: 0.80,
+                ambiguous: false,
+                will_break: false,
+            })
+            .collect();
+        affected.push(AffectedNode {
+            uid: "ts|app|src/caller.ts|caller|()".into(),
+            name: "caller".into(),
+            kind: "Function".into(),
+            path: "src/caller.ts".into(),
+            depth: 1,
+            confidence: 0.80,
+            ambiguous: false,
+            will_break: true,
+        });
+        let report = BlastReport {
+            file: "src/a.ts".into(),
+            symbols: vec![BlastSymbol {
+                fqn: "target".into(),
+                name: "target".into(),
+                kind: "Function".into(),
+            }],
+            affected,
+            risk: Risk {
+                level: RiskLevel::Medium,
+                reasons: vec!["9 affected".into()],
+            },
+            note: None,
+            docs: Vec::new(),
+        };
+        let out = render_blast_agent(&report);
+        assert!(
+            out.contains("caller") && out.contains("WILL BREAK"),
+            "the real caller must survive the cut, never evicted by tied-confidence docs:\n{out}"
+        );
+        assert!(
+            !out.contains("Section 0"),
+            "docs must not occupy top-dependent slots at all (they have their own line):\n{out}"
+        );
+    }
+
     // ── blast docs: line (K6) ─────────────────────────────────────────────────
 
     fn blast_doc_ref(name: &str, anchor: &str, confidence: f32) -> strata_index::BlastDocRef {
@@ -2765,6 +2896,56 @@ mod tests {
     #[test]
     fn render_blast_docs_line_is_none_for_an_empty_list() {
         assert!(render_blast_docs_line(&[], "src/a.ts").is_none());
+    }
+
+    /// **I7 review.** 6 doc sections with LONG names/anchors, plus a 78-byte
+    /// file path — the OLD (entry-dropping) algorithm degraded top-3 → top-1
+    /// or top-0 here because whole entries were dropped to fit 200. The FIX
+    /// elides instead: all 3 of the top entries stay visible (each with a
+    /// shortened name/anchor), and the path is elided too, while still
+    /// respecting the hard cap and naming the correct hidden count.
+    #[test]
+    fn render_blast_docs_line_elides_long_entries_and_path_to_keep_three_shown() {
+        let long_path = format!(
+            "packages/{}/src/very/deeply/nested/module.ts",
+            "x".repeat(40)
+        );
+        assert!(
+            long_path.len() >= 78,
+            "fixture path must be long: {long_path}"
+        );
+        let docs: Vec<strata_index::BlastDocRef> = (0..6)
+            .map(|i| strata_index::BlastDocRef {
+                uid: format!("doc|r|docs/g.md|docs/g.md#s{i}|"),
+                name: format!("A Very Long And Descriptive Section Heading Number {i}"),
+                path: "docs/g.md".into(),
+                anchor: format!("a-very-long-and-descriptive-anchor-slug-number-{i}"),
+                confidence: 0.9 - (i as f32) * 0.05,
+            })
+            .collect();
+        let line = render_blast_docs_line(&docs, &long_path).unwrap();
+        assert!(
+            line.len() <= 200,
+            "hard cap: {} bytes: {line:?}",
+            line.len()
+        );
+        assert!(line.contains("+3 more"), "6 total, top 3 shown: {line:?}");
+        assert!(
+            line.starts_with("docs:"),
+            "the leading tag is never elided: {line:?}"
+        );
+        assert!(
+            line.contains("guidance") && line.contains("for detail"),
+            "the trailing hint's fixed text is never elided: {line:?}"
+        );
+        // All 3 top entries remain visible (elided, never dropped) — each
+        // entry's `§` separator survives eliding since name/anchor are
+        // elided INDEPENDENTLY, never as one swallowed blob.
+        let entry_count = line.matches('§').count();
+        assert_eq!(
+            entry_count, 3,
+            "3 entries must stay visible (elided, not dropped): {line:?}"
+        );
     }
 
     // ── detect-changes "docs to review" line (K6) ────────────────────────────
@@ -2843,6 +3024,50 @@ mod tests {
             out.contains("docs to review (1): docs/g.md#using-helper"),
             "got:\n{out}"
         );
+    }
+
+    /// Minor (a) review: the per-plane render loop used to be a bare array
+    /// literal that silently dropped `Plane::Knowledge`. `plane_label` is
+    /// exhaustive and the iterated list now names it — a Knowledge-plane
+    /// `ChangedSymbol` (however it got there) must render its own "knowledge
+    /// symbols (N):" section, not vanish silently.
+    #[test]
+    fn render_change_report_labels_the_knowledge_plane_when_present() {
+        use strata_index::{
+            ChangeKind, ChangeReport, ChangedSymbol, FileChange, Plane, Risk, RiskLevel,
+        };
+        let report = ChangeReport {
+            scope: "working".into(),
+            files: vec![FileChange::Modified {
+                path: "docs/g.md".into(),
+            }],
+            symbols: vec![ChangedSymbol {
+                plane: Plane::Knowledge,
+                change: ChangeKind::Modified,
+                key: "docs/g.md#h".into(),
+                file: "docs/g.md".into(),
+                contract_change: None,
+            }],
+            other_files: vec![],
+            affected: vec![],
+            risk: Risk {
+                level: RiskLevel::Low,
+                reasons: vec!["0 affected".into()],
+            },
+        };
+        let out = render_change_report(&report);
+        assert!(
+            out.contains("knowledge symbols (1):") && out.contains("docs/g.md#h"),
+            "a Knowledge-plane symbol must get its own labeled section, never vanish; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn plane_label_is_exhaustive_and_matches_serde_naming() {
+        assert_eq!(plane_label(Plane::Code), "code");
+        assert_eq!(plane_label(Plane::Contract), "contract");
+        assert_eq!(plane_label(Plane::Infra), "infra");
+        assert_eq!(plane_label(Plane::Knowledge), "knowledge");
     }
 
     #[test]
@@ -3787,6 +4012,118 @@ mod tests {
         assert!(
             out.contains("Using the target symbol."),
             "body read from disk:\n{out}"
+        );
+    }
+
+    /// A tiny on-disk repo whose `src/a.ts` defines `target` (called by
+    /// `caller` in `src/b.ts` — so `blast` finds a dependent) AND is
+    /// mentioned by a markdown doc section (so `guidance --file` finds a
+    /// section) — for the C3 absolute-path agreement test. Returns the temp
+    /// dir (keep it alive) and the db path.
+    fn blast_and_guidance_fixture_db() -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("docs")).expect("mkdir docs");
+        std::fs::write(
+            tmp.path().join("docs/guide.md"),
+            "Using the target symbol.\n",
+        )
+        .expect("write guide.md");
+
+        let db = tmp.path().join("graph.duckdb");
+        let mut g = Graph::new();
+        g.add_node(Node {
+            uid: Uid("ts|app|src/a.ts|target|".into()),
+            kind: NodeKind::Function,
+            name: "target".into(),
+            fqn: "target".into(),
+            path: "src/a.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_node(Node {
+            uid: Uid("ts|app|src/b.ts|caller|".into()),
+            kind: NodeKind::Function,
+            name: "caller".into(),
+            fqn: "caller".into(),
+            path: "src/b.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_edge(Edge {
+            src: Uid("ts|app|src/b.ts|caller|".into()),
+            dst: Uid("ts|app|src/a.ts|target|".into()),
+            kind: EdgeKind::Calls,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.9),
+        });
+        g.add_node(Node {
+            uid: Uid("doc|app|docs/guide.md|docs/guide.md#h|".into()),
+            kind: NodeKind::DocSection,
+            name: "Heading".into(),
+            fqn: "docs/guide.md#h".into(),
+            path: "docs/guide.md".into(),
+            span: Span {
+                start_line: 1,
+                start_col: 0,
+                end_line: 1,
+                end_col: 0,
+            },
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_edge(Edge {
+            src: Uid("doc|app|docs/guide.md|docs/guide.md#h|".into()),
+            dst: Uid("ts|app|src/a.ts|target|".into()),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.80),
+        });
+        let mut store = DuckGraphStore::open(&db).expect("open store");
+        store.save_graph(&g).expect("save graph");
+        (tmp, db)
+    }
+
+    /// **C3 review E2E.** The SAME absolute path through BOTH `cmd_blast` and
+    /// `cmd_guidance --file` must agree: `blast` finds `caller` as a
+    /// dependent of `src/a.ts`'s symbols, and `guidance --file` finds the
+    /// markdown section mentioning `target` — proving the absolute-path fix
+    /// lands in the actual CLI dispatch path, not just the MCP tool in
+    /// isolation.
+    #[test]
+    fn cmd_blast_and_cmd_guidance_agree_on_the_same_absolute_path() {
+        let (tmp, db) = blast_and_guidance_fixture_db();
+        let absolute = tmp.path().join("src/a.ts");
+        let absolute_str = absolute.to_str().unwrap();
+
+        let blast_out = cmd_blast(
+            Some(&db),
+            Some(tmp.path()),
+            None,
+            absolute_str,
+            BlastFormat::Text,
+        )
+        .unwrap();
+        assert!(
+            blast_out.contains("caller"),
+            "blast must find the dependent via the absolute path:\n{blast_out}"
+        );
+
+        let guidance_out = cmd_guidance(
+            absolute_str,
+            true, // --file
+            None,
+            None,
+            None,
+            Some(&db),
+            Some(tmp.path()),
+            None,
+        )
+        .unwrap();
+        assert!(
+            guidance_out.contains("docs/guide.md#h") && guidance_out.contains("Using the target symbol."),
+            "guidance --file must find the SAME file's doc section via the absolute path:\n{guidance_out}"
         );
     }
 
