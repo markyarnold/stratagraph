@@ -617,3 +617,41 @@ fn xmldoc_run_stops_at_a_blank_line_gap_within_the_comment_block() {
         "the run stops at the gap: only the adjacent \"Line B.\" line is included, got {span:?}"
     );
 }
+
+#[test]
+fn xmldoc_skips_an_attribute_between_the_comment_and_the_item() {
+    // `[Serializable]` (or any attribute) between a doc comment and the item
+    // it decorates is idiomatic C# everywhere — the attribute must be
+    // transparent to doc-comment adjacency.
+    let src = concat!(
+        "namespace App {\n",
+        "/// <summary>Doc</summary>\n",
+        "[Serializable]\n",
+        "public class Wrapped { }\n",
+        "}\n",
+    );
+    let file = analyze("w.cs", src);
+    let span = sym(&file, "Wrapped")
+        .doc_span
+        .expect("doc span captured through the attribute");
+    assert_eq!((span.start_line, span.end_line), (2, 2));
+}
+
+#[test]
+fn xmldoc_blank_line_before_the_attribute_still_blocks_capture() {
+    // A blank line between the doc comment and the attribute is a real gap —
+    // the attribute-skip must not silently bridge it.
+    let src = concat!(
+        "namespace App {\n",
+        "/// Doc.\n",
+        "\n",
+        "[Serializable]\n",
+        "public class Gap { }\n",
+        "}\n",
+    );
+    let file = analyze("w.cs", src);
+    assert!(
+        sym(&file, "Gap").doc_span.is_none(),
+        "a blank line between the comment and the attribute blocks capture"
+    );
+}

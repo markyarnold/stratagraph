@@ -690,3 +690,32 @@ fn rustdoc_run_stops_at_a_blank_line_gap_within_the_comment_block() {
         "the run stops at the gap: only the adjacent \"Line B.\" line is included, got {span:?}"
     );
 }
+
+#[test]
+fn rustdoc_skips_an_attribute_between_the_comment_and_the_item() {
+    // `#[derive(Debug)]` (or any attribute) between a doc comment and the
+    // item it decorates is idiomatic Rust everywhere, including this repo —
+    // the attribute must be transparent to doc-comment adjacency.
+    let file = analyze(
+        "src/a.rs",
+        "/// Documented.\n#[derive(Debug)]\npub struct Wrapped { }\n",
+    );
+    let span = sym(&file, "Wrapped")
+        .doc_span
+        .expect("doc span captured through the attribute");
+    assert_eq!((span.start_line, span.end_line), (1, 1));
+}
+
+#[test]
+fn rustdoc_blank_line_before_the_attribute_still_blocks_capture() {
+    // A blank line between the doc comment and the attribute is a real gap —
+    // the attribute-skip must not silently bridge it.
+    let file = analyze(
+        "src/a.rs",
+        "/// Doc.\n\n#[derive(Debug)]\npub struct Gap {}\n",
+    );
+    assert!(
+        sym(&file, "Gap").doc_span.is_none(),
+        "a blank line between the comment and the attribute blocks capture"
+    );
+}

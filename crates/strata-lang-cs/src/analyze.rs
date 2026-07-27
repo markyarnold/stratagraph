@@ -113,11 +113,47 @@ fn is_doc_comment(node: Node, bytes: &[u8]) -> bool {
 /// Rust's `///`/`//!`). A non-doc comment, or a row gap, stops the walk right
 /// there. Returns the SPAN of the whole run — never its text
 /// (bodies-from-disk, design decision 4/§8).
+///
+/// An `attribute_list` (`[Serializable]` and friends) immediately above
+/// `decl` is meant to be transparent here too, matching Rust's
+/// `#[derive(...)]` handling — `/// Doc\n[Serializable]\nclass Foo {}` should
+/// still document `Foo`. The prelude below walks past a contiguous, gap-free
+/// run of such siblings before the comment-scanning loop, exactly mirroring
+/// the Rust analyzer's `attribute_item` prelude.
+///
+/// **Verified empirically (three declaration kinds — `class_declaration`,
+/// `method_declaration`, `local_function_statement` — via a scratch
+/// tree-sitter-c-sharp dump) that this prelude never actually fires today**:
+/// unlike Rust, where `attribute_item` is a preceding SIBLING of the
+/// declaration, tree-sitter-c-sharp's grammar parses `[Attr]` as the FIRST
+/// CHILD of the declaration node itself (alongside its `modifier`/`class`/
+/// name fields) — so `decl.prev_sibling()` already lands directly on the
+/// comment, skipping straight past the attribute with no help needed. The
+/// two tests below (`xmldoc_skips_an_attribute_between_the_comment_and_the_item`,
+/// `xmldoc_blank_line_before_the_attribute_still_blocks_capture`) both pass
+/// identically with or without this prelude — confirmed by running them
+/// against the pre-prelude implementation before adding this code. It is
+/// kept anyway for structural symmetry with the Rust walker and as a
+/// defensive guard against a future `tree-sitter-c-sharp` grammar bump
+/// changing this internal shape (this crate's grammar dep is `=`-pinned,
+/// reviewed bumps only — see the crate docs) — never confidently assume a
+/// parser's internal tree shape is permanent.
 fn doc_span_of(decl: Node, bytes: &[u8]) -> Option<Span> {
     let mut expected_row = decl.start_position().row as u32;
+    let mut cursor = decl.prev_sibling();
+    while let Some(node) = cursor {
+        if node.kind() != "attribute_list" {
+            break;
+        }
+        if span_of(node).end_line != expected_row {
+            break;
+        }
+        expected_row = node.start_position().row as u32;
+        cursor = node.prev_sibling();
+    }
+
     let mut nearest: Option<Node> = None;
     let mut topmost: Option<Node> = None;
-    let mut cursor = decl.prev_sibling();
     while let Some(node) = cursor {
         if !is_doc_comment(node, bytes) {
             break;

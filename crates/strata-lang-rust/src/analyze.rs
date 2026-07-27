@@ -127,11 +127,35 @@ fn comment_span(node: Node, bytes: &[u8]) -> Span {
 /// never crosses either. Returns the SPAN of the whole run (topmost comment's
 /// start through the nearest comment's end) — never its text (bodies-from-disk,
 /// design decision 4/§8).
+///
+/// An `attribute_item` (`#[derive(Debug)]` and friends) immediately above
+/// `decl`, with no blank line either side of it, is transparent: `/// Doc\n
+/// #[derive(Debug)]\nstruct Foo;` still documents `Foo`, exactly as rustdoc
+/// itself treats it — idiomatic and common (structs/enums with derives), not
+/// an edge case to defer. Handled as a prelude pass that walks past a
+/// contiguous, gap-free run of attributes BEFORE the comment-scanning loop
+/// below, using the identical row-gap check (an `attribute_item` is an
+/// ordinary syntax node with no trailing-newline quirk, so the un-adjusted
+/// [`span_of`] is correct here — only doc-comment nodes need
+/// [`comment_span`]'s correction). A gap anywhere — between `decl` and the
+/// nearest attribute, or between two stacked attributes — stops the prelude
+/// at that point, exactly like a gap stops the comment loop.
 fn doc_span_of(decl: Node, bytes: &[u8]) -> Option<Span> {
     let mut expected_row = decl.start_position().row as u32;
+    let mut cursor = decl.prev_sibling();
+    while let Some(node) = cursor {
+        if node.kind() != "attribute_item" {
+            break;
+        }
+        if span_of(node).end_line != expected_row {
+            break;
+        }
+        expected_row = node.start_position().row as u32;
+        cursor = node.prev_sibling();
+    }
+
     let mut nearest: Option<Node> = None;
     let mut topmost: Option<Node> = None;
-    let mut cursor = decl.prev_sibling();
     while let Some(node) = cursor {
         if !is_doc_comment(node) {
             break;
