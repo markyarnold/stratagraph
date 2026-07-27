@@ -152,14 +152,12 @@ fn remove_if_exists(path: &Path) -> Result<(), DocsIndexError> {
 ///
 /// **Atomicity:** a fresh index is built in the sibling `docs.idx.tmp`
 /// directory and `commit()`-ed there in full BEFORE anything touches the
-/// real `docs.idx` — only then is the old `docs.idx` (if any) removed and
-/// `docs.idx.tmp` renamed over it. A concurrent reader therefore only ever
-/// observes the fully-committed OLD index or the fully-committed NEW one,
-/// never a half-written one. The brief-noted caveat: `rename` cannot be made
-/// atomic together with the preceding `remove` (two syscalls), so there is a
-/// small window where `docs.idx` does not exist at all — this is safe by
-/// construction because a missing index is already a first-class, honestly
-/// reported state (`search_docs` → empty results + a note), never an error.
+/// real `docs.idx` — only then is it swapped in (see [`swap_in`]) and any
+/// now-stale directory is best-effort cleaned up (see [`cleanup_stale_dirs`]).
+/// A concurrent reader therefore only ever observes the fully-committed OLD
+/// index or the fully-committed NEW one, never a half-written one, AND (the
+/// fix this doc comment now covers) the WRITE itself never fails just
+/// because a reader has the old index open.
 pub fn write_docs_index(
     strata_dir: &Path,
     entries: &[DocsIndexEntry],
@@ -192,10 +190,80 @@ pub fn write_docs_index(
     drop(writer);
     drop(index);
 
-    remove_if_exists(&final_path)?;
-    std::fs::rename(&tmp_path, &final_path).map_err(|e| io_err(&final_path, e))?;
+    swap_in(strata_dir, &tmp_path, &final_path)?;
+    // Best-effort only, by design — see the function doc. Never lets a
+    // cleanup failure turn an already-successful write into an `Err`.
+    cleanup_stale_dirs(strata_dir);
 
     Ok(entries.len())
+}
+
+/// Atomically swap the freshly-built `tmp_path` into `final_path`.
+///
+/// **Review fix:** the previous implementation did `remove_dir_all(final)`
+/// then `rename(tmp, final)`. That races a concurrent reader constructing an
+/// `Index`/`Searcher` over `final` (open/mmap of the segment files under it):
+/// empirically reproduced at 26/60 writes failing `DirectoryNotEmpty` under a
+/// concurrent reader. `remove_dir_all` is NOT a single syscall — it lists and
+/// recursively unlinks — so it can observe (and lose a race against) whatever
+/// the reader's own open touches inside that same directory.
+///
+/// The fix: never recursively delete a directory a reader might have open.
+/// If `final_path` exists, rename it ASIDE to a pid-scoped `docs.idx.stale-<pid>`
+/// sibling first — a single `rename` syscall, which cannot itself race a
+/// reader's already-open file descriptors/mmaps (POSIX: an open fd/mmap stays
+/// valid via the underlying inode regardless of what happens to the directory
+/// entry that named it — renaming the directory does not invalidate anything
+/// a reader already has open). Only THEN rename `tmp_path` into `final_path`.
+/// Deleting the now-stale directory is a separate, later, best-effort step
+/// ([`cleanup_stale_dirs`]) — never part of this function's success/failure.
+fn swap_in(strata_dir: &Path, tmp_path: &Path, final_path: &Path) -> Result<(), DocsIndexError> {
+    if final_path.exists() {
+        let stale = stale_dir_path(strata_dir, std::process::id());
+        // A same-pid leftover here would only happen if THIS exact pid
+        // previously crashed between this rename and its own cleanup sweep —
+        // vanishingly unlikely, but clear it first so this rename can never
+        // itself fail on an existing destination.
+        let _ = std::fs::remove_dir_all(&stale);
+        std::fs::rename(final_path, &stale).map_err(|e| io_err(final_path, e))?;
+    }
+    std::fs::rename(tmp_path, final_path).map_err(|e| io_err(final_path, e))
+}
+
+/// The pid-scoped stale-directory path `swap_in` renames an outgoing
+/// `docs.idx` aside to, and [`cleanup_stale_dirs`] later sweeps up.
+fn stale_dir_path(strata_dir: &Path, pid: u32) -> PathBuf {
+    strata_dir.join(format!("{DOCS_INDEX_DIR}.stale-{pid}"))
+}
+
+/// The glob-ish prefix every stale directory [`stale_dir_path`] produces
+/// starts with — used by [`cleanup_stale_dirs`] to recognize them regardless
+/// of which pid wrote them.
+const STALE_DIR_PREFIX: &str = "docs.idx.stale-";
+
+/// Best-effort sweep of every `docs.idx.stale-*` sibling in `strata_dir` —
+/// this run's own (just produced by `swap_in`, above) AND any leftover from a
+/// PREVIOUS run that failed to clean up (e.g. a reader still had it open at
+/// the time, the process was killed before this step ran, or the filesystem
+/// hiccupped). A failure removing any one of them is silently swallowed and
+/// never propagated: the swap itself already succeeded — the fresh index is
+/// already live at `docs.idx` — so a stale directory that resists deletion
+/// this run is just harmless disk clutter; the next successful write's sweep
+/// gets another chance at it. Never fails, never panics: a `strata_dir` that
+/// cannot even be listed is also silently skipped.
+fn cleanup_stale_dirs(strata_dir: &Path) {
+    let Ok(read_dir) = std::fs::read_dir(strata_dir) else {
+        return;
+    };
+    for entry in read_dir.flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(STALE_DIR_PREFIX)
+        {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -325,6 +393,180 @@ mod tests {
         assert!(
             !strata_dir.join(DOCS_INDEX_TMP_DIR).exists(),
             "no docs.idx.tmp litter must remain after a successful rebuild"
+        );
+    }
+
+    /// Review finding (Important, empirically reproduced: 26/60 writes failed
+    /// `DirectoryNotEmpty` under the OLD `remove_dir_all(final) +
+    /// rename(tmp, final)` swap). A rebuild must succeed even while a reader
+    /// still holds an open `Searcher` over the CURRENT index (mmapped segment
+    /// files) — and a FRESH open after the rebuild must see the new content,
+    /// proving the swap actually replaced it rather than merely tolerating
+    /// the old reader by leaving the old content in place.
+    #[test]
+    fn write_docs_index_rebuild_succeeds_with_a_concurrent_reader_holding_a_searcher() {
+        let tmp = tempfile::tempdir().unwrap();
+        let strata_dir = tmp.path();
+
+        write_docs_index(
+            strata_dir,
+            &[entry("u1", DocsEntryKind::Section, "alpha content")],
+        )
+        .unwrap();
+
+        // Open a reader on the CURRENT index and keep its Searcher alive
+        // across the rebuild below — this is exactly the outstanding handle
+        // the review's race was against.
+        let idx_path = strata_dir.join(DOCS_INDEX_DIR);
+        let held_index = Index::open_in_dir(&idx_path).unwrap();
+        let held_reader = held_index.reader().unwrap();
+        let _held_searcher = held_reader.searcher(); // held alive for the whole test
+
+        let result = write_docs_index(
+            strata_dir,
+            &[entry("u2", DocsEntryKind::Section, "beta content")],
+        );
+        assert!(
+            result.is_ok(),
+            "a rebuild must never fail because of a concurrent reader's open Searcher: {result:?}"
+        );
+
+        // A FRESH open (not `held_index`/`held_reader` above) must see the
+        // NEW content — the swap really replaced the index, it did not just
+        // avoid erroring while secretly leaving the old one in place.
+        let fresh_index = Index::open_in_dir(&idx_path).unwrap();
+        let fresh_reader = fresh_index.reader().unwrap();
+        let fresh_searcher = fresh_reader.searcher();
+        let body_field = fresh_index.schema().get_field("body").unwrap();
+        let query_parser = tantivy::query::QueryParser::for_index(&fresh_index, vec![body_field]);
+        let query = query_parser.parse_query("beta").unwrap();
+        let top = fresh_searcher
+            .search(
+                &query,
+                &tantivy::collector::TopDocs::with_limit(5).order_by_score(),
+            )
+            .unwrap();
+        assert_eq!(
+            top.len(),
+            1,
+            "a fresh open after rebuild must see the new content"
+        );
+    }
+
+    /// Review finding (Important, part 3 of the prescribed fix): a stale-dir
+    /// cleanup failure must never fail the write — the swap (the part that
+    /// matters) already succeeded by the time cleanup runs. Simulated by
+    /// leaving a leftover "previous run" stale dir whose contents resist
+    /// deletion (write permission stripped from the directory itself, so its
+    /// child file cannot be unlinked).
+    #[test]
+    #[cfg(unix)]
+    fn write_docs_index_succeeds_even_when_stale_dir_cleanup_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let strata_dir = tmp.path();
+
+        write_docs_index(strata_dir, &[entry("u1", DocsEntryKind::Section, "seed")]).unwrap();
+
+        // A leftover stale dir from a "previous run" (a fake pid — never the
+        // real one, so it can never collide with this run's own stale-aside
+        // dir) that cannot be deleted: strip write permission from the
+        // directory itself, so unlinking the file inside it fails.
+        let undeletable = stale_dir_path(strata_dir, 999_999_999);
+        std::fs::create_dir_all(&undeletable).unwrap();
+        std::fs::write(undeletable.join("segment"), b"leftover").unwrap();
+        std::fs::set_permissions(&undeletable, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = write_docs_index(
+            strata_dir,
+            &[entry("u2", DocsEntryKind::Section, "rebuilt")],
+        );
+
+        // Restore permissions unconditionally so the tempdir's own Drop
+        // cleanup does not itself fail, regardless of the assertions below.
+        std::fs::set_permissions(&undeletable, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            result.is_ok(),
+            "a stale-dir cleanup failure must never fail the write: {result:?}"
+        );
+        assert!(
+            undeletable.exists(),
+            "test premise: the undeletable stale dir must still be there (cleanup genuinely failed, \
+             not merely skipped)"
+        );
+
+        // The write itself still succeeded end to end: the new content is
+        // live and searchable despite the cleanup failure alongside it.
+        let idx_path = strata_dir.join(DOCS_INDEX_DIR);
+        let index = Index::open_in_dir(&idx_path).unwrap();
+        let reader = index.reader().unwrap();
+        assert_eq!(reader.searcher().num_docs(), 1);
+    }
+
+    /// A scaled-down re-run of the reviewer's concurrency probe against the
+    /// NEW swap sequence: a reader thread continuously opens the index and
+    /// constructs a `Searcher` (the exact operation the original race was
+    /// against) while the main thread concurrently rebuilds the index several
+    /// times. Kept small (20 rebuild iterations, a tight but bounded reader
+    /// loop) for CI speed/determinism — this is a regression guard, not a
+    /// statistical reproduction of the original 60-write/26-failure measurement.
+    /// The only hard assertion is "no write ever fails"; a reader racing a
+    /// swap and transiently seeing "not found" is expected/harmless (the same
+    /// honest-missing-index state `search_docs` already tolerates) and is
+    /// silently ignored, not counted as a failure.
+    #[test]
+    fn concurrent_reader_never_causes_a_write_failure_under_the_new_swap() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let strata_dir = tmp.path().to_path_buf();
+        write_docs_index(
+            &strata_dir,
+            &[entry("seed", DocsEntryKind::Section, "seed content")],
+        )
+        .unwrap();
+
+        let idx_path = strata_dir.join(DOCS_INDEX_DIR);
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let reader_idx_path = idx_path.clone();
+        let reader_stop = Arc::clone(&stop);
+        let reader_thread = std::thread::spawn(move || {
+            let mut successful_opens = 0usize;
+            while !reader_stop.load(Ordering::Relaxed) {
+                if let Ok(index) = Index::open_in_dir(&reader_idx_path) {
+                    if let Ok(reader) = index.reader() {
+                        let _searcher = reader.searcher();
+                        successful_opens += 1;
+                    }
+                }
+            }
+            successful_opens
+        });
+
+        let mut failures: Vec<String> = Vec::new();
+        for i in 0..20 {
+            let body = format!("generation {i} content");
+            if let Err(e) =
+                write_docs_index(&strata_dir, &[entry("seed", DocsEntryKind::Section, &body)])
+            {
+                failures.push(e.to_string());
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        let successful_opens = reader_thread.join().unwrap();
+
+        assert!(
+            failures.is_empty(),
+            "no write may fail under a concurrently-opening reader: {failures:?}"
+        );
+        assert!(
+            successful_opens > 0,
+            "sanity check that the race was actually exercised: the reader thread never got a \
+             single successful open in"
         );
     }
 

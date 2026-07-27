@@ -175,6 +175,18 @@ pub struct IndexStats {
     /// A repo with no markdown under `docs/**`, no root `*.md`, and no nested
     /// `README.md` reports all-zero (additive). Fed by `build_knowledge_plane`.
     pub knowledge_link: KnowledgeLinkCoverage,
+    /// A human-readable warning when the K5 lexical docs index
+    /// (`.strata/docs.idx`) failed to write, e.g. `"docs index: write failed
+    /// (…), search_docs will serve the previous index"`. `None` on a
+    /// successful write (the overwhelmingly common case) or when there were
+    /// simply no entries to index. The docs-index write is a best-effort side
+    /// artifact — its failure never fails the surrounding `strata index` run
+    /// (the code graph is unaffected) — but per review it must not be
+    /// SILENT either: this field is the CLI-visible counterpart to the
+    /// `eprintln!` warning already logged at write time, mirroring how
+    /// [`InfraLinkCoverage`]/[`DataLinkCoverage`] failures get a visible
+    /// `[infra]`/`[data] FAILED` line rather than only stderr.
+    pub docs_index_warning: Option<String>,
 }
 
 /// The cap on the number of per-template diagnostic lines carried in
@@ -668,10 +680,14 @@ fn index_impl(
     // each section's `body_range`, K1), doc-comment text (sliced from each
     // language's raw source via `RawSymbol::doc_span`'s LINE range, K3), and
     // spec operation descriptions (K4). `docs_index::write_docs_index` is a
-    // best-effort side artifact — see its doc comment — so a write failure is
-    // logged, never propagated: `search_docs` degrades to an honest "no docs
-    // index" note rather than an otherwise-successful `strata index` run
-    // failing over a sidecar. Estate mode needs nothing extra here: each
+    // best-effort side artifact — see its doc comment — so a write failure
+    // never propagates as an `IndexError`: `search_docs` degrades to an
+    // honest "no docs index" note rather than an otherwise-successful
+    // `strata index` run failing over a sidecar. It is, however, NOT silent
+    // (review fix): logged to stderr immediately AND carried on
+    // `IndexStats::docs_index_warning` so the CLI's human-readable summary
+    // shows it too — a write failure must be visible, never just a swallowed
+    // eprintln nobody reads. Estate mode needs nothing extra here: each
     // member repo is indexed through this SAME `index_impl` with its own
     // `repo_path`, so each member naturally gets its own `docs.idx`. ──
     let strata_dir = repo_path.join(".strata");
@@ -689,12 +705,16 @@ fn index_impl(
         &sources_for_docs,
     ));
     docs_entries.extend(docs_entries_for_operations(repo_name, &operations));
-    if let Err(e) = docs_index::write_docs_index(&strata_dir, &docs_entries) {
-        eprintln!(
-            "[index] warning: could not write lexical docs index {}: {e}",
-            strata_dir.join(docs_index::DOCS_INDEX_DIR).display()
-        );
-    }
+    let docs_index_warning = match docs_index::write_docs_index(&strata_dir, &docs_entries) {
+        Ok(_) => None,
+        Err(e) => {
+            let msg = format!(
+                "docs index: write failed ({e}), search_docs will serve the previous index"
+            );
+            eprintln!("[index] warning: {msg}");
+            Some(msg)
+        }
+    };
 
     let stats = IndexStats {
         // Includes TS/JS sources, the GraphQL operation documents that became
@@ -720,6 +740,7 @@ fn index_impl(
         data_link,
         data_diagnostics,
         knowledge_link,
+        docs_index_warning,
     };
 
     store.save_graph(&graph)?;

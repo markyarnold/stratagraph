@@ -607,6 +607,33 @@ fn stored_str(doc: &tantivy::TantivyDocument, field: tantivy::schema::Field) -> 
         .to_string()
 }
 
+/// Tokenize `text` with `analyzer` — the SAME pipeline the field was indexed
+/// with (fetched via `Index::tokenizer_for_field`, never a hand-rolled
+/// stand-in) — and collect the resulting token strings, deduped.
+///
+/// **Review fix:** `matched_terms` used to test SUBSTRING containment on
+/// lowercased raw text (`body_lower.contains(term)`), which reports a false
+/// positive whenever a query term happens to be a substring of a real token
+/// that is NOT actually that term — e.g. `"category".contains("cat")` is
+/// `true`, but the token `"cat"` never occurs; only the (different) token
+/// `"category"` does. Tokenizing the hit's own text with its field's own
+/// analyzer and testing TOKEN EQUALITY against the query's terms is the
+/// correct comparison — the query terms themselves are drawn from
+/// `Query::query_terms`, i.e. already tokenized the same way by
+/// `QueryParser`, so both sides of the comparison are in the same normalized
+/// (lowercased, per the "default" tokenizer) form.
+fn tokenize(
+    analyzer: &mut tantivy::tokenizer::TextAnalyzer,
+    text: &str,
+) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut stream = analyzer.token_stream(text);
+    stream.process(&mut |token| {
+        out.insert(token.text.clone());
+    });
+    out
+}
+
 /// Search one `docs.idx` at `idx_path` for `query_text`, returning up to
 /// `limit` hits ordered by score descending. A query-syntax error is
 /// returned as `Err` (escalated to the caller — see [`tool_search_docs`]);
@@ -660,6 +687,16 @@ fn search_one_index(
     else {
         return Ok(OneIndexOutcome::Unusable);
     };
+    // The SAME analyzers `body_f`/`name_f` were indexed with — fetched from
+    // the index, never hand-rolled — so tokenizing a hit's stored text below
+    // reproduces exactly the tokens that field's postings were built from
+    // (review fix: token equality, not substring containment; see `tokenize`).
+    let Ok(mut body_tokenizer) = index.tokenizer_for_field(body_f) else {
+        return Ok(OneIndexOutcome::Unusable);
+    };
+    let Ok(mut name_tokenizer) = index.tokenizer_for_field(name_f) else {
+        return Ok(OneIndexOutcome::Unusable);
+    };
 
     // Every term the parsed query carries (across both queried fields, deduped
     // by text) — the pool `matched_terms` is filtered from, per hit, below.
@@ -689,14 +726,17 @@ fn search_one_index(
         // The terms that actually HIT this document — a subset of `all_terms`
         // when the query has several terms and only some occur here (the
         // default query conjunction is OR, so a hit does not imply every term
-        // matched). Case-insensitive substring check: tantivy's default
-        // tokenizer lowercases at index time, and `all_terms`' text (read back
-        // off the parsed `Term`s) is already in that same lowercased form.
-        let name_lower = name.to_lowercase();
-        let body_lower = body.to_lowercase();
+        // matched). TOKEN EQUALITY, not substring containment: tokenize the
+        // hit's own body/name text with the field's own indexing analyzer and
+        // test each query term for membership in that exact token set — a
+        // query term that merely happens to be a SUBSTRING of a real, longer
+        // token (`"cat"` inside `"category"`) must never be reported as
+        // matched, since it never occurs as its own token.
+        let name_tokens = tokenize(&mut name_tokenizer, &name);
+        let body_tokens = tokenize(&mut body_tokenizer, &body);
         let matched_terms: Vec<String> = all_terms
             .iter()
-            .filter(|t| body_lower.contains(t.as_str()) || name_lower.contains(t.as_str()))
+            .filter(|t| body_tokens.contains(t.as_str()) || name_tokens.contains(t.as_str()))
             .cloned()
             .collect();
 
@@ -2137,6 +2177,52 @@ mod tests {
             .any(|t| t == "backoff"));
         // Never labeled as anything but a term match.
         assert!(v.get("note").is_none());
+    }
+
+    /// Review finding (Important, empirically reproduced): `matched_terms`
+    /// used to test substring containment on lowercased raw text, so a query
+    /// term that happens to be a substring of a real (different) token was
+    /// wrongly reported as matched — `"category".contains("cat")` is `true`,
+    /// but the token `"cat"` never actually occurs. A doc whose body is ONLY
+    /// "category", queried with "category cat", must still be found (it DOES
+    /// contain the token "category") but `matched_terms` must be `["category"]`
+    /// only — never `"cat"`.
+    #[test]
+    fn search_docs_matched_terms_uses_token_equality_not_substring_containment() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_test_docs_index(
+            tmp.path(),
+            &[section_entry(
+                "doc|r|README.md|README.md#h|",
+                "h",
+                "category",
+            )],
+        );
+        let g = Graph::new();
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            ..ToolCtx::default()
+        };
+        let v =
+            call_tool_ctx(&g, &ctx, "search_docs", &json!({ "query": "category cat" })).unwrap();
+        let results = v["results"].as_array().unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "the doc must still be found — it DOES contain the token \"category\": {results:?}"
+        );
+        let matched: Vec<&str> = results[0]["matched_terms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            matched,
+            vec!["category"],
+            "\"cat\" must NOT be reported as matched — \"category\".contains(\"cat\") is true \
+             but the TOKEN \"cat\" never occurs (the old substring-containment bug); got {matched:?}"
+        );
     }
 
     #[test]

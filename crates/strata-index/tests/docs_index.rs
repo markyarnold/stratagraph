@@ -162,9 +162,9 @@ fn reindex_atomically_replaces_stale_docs_content() {
     assert_eq!(first.len(), 1, "the original content must be found");
 
     // Change the doc content and re-index: the old content must be gone and
-    // the new content searchable — proves the writer's remove-then-rename
-    // swap is really wired into `index_impl`, not just unit-tested in
-    // isolation.
+    // the new content searchable — proves the writer's rename-aside + swap +
+    // best-effort stale-dir cleanup (`docs_index::swap_in`/`cleanup_stale_dirs`)
+    // is really wired into `index_impl`, not just unit-tested in isolation.
     std::fs::write(
         tmp.path().join("README.md"),
         "# Alpha\nThe betaswappedterm content.\n",
@@ -177,9 +177,20 @@ fn reindex_atomically_replaces_stale_docs_content() {
     let fresh = open_and_search(&idx_path, "betaswappedterm", 5);
     assert_eq!(fresh.len(), 1, "the new content must be searchable");
 
+    let strata_dir = tmp.path().join(".strata");
     assert!(
-        !tmp.path().join(".strata").join("docs.idx.tmp").exists(),
+        !strata_dir.join("docs.idx.tmp").exists(),
         "no docs.idx.tmp litter must remain after a successful reindex"
+    );
+    let stale_leftovers: Vec<_> = std::fs::read_dir(&strata_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("docs.idx.stale-"))
+        .collect();
+    assert!(
+        stale_leftovers.is_empty(),
+        "the best-effort stale-dir cleanup must have swept up the renamed-aside old index: {stale_leftovers:?}"
     );
 }
 
@@ -202,4 +213,51 @@ fn a_repo_with_no_docs_still_gets_a_valid_empty_index() {
     let index = Index::open_in_dir(&idx_path).unwrap();
     let reader = index.reader().unwrap();
     assert_eq!(reader.searcher().num_docs(), 0);
+}
+
+/// Review fix: a docs-index write failure must no longer be silent — it must
+/// surface on `IndexStats::docs_index_warning`, not just an `eprintln!` no one
+/// reads (`strata-cli`'s `cmd_index` renders this field in its own summary;
+/// covered separately at that layer). The docs-index write is still a
+/// best-effort side artifact, though: `index_repo` itself must still return
+/// `Ok` and the CODE graph must still be indexed — a sidecar failing to write
+/// must never take down an otherwise-successful index run.
+///
+/// Forced deterministically: pre-create a plain FILE at the exact path
+/// `write_docs_index` needs to `create_dir_all` as its `docs.idx.tmp`
+/// scratch directory, so the very first fallible step inside it errors out
+/// (`remove_dir_all`/`create_dir_all` on a path that is a file, not a
+/// directory) — no filesystem permission games needed, fully portable.
+#[test]
+fn a_docs_index_write_failure_surfaces_on_index_stats_not_just_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "# H\nbody\n").unwrap();
+
+    let strata = dir.path().join(".strata");
+    std::fs::create_dir_all(&strata).unwrap();
+    // A FILE (not a directory) sitting where docs.idx.tmp needs to be a
+    // directory — write_docs_index's own remove_if_exists/create_dir_all
+    // must fail on this.
+    std::fs::write(strata.join("docs.idx.tmp"), b"not a directory").unwrap();
+
+    let mut store = DuckGraphStore::open(&strata.join("graph.duckdb")).unwrap();
+    let stats = index_repo(dir.path(), &mut store)
+        .expect("a docs-index write failure must never fail the surrounding index_repo call");
+
+    let warning = stats
+        .docs_index_warning
+        .as_deref()
+        .expect("a forced docs-index write failure must set docs_index_warning");
+    assert!(
+        warning.contains("docs index: write failed"),
+        "got: {warning}"
+    );
+    assert!(
+        warning.contains("search_docs will serve the previous index"),
+        "got: {warning}"
+    );
+
+    // The code graph itself still indexed fine — the sidecar failure is
+    // fully contained.
+    assert!(stats.nodes > 0, "the code/knowledge graph must still build");
 }

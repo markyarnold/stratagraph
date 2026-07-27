@@ -328,6 +328,14 @@ pub fn cmd_index(repo: &Path, db: &Path, include_vendored: bool) -> Result<Strin
             stale = knowledge.stale_doc_mentions,
         ));
     }
+    // K5 lexical docs index (`.strata/docs.idx`) write failure — a review fix:
+    // this used to be `eprintln!`-only and silent in the CLI's own summary,
+    // so `strata index` could report success while the docs index quietly
+    // stayed stale. Mirrors the `[infra]`/`[data] FAILED` convention above; a
+    // successful write (the overwhelming common case) prints nothing extra.
+    if let Some(warning) = &stats.docs_index_warning {
+        out.push_str(&format!("\n  [docs] WARNING {warning}"));
+    }
     Ok(out)
 }
 
@@ -1989,6 +1997,37 @@ mod tests {
             out.matches("flumboterm").count(),
             2,
             "limit:2 must cap the rendered hit lines: {out}"
+        );
+    }
+
+    /// Review fix: a K5 docs-index write failure must be visible in
+    /// `strata index`'s own human-readable summary, not just an
+    /// `eprintln!` nobody reads — `cmd_index`'s output must carry the
+    /// `IndexStats::docs_index_warning` line. Forced the same deterministic
+    /// way as the engine-level test in
+    /// `crates/strata-index/tests/docs_index.rs`: a plain FILE sitting where
+    /// `docs.idx.tmp` needs to be a directory.
+    #[test]
+    fn cmd_index_surfaces_a_docs_index_write_failure_in_its_summary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("README.md"), "# H\nbody\n").unwrap();
+        let strata_dir = repo.join(".strata");
+        std::fs::create_dir_all(&strata_dir).unwrap();
+        std::fs::write(strata_dir.join("docs.idx.tmp"), b"not a directory").unwrap();
+
+        let db = strata_dir.join("graph.duckdb");
+        let out = cmd_index(&repo, &db, false)
+            .expect("a docs-index write failure must never fail the whole `strata index` run");
+
+        assert!(
+            out.contains("[docs] WARNING"),
+            "the summary must carry a visible docs-index warning line: {out}"
+        );
+        assert!(
+            out.contains("search_docs will serve the previous index"),
+            "got: {out}"
         );
     }
 
