@@ -70,9 +70,11 @@ time as graph text.
 | `Mentions` | `DocSection` → any node | a unique fully-qualified-name match, in a fenced code block **or** inline `` `code` `` | Inferred **0.80** |
 | `Mentions` | `DocSection` → any node | a unique bare-name match, inline `` `code` `` **only** — a fenced code-block token never falls through to this tier | Inferred **0.70** |
 | `Mentions` | `DocSection` → several candidates | a reference matching more than one node at whichever tier resolved it | Ambiguous **0.35** fan-out, one edge per candidate |
-| *(no edge)* | — | a reference that resolves to nothing at any tier | counted as `stale_doc_mentions`, never guessed |
+| *(no edge)* | — | a `PathRef`, or a symbol-shaped `InlineCode` reference, that resolves to nothing at any tier | counted as `stale_doc_mentions`, never guessed |
+| *(no edge)* | — | a plain-word/`SCREAMING_SNAKE_CASE`-shaped `InlineCode` reference that resolves to nothing | counted as `unresolved_plain_refs`, never "stale" |
+| *(no edge)* | — | a `FenceToken` reference that resolves to nothing | not counted anywhere (never an authorial claim) |
 
-Two rules keep this band-honest:
+Three rules keep this band-honest:
 
 - **Markdown prose never earns `Documents`.** Talking *about* a symbol in a
   paragraph is a mention, not proof of documentation — only a doc comment's
@@ -82,8 +84,23 @@ Two rules keep this band-honest:
 - **`mentions_linked` and `mentions_ambiguous` are not disjoint sets.**
   `mentions_ambiguous` is the subset of `mentions_linked` whose reference
   fanned out to 2+ candidates rather than resolving to one confident hit;
-  `stale_doc_mentions` is the one truly disjoint bucket (a reference that
-  matched nothing, at any tier).
+  `stale_doc_mentions` and `unresolved_plain_refs` are each disjoint from
+  both (and from each other) — every unresolvable `PathRef`/`InlineCode`
+  reference lands in exactly one of the two.
+- **`stale_doc_mentions` is drift; `unresolved_plain_refs` is a graph-reach
+  bound, not drift.** An unresolvable `PathRef` (an exact path claim to a
+  file that doesn't exist) or a symbol-shaped `InlineCode` miss — contains
+  `::`/`.`, or is compound-case like `renamedSymbol`/`DocSection` — reads as
+  a real, broken reference and is counted as `stale_doc_mentions`. A
+  `SCREAMING_SNAKE_CASE` token (`CONF_BARE_MULTI`) or a bare all-lowercase
+  word (`foo`) is schema-invisible: there is no `Const`/field-level
+  `NodeKind`, so the graph was never going to resolve it regardless of how
+  accurately the doc names it. That is not evidence the doc is lying, so it
+  is counted separately as `unresolved_plain_refs` and is expected to be
+  **numerous** in a codebase with heavy constant/config-key cross-referencing
+  — never folded into the drift signal. A `FenceToken` miss is never counted
+  anywhere, at either bucket: incidental code-example vocabulary was never an
+  authorial claim to begin with (F1, K2).
 
 The `confidence_bands` guardrail suite covers both edge kinds non-vacuously,
 the same discipline the [Confidence and provenance](confidence.md) page
@@ -221,8 +238,11 @@ Every honest-miss path returns a value, never a panic or a silent drop:
 - **No markdown in the repo** → the knowledge plane builds empty; `strata
   index`'s summary prints nothing extra (the `knowledge:` line only appears
   when at least one doc was ingested).
-- **A reference resolves to nothing** → counted in `stale_doc_mentions`, no
-  edge invented.
+- **A reference resolves to nothing** → a `PathRef` or symbol-shaped
+  `InlineCode` miss is counted in `stale_doc_mentions`; a plain-word/
+  `SCREAMING_SNAKE_CASE`-shaped `InlineCode` miss is counted separately in
+  `unresolved_plain_refs` (schema-invisible, not drift); a `FenceToken` miss
+  is not counted anywhere. No edge is ever invented for any of the three.
 - **A `guidance`/`context` body file is missing or unreadable** → the ref
   still returns, with an explicit `body unavailable` note.
 - **No docs index yet, or a corrupted one** → `search_docs` returns `{

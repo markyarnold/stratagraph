@@ -109,14 +109,25 @@ strata impact classify_risk
 ```
 
 ```text
-Impact of classify_risk (crates/strata-index/src/changes.rs) — 76 affected:
+Impact of classify_risk (crates/strata-index/src/changes.rs) — 179 affected:
   depth  conf  amb  verdict       name (path)
-      1  0.95   no  WILL BREAK    detect_changes (crates/strata-index/src/changes.rs)
-      1  0.95   no  WILL BREAK    blast_for_file (crates/strata-index/src/changes.rs)
-      2  0.76   no  WILL BREAK    tool_blast (crates/strata-mcp/src/tools.rs)
-      4  0.69   no  WILL BREAK    call_tool (crates/strata-mcp/src/tools.rs)
+      1  0.95   no  needs review  doc: classify_risk (crates/strata-index/src/changes.rs)
+      1  0.95   no  WILL BREAK    blast_for_file_in_repo (crates/strata-index/src/changes.rs)
+      1  0.95   no  WILL BREAK    detect_changes_in_repo (crates/strata-index/src/changes.rs)
+      ...
+      2  0.90   no  needs review  doc: blast_for_file_in_repo (crates/strata-index/src/changes.rs)
+      ...
+      2  0.90   no  WILL BREAK    detect_changes (crates/strata-index/src/changes.rs)
       ...
 ```
+
+A `needs review` row is a doc section (the knowledge plane's `Doc`/`DocSection`
+nodes) that documents or mentions `classify_risk` — it enters the blast radius
+the same way a code dependent does, but a stale doc is a different failure
+mode from code breaking, so it is never labelled `WILL BREAK` regardless of
+its confidence. (Counts here grow as the repo's own docs grow — this repo
+documents itself extensively, so its `impact` results include its own manual
+and design docs.)
 
 How to read each column:
 

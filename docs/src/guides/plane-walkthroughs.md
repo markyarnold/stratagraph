@@ -14,14 +14,22 @@ Take a function and ask who depends on it:
 
 ```console
 $ strata impact cmd_impact
-Impact of cmd_impact (crates/strata-cli/src/lib.rs) — 7 affected:
+Impact of cmd_impact (crates/strata-cli/src/lib.rs) — 18 affected:
   depth  conf  amb  verdict       name (path)
+      1  0.95   no  needs review  doc: cmd_impact (crates/strata-cli/src/lib.rs)
       1  0.95   no  WILL BREAK    cmd_impact_dead_table_keeps_bare_message (crates/strata-cli/src/lib.rs)
       ...
       1  0.80   no  WILL BREAK    main (crates/strata-cli/src/main.rs)
+      ...
 ```
 
-Six tests call it directly, and so does `main`, the CLI entry point. To prove *why* a given caller is in the radius, ask `explain` for the chain:
+Six tests call it directly, and so does `main`, the CLI entry point — those
+seven rows are the `WILL BREAK` ones. The other eleven rows here are `needs
+review`: doc sections (this very manual among them) that mention `cmd_impact`
+— the knowledge plane puts docs in the blast radius too, but a stale doc is a
+different failure mode from code breaking, so it never reads `WILL BREAK`
+(counts grow as the repo's own docs grow). To prove *why* a given caller is
+in the radius, ask `explain` for the chain:
 
 ```console
 $ strata explain cmd_impact cmd_impact_dead_table_keeps_bare_message
