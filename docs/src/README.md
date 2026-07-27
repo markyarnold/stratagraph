@@ -35,11 +35,12 @@ Impact of classify_risk (crates/strata-index/src/changes.rs) — 179 affected:
 
 ```text
 $ strata explain "classify_risk" "call_tool"
-Why classify_risk affects call_tool (conf 0.69, WILL BREAK):
-  classify_risk     —CALLS (Extracted 0.95)→  blast_for_file        running 0.95
-  blast_for_file    —CALLS (Inferred  0.80)→  tool_blast            running 0.76
-  tool_blast        —CALLS (Extracted 0.95)→  call_tool_ctx         running 0.72
-  call_tool_ctx     —CALLS (Extracted 0.95)→  call_tool             running 0.69
+Why classify_risk affects call_tool (conf 0.65, WILL BREAK):
+  classify_risk  —CALLS (Extracted 0.95)→  detect_changes_in_repo    running 0.95
+  detect_changes_in_repo  —CALLS (Extracted 0.95)→  detect_changes    running 0.90
+  detect_changes  —CALLS (Inferred 0.80)→  tool_detect_changes    running 0.72
+  tool_detect_changes  —CALLS (Extracted 0.95)→  call_tool_ctx    running 0.69
+  call_tool_ctx  —CALLS (Extracted 0.95)→  call_tool    running 0.65
 ```
 
 (Counts and paths above come from indexing this repository; the exact numbers will drift as the code changes.)
