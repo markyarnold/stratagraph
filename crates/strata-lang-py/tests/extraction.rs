@@ -557,3 +557,107 @@ fn py_plain_class_yields_no_orm_hint() {
         file.orm_models
     );
 }
+
+// --- doc_span capture (Knowledge plane, K3) ----------------------------------
+//
+// A docstring — the first statement of a `def`/`class` body when it is a bare
+// string-literal expression — sets `RawSymbol::doc_span` to the SPAN of that
+// string node itself, never its text (bodies-from-disk). Unlike the
+// comment-based languages there is no "no blank line" adjacency test: this is
+// Python's semantic first-statement rule (the same shape that binds
+// `__doc__`), not a proximity heuristic.
+
+fn sym<'a>(file: &'a strata_core::AnalyzedFile, name: &str) -> &'a RawSymbol {
+    file.symbols
+        .iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("missing symbol {name}: {:?}", file.symbols))
+}
+
+#[test]
+fn docstring_sets_doc_span_to_the_string_nodes_own_span() {
+    let src = concat!(
+        "def add_one(x):\n",
+        "    \"\"\"Adds one.\n",
+        "\n",
+        "    Really.\n",
+        "    \"\"\"\n",
+        "    return x + 1\n",
+        "\n",
+        "\n",
+        "def plain():\n",
+        "    x = 1\n",
+        "    return x\n",
+    );
+    let file = analyze("a.py", src);
+    let span = sym(&file, "add_one")
+        .doc_span
+        .expect("docstring captured as the string node's own span");
+    // The triple-quoted string spans lines 2-5 (1-based) — the docstring
+    // node's own range, not the whole function.
+    assert_eq!((span.start_line, span.end_line), (2, 5));
+    assert!(
+        sym(&file, "plain").doc_span.is_none(),
+        "a function whose first statement is not a string has no doc_span"
+    );
+}
+
+#[test]
+fn docstring_on_class_and_method_captures_span_negative_when_absent() {
+    let src = concat!(
+        "class Widget:\n",
+        "    \"\"\"Widget doc.\"\"\"\n",
+        "\n",
+        "    def method(self):\n",
+        "        \"\"\"Method doc.\"\"\"\n",
+        "        pass\n",
+        "\n",
+        "    def undoc(self):\n",
+        "        pass\n",
+    );
+    let file = analyze("w.py", src);
+    assert!(
+        sym(&file, "Widget").doc_span.is_some(),
+        "a class's own docstring sets doc_span"
+    );
+    assert!(
+        sym(&file, "method").doc_span.is_some(),
+        "a method's own docstring sets doc_span"
+    );
+    assert!(
+        sym(&file, "undoc").doc_span.is_none(),
+        "a method with no docstring has no doc_span"
+    );
+}
+
+#[test]
+fn a_leading_comment_before_the_docstring_does_not_block_capture() {
+    // The grammar attaches a comment directly after the `:` outside the body
+    // block, so it must not disqualify the docstring that follows it.
+    let src = concat!(
+        "def commented():\n",
+        "    # a leading comment\n",
+        "    \"\"\"Still a docstring?\"\"\"\n",
+        "    pass\n",
+    );
+    let file = analyze("c.py", src);
+    assert!(
+        sym(&file, "commented").doc_span.is_some(),
+        "a leading comment before the docstring does not block capture"
+    );
+}
+
+#[test]
+fn a_non_string_first_statement_is_not_a_docstring() {
+    let src = concat!(
+        "def helper():\n",
+        "    log(\"starting\")\n",
+        "    return 1\n",
+    );
+    let file = analyze("h.py", src);
+    assert!(
+        sym(&file, "helper").doc_span.is_none(),
+        "a call as the first statement is not a docstring, even though it \
+         contains a string literal argument"
+    );
+}

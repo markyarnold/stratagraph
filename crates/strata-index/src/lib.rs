@@ -82,13 +82,14 @@ pub use infra::{
     CONF_PRODUCES_EXTRACTED, CONF_PRODUCES_INFERRED, CONF_REF_INFERRED, CONF_REF_RESOURCE,
     CONF_RUNS,
 };
-// The knowledge-plane builder (K2): Doc/DocSection nodes + banded Mentions
-// edges. `assemble_graph_with_knowledge` is the test/tool-visible convenience
-// (code plane + knowledge plane in one call); `index_impl` wires
+// The knowledge-plane builder (K2/K3): Doc/DocSection nodes + banded Mentions
+// edges, plus (K3) doc-comment DocSection nodes + Extracted Documents edges.
+// `assemble_graph_with_knowledge` is the test/tool-visible convenience (code
+// plane + knowledge plane in one call); `index_impl` wires
 // `build_knowledge_plane` directly onto the fully-assembled multi-plane graph.
 pub use knowledge::{
     assemble_graph_with_knowledge, build_knowledge_plane, doc_section_uid, KnowledgeLinkCoverage,
-    KNOW_AMBIGUOUS, KNOW_MENTION_FQN, KNOW_MENTION_NAME, KNOW_MENTION_PATH,
+    KNOW_AMBIGUOUS, KNOW_DOC_COMMENT, KNOW_MENTION_FQN, KNOW_MENTION_NAME, KNOW_MENTION_PATH,
 };
 pub use rename::{
     rename, Candidate, Edit, RenameError, RenameOptions, RenameOutcome, DEF_SITE_CONFIDENCE,
@@ -650,7 +651,8 @@ fn index_impl(
             (path, model)
         })
         .collect();
-    let knowledge_link = knowledge::build_knowledge_plane(&mut graph, repo_name, &docs);
+    let knowledge_link =
+        knowledge::build_knowledge_plane(&mut graph, repo_name, &combined_analyzed, &docs);
 
     let stats = IndexStats {
         // Includes TS/JS sources, the GraphQL operation documents that became

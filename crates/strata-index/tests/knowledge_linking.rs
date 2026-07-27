@@ -69,6 +69,20 @@ fn build_fixture() -> (Graph, KnowledgeLinkCoverage) {
     assemble_graph_with_knowledge(&analyzed(), REPO, &ResolveOptions::default(), &docs())
 }
 
+/// Like [`build_fixture`], but `src/app.ts` is re-analyzed with a JSDoc block
+/// comment immediately above `alphaOne` — the K3 doc-comment fixture. The
+/// markdown doc fixture is unchanged (Mentions and Documents are independent
+/// signals over the same graph), so this exercises the doc-comment
+/// `Documents` path non-vacuously without disturbing any Mentions assertion
+/// elsewhere in this file.
+fn build_fixture_with_doc_comments() -> (Graph, KnowledgeLinkCoverage) {
+    let mut m = analyzed();
+    let src = read_fixture("src/app.ts");
+    let documented = format!("/**\n * Adds one, documented.\n */\n{src}");
+    m.insert("src/app.ts".to_string(), analyze("src/app.ts", &documented));
+    assemble_graph_with_knowledge(&m, REPO, &ResolveOptions::default(), &docs())
+}
+
 /// The `ts` UID for a whole-file Module node (mirrors `crate::build::uid_module`'s
 /// shape: `Uid::new("ts", repo, path, "<module>", "")`).
 fn module_uid(path: &str) -> Uid {
@@ -84,6 +98,15 @@ fn fn_uid(path: &str, fqn: &str) -> Uid {
 /// Outgoing `Mentions` edges from `src`: `(dst, provenance, confidence)`.
 fn mentions_of(g: &Graph, src: &Uid) -> Vec<(Uid, Provenance, f32)> {
     g.neighbors(src, Direction::Outgoing, &[EdgeKind::Mentions])
+        .into_iter()
+        .map(|(e, _)| (e.dst.clone(), e.provenance, e.confidence.value()))
+        .collect()
+}
+
+/// Outgoing `Documents` edges from `src`: `(dst, provenance, confidence)`
+/// (K3, mirrors [`mentions_of`]).
+fn documents_of(g: &Graph, src: &Uid) -> Vec<(Uid, Provenance, f32)> {
+    g.neighbors(src, Direction::Outgoing, &[EdgeKind::Documents])
         .into_iter()
         .map(|(e, _)| (e.dst.clone(), e.provenance, e.confidence.value()))
         .collect()
@@ -187,7 +210,7 @@ fn unique_bare_name_with_a_qualified_fqn_resolves_at_the_name_tier_inferred_0_70
 }
 
 #[test]
-fn impact_reaches_docs_with_needs_review_verdict() {
+fn impact_reaches_the_mentioning_doc_section() {
     let (g, _) = build_fixture();
     let affected = impact_of(&g, "alphaOne");
     assert!(
@@ -202,6 +225,26 @@ fn impact_reaches_docs_with_needs_review_verdict() {
     // rather than from here — this crate no longer takes a dev-dependency on
     // strata-cli (review verdict: remove); this test stays scoped to the
     // graph-level fact that `impact` reaches the mentioning DocSection.
+}
+
+#[test]
+fn doc_comment_becomes_documents_edge_and_rides_impact() {
+    let (g, cov) = build_fixture_with_doc_comments();
+    let sec = doc_section_uid(REPO, "src/app.ts", "doc:alphaOne");
+    let out = documents_of(&g, &sec);
+    assert_eq!(
+        out,
+        vec![(
+            fn_uid("src/app.ts", "alphaOne"),
+            Provenance::Extracted,
+            0.95
+        )]
+    );
+    assert!(cov.doc_comments >= 1);
+    assert!(
+        impact_of(&g, "alphaOne").iter().any(|a| a.uid == sec),
+        "change the symbol → its doc needs review"
+    );
 }
 
 #[test]

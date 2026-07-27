@@ -84,6 +84,81 @@ fn text<'a>(node: Node, bytes: &'a [u8]) -> &'a str {
     node.utf8_text(bytes).unwrap_or("")
 }
 
+/// Whether a `line_comment`/`block_comment` node is a DOC comment (`///`,
+/// `//!`, `/** */`, `/*! */`) rather than a plain `//`/`/* */` comment.
+/// tree-sitter-rust surfaces this structurally: a doc comment's node has an
+/// `outer`/`inner` field (the marker) plus a `doc` field (its content); a plain
+/// comment has neither. Checking the field beats a text-prefix scan — it is the
+/// grammar's own distinction (immune to `////`/`/***`-style banner-comment
+/// edge cases) and works identically for both node kinds.
+fn is_doc_comment(node: Node) -> bool {
+    matches!(node.kind(), "line_comment" | "block_comment")
+        && (node.child_by_field_name("outer").is_some()
+            || node.child_by_field_name("inner").is_some())
+}
+
+/// A comment node's own [`Span`], correcting a tree-sitter-rust quirk: a DOC
+/// LINE comment's (`///`/`//!`) node range includes its own trailing newline
+/// (so the external scanner can merge consecutive `///` lines), which makes the
+/// raw `end_position()` misreport one row low with column 0 — a plain `//`
+/// comment or a `/** */` block does not do this. Detected structurally (the
+/// node's own text ends with `\n`) rather than by kind, and corrected using the
+/// node's own start row: a line comment runs to end-of-line by construction, so
+/// stripping the swallowed newline can never leave a multi-line remainder.
+fn comment_span(node: Node, bytes: &[u8]) -> Span {
+    let start = node.start_position();
+    let raw = text(node, bytes);
+    match raw.strip_suffix('\n') {
+        Some(content) => Span {
+            start_line: start.row as u32 + 1,
+            start_col: start.column as u32,
+            end_line: start.row as u32 + 1,
+            end_col: start.column as u32 + content.len() as u32,
+        },
+        None => span_of(node),
+    }
+}
+
+/// Walk `decl`'s `prev_sibling` chain collecting a contiguous, gap-free run of
+/// doc comments immediately above it — no blank line between the run and
+/// `decl`, and none between two comments within the run (each checked via
+/// [`comment_span`]'s corrected end row against the next node's start row). A
+/// non-doc-comment sibling, or a row gap, stops the walk right there — the run
+/// never crosses either. Returns the SPAN of the whole run (topmost comment's
+/// start through the nearest comment's end) — never its text (bodies-from-disk,
+/// design decision 4/§8).
+fn doc_span_of(decl: Node, bytes: &[u8]) -> Option<Span> {
+    let mut expected_row = decl.start_position().row as u32;
+    let mut nearest: Option<Node> = None;
+    let mut topmost: Option<Node> = None;
+    let mut cursor = decl.prev_sibling();
+    while let Some(node) = cursor {
+        if !is_doc_comment(node) {
+            break;
+        }
+        let span = comment_span(node, bytes);
+        if span.end_line != expected_row {
+            break;
+        }
+        if nearest.is_none() {
+            nearest = Some(node);
+        }
+        topmost = Some(node);
+        expected_row = node.start_position().row as u32;
+        cursor = node.prev_sibling();
+    }
+    let nearest = nearest?;
+    let topmost = topmost.unwrap_or(nearest);
+    let nearest_span = comment_span(nearest, bytes);
+    let topmost_start = topmost.start_position();
+    Some(Span {
+        start_line: topmost_start.row as u32 + 1,
+        start_col: topmost_start.column as u32,
+        end_line: nearest_span.end_line,
+        end_col: nearest_span.end_col,
+    })
+}
+
 /// Join a `::`-path prefix and a leaf with `::`; an empty prefix yields the leaf.
 /// The single fqn-composition primitive — module + type + member all use it, which
 /// is what makes the `::`-path convention uniform.
@@ -261,6 +336,7 @@ fn extract_type(node: Node, bytes: &[u8], ctx: &Ctx, out: &mut AnalyzedFile, kin
         fqn: fqn.clone(),
         container_fqn: None,
         span: span_of(node),
+        doc_span: doc_span_of(node, bytes),
     });
 
     // Members (trait method sigs/defaults) attribute to this type/trait. The
@@ -328,6 +404,7 @@ fn extract_function(node: Node, bytes: &[u8], ctx: &Ctx, out: &mut AnalyzedFile)
         fqn: fqn.clone(),
         container_fqn,
         span: span_of(node),
+        doc_span: doc_span_of(node, bytes),
     });
 
     // Body calls attribute to this fn. The container is unchanged (a fn body can

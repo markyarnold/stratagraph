@@ -87,7 +87,22 @@ fn default_true() -> bool {
 /// stale pre-v10 Python parse-cache entry must re-derive — hence the bump. It only
 /// *adds* contract producer/consumer edges, never changing a code/infra node, so
 /// `incremental == full` still holds.
-pub const ANALYZER_SCHEMA_VERSION: u32 = 10;
+///
+/// **v11** adds [`RawSymbol::doc_span`] — the span of a doc comment (Rust
+/// `///`/`//!`/`/** */`, TS/JS JSDoc `/** */`, Python docstring, C# `///`) found
+/// SYNTACTICALLY adjacent to a symbol's declaration (no blank line between), for
+/// the knowledge plane's Extracted `Documents` edge (Knowledge plane, K3). This
+/// IS a serialized *shape* change (a new field), so it bumps the version: every
+/// parse cache re-derives once on the next index and the field is populated by
+/// each of the four language analyzers. `#[serde(default)]` (= `None`, the
+/// `Option` type's natural default) keeps a pre-v11 cache entry deserializable
+/// in transition, but the bump means no stale entry is actually served — the
+/// re-parse fills it. Only the SPAN is captured, never the comment's text
+/// (bodies-from-disk, design decision 4/§8). The field only *adds* a
+/// knowledge-plane `Documents` edge per documented symbol, never changes a
+/// code/contract/infra/data node or edge, so `incremental == full` still holds
+/// (re-indexing the same tree yields a byte-identical graph).
+pub const ANALYZER_SCHEMA_VERSION: u32 = 11;
 
 /// A symbol a language adapter found in one file, before cross-file resolution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,6 +112,19 @@ pub struct RawSymbol {
     pub fqn: String,
     pub container_fqn: Option<String>,
     pub span: Span,
+    /// The span of a doc comment found SYNTACTICALLY adjacent to this symbol's
+    /// declaration — immediately above it, with no blank line in between (Rust
+    /// `///`/`//!`/`/** */`, TS/JS JSDoc `/** */`, a Python docstring, C#
+    /// `///`) — or `None` when no such comment is adjacent. `None` for a
+    /// comment separated by a blank line: adjacency is a syntactic fact, not a
+    /// proximity guess (Knowledge plane, K3). Drives the knowledge plane's
+    /// Extracted `Documents` edge (`build_knowledge_plane`); never used to
+    /// store the comment's TEXT — only its span (bodies-from-disk, design
+    /// decision 4/§8). `#[serde(default)]` (`None`) so a pre-v11 cache entry
+    /// deserializes; the schema-version bump above invalidates stale caches so
+    /// the field is populated on the next index regardless.
+    #[serde(default)]
+    pub doc_span: Option<Span>,
 }
 
 /// An unresolved import statement (resolved to a target later by the indexer).
@@ -474,6 +502,7 @@ mod tests {
                     fqn: "foo".into(),
                     container_fqn: None,
                     span: Span::default(),
+                    doc_span: None,
                 }],
                 ..AnalyzedFile::default()
             }
@@ -504,6 +533,15 @@ mod tests {
                         end_line: 3,
                         end_col: 1,
                     },
+                    // Non-vacuous: at least one symbol in this round-trip fixture
+                    // carries a real doc_span, so the new field's serialize/
+                    // deserialize path is actually exercised, not just defaulted.
+                    doc_span: Some(Span {
+                        start_line: 1,
+                        start_col: 0,
+                        end_line: 1,
+                        end_col: 20,
+                    }),
                 },
                 RawSymbol {
                     kind: NodeKind::Method,
@@ -516,6 +554,7 @@ mod tests {
                         end_line: 12,
                         end_col: 3,
                     },
+                    doc_span: None,
                 },
             ],
             imports: vec![ImportRef {
@@ -732,6 +771,32 @@ mod tests {
         assert!(
             file.orm_models.is_empty(),
             "missing orm_models key defaults to empty"
+        );
+    }
+
+    #[test]
+    fn raw_symbol_doc_span_defaults_to_none_for_pre_v11_cache() {
+        // A `symbols` entry written before `doc_span` existed has no such key.
+        // `#[serde(default)]` must fill `None` rather than failing, so a pre-v11
+        // entry still deserializes. The schema-version bump invalidates it on the
+        // next index regardless, which is where the field gets populated
+        // correctly by each language analyzer.
+        let legacy = r#"{
+            "symbols":[{
+                "kind":"Function",
+                "name":"foo",
+                "fqn":"foo",
+                "container_fqn":null,
+                "span":{"start_line":1,"start_col":0,"end_line":1,"end_col":1}
+            }],
+            "imports":[],"calls":[]
+        }"#;
+        let file: AnalyzedFile =
+            serde_json::from_str(legacy).expect("pre-v11 RawSymbol must still deserialize");
+        assert_eq!(file.symbols.len(), 1);
+        assert!(
+            file.symbols[0].doc_span.is_none(),
+            "a RawSymbol with no `doc_span` key defaults to None"
         );
     }
 

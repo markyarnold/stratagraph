@@ -12,7 +12,7 @@
 //! bodies from the working tree at query time, straight from
 //! `DocSectionModel::body_range`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use strata_core::{
     AnalyzedFile, Confidence, Edge, EdgeKind, Graph, Node, NodeKind, Provenance, Uid,
@@ -49,6 +49,11 @@ pub const KNOW_MENTION_NAME: f32 = 0.70;
 /// tier resolved it (path, fqn, or name) — one edge per candidate, all
 /// Ambiguous. Never a confident pick among several.
 pub const KNOW_AMBIGUOUS: f32 = 0.35;
+/// `Documents` via a doc comment SYNTACTICALLY adjacent to its symbol's
+/// declaration (`RawSymbol::doc_span`, K3) — Extracted: the adjacency is a
+/// syntactic fact the parser observed directly, not an inference, so it grades
+/// at the same ceiling tier as an exact path reference.
+pub const KNOW_DOC_COMMENT: f32 = 0.95;
 
 /// Coverage + drift counts [`build_knowledge_plane`] returns — the `knowledge:`
 /// summary line's data, and (from K3 on) the vehicle for doc-comment counts.
@@ -154,6 +159,35 @@ fn doc_section_node(uid: Uid, path: &str, section: &DocSectionModel) -> Node {
     }
 }
 
+/// Build the `DocSection` node for one doc comment (K3; plan §"Task K3"
+/// Interfaces): `name` = `"doc: {symbol_name}"`, `fqn` =
+/// `"{source_path}#doc:{symbol_fqn}"`, `path` = the source file the symbol is
+/// declared in, `span` = `RawSymbol::doc_span` (the comment's own span,
+/// captured by the language analyzer — never its text, bodies-from-disk). This
+/// is the synthetic-name analogue of [`doc_section_node`]'s markdown-heading
+/// `name`: a doc COMMENT has no heading to borrow, and reading its first line
+/// for a title would mean storing body text, which the design forbids — so the
+/// name is built from data already on hand (the symbol's own name) rather than
+/// read from the comment.
+fn doc_comment_section_node(
+    uid: Uid,
+    path: &str,
+    symbol_fqn: &str,
+    symbol_name: &str,
+    span: strata_core::Span,
+) -> Node {
+    Node {
+        uid,
+        kind: NodeKind::DocSection,
+        name: format!("doc: {symbol_name}"),
+        fqn: format!("{path}#doc:{symbol_fqn}"),
+        path: path.to_string(),
+        span,
+        provenance: Provenance::Extracted,
+        confidence: Confidence::new(1.0),
+    }
+}
+
 /// Node kinds whose `.path` uniquely (or near-uniquely) identifies a FILE, so a
 /// [`DocRefKind::PathRef`] resolves against exactly the file-level entity —
 /// never every symbol defined in that file (which shares the same `.path`).
@@ -170,12 +204,17 @@ fn is_path_bearing(kind: NodeKind) -> bool {
     )
 }
 
-/// The three lookup tables [`build_knowledge_plane`] resolves refs against,
-/// built in one pass over `g.nodes()` (§3 Step 3 item 2). `by_path` is
-/// restricted to [`is_path_bearing`] kinds; `by_fqn`/`by_name` cover every
-/// node (including the `Doc`/`DocSection` nodes just added, so cross-doc
-/// mentions by fqn/name are possible too, though the fixture only exercises
-/// code symbols).
+/// The lookup tables [`build_knowledge_plane`] resolves refs against, built in
+/// one pass over `g.nodes()` (§3 Step 3 item 2). `by_path` is restricted to
+/// [`is_path_bearing`] kinds; `by_fqn`/`by_name` cover every node (including
+/// the `Doc`/`DocSection` nodes just added, so cross-doc mentions by fqn/name
+/// are possible too, though the fixture only exercises code symbols).
+/// `by_path_fqn` (K3) is the precise doc-comment lookup: keyed on the EXACT
+/// `(path, fqn)` pair a `RawSymbol` carries, so a doc-comment `Documents` edge
+/// targets the one real graph node that symbol produced — never a name/fqn
+/// collision from an unrelated file the way `by_fqn` alone could (a syntactic
+/// doc-comment adjacency is a fact about ONE specific declaration, not a
+/// markdown author's ambiguous prose reference).
 ///
 /// Keys are OWNED `String`s, not `&str` borrows into `g`: phase 3 needs `&mut
 /// Graph` (to add `Mentions` edges) at the same time it consults these
@@ -186,12 +225,14 @@ struct LookupTables {
     by_fqn: HashMap<String, Vec<Uid>>,
     by_name: HashMap<String, Vec<Uid>>,
     by_path: HashMap<String, Vec<Uid>>,
+    by_path_fqn: HashMap<(String, String), Vec<Uid>>,
 }
 
 fn build_lookup_tables(g: &Graph) -> LookupTables {
     let mut by_fqn: HashMap<String, Vec<Uid>> = HashMap::new();
     let mut by_name: HashMap<String, Vec<Uid>> = HashMap::new();
     let mut by_path: HashMap<String, Vec<Uid>> = HashMap::new();
+    let mut by_path_fqn: HashMap<(String, String), Vec<Uid>> = HashMap::new();
     for node in g.nodes() {
         by_fqn
             .entry(node.fqn.clone())
@@ -207,11 +248,16 @@ fn build_lookup_tables(g: &Graph) -> LookupTables {
                 .or_default()
                 .push(node.uid.clone());
         }
+        by_path_fqn
+            .entry((node.path.clone(), node.fqn.clone()))
+            .or_default()
+            .push(node.uid.clone());
     }
     LookupTables {
         by_fqn,
         by_name,
         by_path,
+        by_path_fqn,
     }
 }
 
@@ -230,6 +276,15 @@ fn build_lookup_tables(g: &Graph) -> LookupTables {
 /// tier (ambiguous fan-out), it does not fall through. Returns `None` when no
 /// tried tier produced a candidate (the caller decides whether that counts as
 /// stale — see `resolve_ref`'s fence-token carve-out, F1).
+///
+/// The name-tier fallback gate is a POSITIVE match on
+/// [`DocRefKind::InlineCode`] (N1, review finding from K2) rather than a
+/// `!= FenceToken` exclusion: a hypothetical future `DocRefKind` variant then
+/// defaults to the conservative "no name-tier fallback" behavior automatically,
+/// instead of silently inheriting it by accident of not being `FenceToken`.
+/// Behavior for the two variants that exist today is unchanged — `PathRef`
+/// never reaches this point (it returns above), so the only two kinds live
+/// here are `InlineCode` and `FenceToken`.
 fn candidates_for<'t>(
     r: &DocRef,
     tables: &'t LookupTables,
@@ -244,8 +299,11 @@ fn candidates_for<'t>(
         .by_fqn
         .get(r.text.as_str())
         .map(|v| (v.as_slice(), KNOW_MENTION_FQN, Provenance::Inferred));
-    if fqn_hit.is_some() || r.kind == DocRefKind::FenceToken {
+    if fqn_hit.is_some() {
         return fqn_hit;
+    }
+    if r.kind != DocRefKind::InlineCode {
+        return None;
     }
     tables
         .by_name
@@ -277,7 +335,15 @@ fn resolve_ref(
         // dropped, exactly like a fence-token match is silently NOT
         // name-tier-resolved (F1) — only `InlineCode`/`PathRef` misses are an
         // honest "this doc references something that doesn't exist".
-        if r.kind != DocRefKind::FenceToken {
+        //
+        // Positive match (N1, review finding from K2): staleness is counted
+        // for the kinds KNOWN to be an authorial claim (`InlineCode`,
+        // `PathRef`) rather than excluded for the one kind known NOT to be
+        // (`FenceToken`) — so a hypothetical future `DocRefKind` variant
+        // defaults to conservative (not counted as drift) until explicitly
+        // added here, instead of silently inheriting drift-counting by
+        // accident of not being `FenceToken`.
+        if matches!(r.kind, DocRefKind::InlineCode | DocRefKind::PathRef) {
             cov.stale_doc_mentions += 1;
         }
         return;
@@ -336,21 +402,32 @@ fn resolve_ref(
 }
 
 /// Build the knowledge plane on `g`: `Doc`/`DocSection` nodes, `Contains`
-/// structural edges, and banded `Mentions` edges, for every doc in `docs`
-/// (`(repo-relative path, parsed DocModel)` pairs — K1's `parse_markdown`
-/// output). Returns the coverage/drift tally.
+/// structural edges, banded `Mentions` edges, AND (K3) doc-comment
+/// `DocSection` nodes + Extracted `Documents` edges for every symbol in
+/// `analyzed` whose `RawSymbol::doc_span` is set. `docs` is K1's
+/// `parse_markdown` output — `(repo-relative path, parsed DocModel)` pairs;
+/// `analyzed` is the SAME combined (ts+py+cs+rust) analyzed-file map every
+/// other plane builder consumes. Returns the coverage/drift tally.
 ///
-/// Three phases, in order:
+/// Four phases, in order:
 /// 1. Create every `Doc`/`DocSection` node and `Contains` edge for EVERY doc
 ///    first — so the lookup tables built next see the full node set
 ///    regardless of `docs`' order (a doc processed first can still be the
 ///    target of a later doc's `PathRef`, and vice versa).
-/// 2. Build the `by_fqn`/`by_name`/`by_path` lookup tables in one pass over
-///    `g.nodes()` (now including the nodes phase 1 just added).
-/// 3. Resolve every section's refs against those tables.
+/// 2. Build the `by_fqn`/`by_name`/`by_path`/`by_path_fqn` lookup tables in
+///    one pass over `g.nodes()` (now including the nodes phase 1 just added).
+/// 3. (K3) For every symbol in `analyzed` with a `doc_span`, emit its
+///    doc-comment `DocSection` node + `Documents` edge to the one graph node
+///    `by_path_fqn` resolves it to (never a fan-out — a doc-comment's target
+///    is a syntactic fact about ONE declaration, not a markdown guess; an
+///    unmatched or ambiguous `(path, fqn)` is skipped rather than an edge
+///    invented, though this should not arise in practice since `analyzed` is
+///    the same input the code planes themselves were built from).
+/// 4. Resolve every section's refs against the phase-2 tables.
 pub fn build_knowledge_plane(
     g: &mut Graph,
     repo: &str,
+    analyzed: &BTreeMap<String, AnalyzedFile>,
     docs: &[(String, DocModel)],
 ) -> KnowledgeLinkCoverage {
     let mut cov = KnowledgeLinkCoverage {
@@ -379,7 +456,43 @@ pub fn build_knowledge_plane(
     // ── Phase 2: lookup tables over the full node set. ──
     let tables = build_lookup_tables(g);
 
-    // ── Phase 3: resolve every section's refs. ──
+    // ── Phase 3 (K3): doc-comment `Documents` edges. ──
+    for (path, file) in analyzed {
+        for symbol in &file.symbols {
+            let Some(span) = symbol.doc_span else {
+                continue;
+            };
+            let Some(candidates) = tables.by_path_fqn.get(&(path.clone(), symbol.fqn.clone()))
+            else {
+                continue;
+            };
+            // Exactly one candidate: a doc comment documents ONE declaration,
+            // never several — a miss (0) or a same-(path,fqn) collision (2+,
+            // not expected from any analyzer today) is skipped rather than
+            // guessed (never confidently wrong).
+            let [target] = candidates.as_slice() else {
+                continue;
+            };
+            let sec_uid = doc_section_uid(repo, path, &format!("doc:{}", symbol.fqn));
+            g.add_node(doc_comment_section_node(
+                sec_uid.clone(),
+                path,
+                &symbol.fqn,
+                &symbol.name,
+                span,
+            ));
+            g.add_edge(Edge {
+                src: sec_uid,
+                dst: target.clone(),
+                kind: EdgeKind::Documents,
+                provenance: Provenance::Extracted,
+                confidence: Confidence::new(KNOW_DOC_COMMENT),
+            });
+            cov.doc_comments += 1;
+        }
+    }
+
+    // ── Phase 4: resolve every section's refs. ──
     for (path, doc) in docs {
         let d_uid = doc_uid(repo, path);
         for section in &doc.sections {
@@ -408,7 +521,7 @@ pub fn assemble_graph_with_knowledge(
     docs: &[(String, DocModel)],
 ) -> (Graph, KnowledgeLinkCoverage) {
     let mut g = crate::build::assemble_graph(analyzed, repo_name, opts);
-    let cov = build_knowledge_plane(&mut g, repo_name, docs);
+    let cov = build_knowledge_plane(&mut g, repo_name, analyzed, docs);
     (g, cov)
 }
 
@@ -439,7 +552,12 @@ mod tests {
     fn contains_edge_is_extracted_one_and_never_impact_traversed() {
         let mut g = Graph::new();
         let doc = parse_markdown("docs/guide.md", "# Heading\nbody\n");
-        let cov = build_knowledge_plane(&mut g, REPO, &[("docs/guide.md".to_string(), doc)]);
+        let cov = build_knowledge_plane(
+            &mut g,
+            REPO,
+            &BTreeMap::new(),
+            &[("docs/guide.md".to_string(), doc)],
+        );
         assert_eq!(cov.docs, 1);
         assert_eq!(cov.sections, 1);
 
@@ -478,7 +596,12 @@ mod tests {
             "# Heading\nSee [this file](docs/self.md) for more.\n",
         );
         let mut g = Graph::new();
-        let cov = build_knowledge_plane(&mut g, REPO, &[("docs/self.md".to_string(), doc)]);
+        let cov = build_knowledge_plane(
+            &mut g,
+            REPO,
+            &BTreeMap::new(),
+            &[("docs/self.md".to_string(), doc)],
+        );
 
         assert_eq!(cov.mentions_linked, 0, "self-mention is not linked");
         assert_eq!(cov.mentions_ambiguous, 0);
@@ -513,7 +636,12 @@ mod tests {
             "# H\n```rust\nr.process(x);\n```\n`vanishedSymbol` is gone.\n",
         );
         let mut g = Graph::new();
-        let cov = build_knowledge_plane(&mut g, REPO, &[("docs/g.md".to_string(), doc)]);
+        let cov = build_knowledge_plane(
+            &mut g,
+            REPO,
+            &BTreeMap::new(),
+            &[("docs/g.md".to_string(), doc)],
+        );
 
         assert_eq!(
             cov.mentions_linked, 0,
@@ -550,6 +678,7 @@ mod tests {
         let cov = build_knowledge_plane(
             &mut g,
             REPO,
+            &BTreeMap::new(),
             &[
                 ("packages/a/README.md".to_string(), doc_a),
                 ("packages/b/README.md".to_string(), doc_b),
@@ -601,6 +730,9 @@ mod tests {
         }
         const {
             assert!(KNOW_AMBIGUOUS < 0.40);
+        }
+        const {
+            assert!(KNOW_DOC_COMMENT >= 0.95 && KNOW_DOC_COMMENT <= 1.0);
         }
     }
 }

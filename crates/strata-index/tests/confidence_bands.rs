@@ -50,6 +50,7 @@ use strata_index::{
     CONF_THIS_METHOD,
     CONF_UNKNOWN_RECEIVER,
     KNOW_AMBIGUOUS,
+    KNOW_DOC_COMMENT,
     KNOW_MENTION_FQN,
     KNOW_MENTION_NAME,
     KNOW_MENTION_PATH,
@@ -1052,9 +1053,9 @@ fn data_orm_conf_constant_is_within_its_band() {
 // multi-candidate match → Ambiguous 0.35 fan-out. This builds a graph
 // containing all FOUR distinct gradings (non-vacuously) and runs the same
 // §4.1 invariant over it — proving a doc's guesses never masquerade at a tier
-// they did not earn. `Documents` (doc-comment) edges are K3's addition — none
-// exist yet, so this suite does not (and cannot honestly) cover that kind;
-// extend it when K3 lands.
+// they did not earn. `Documents` (doc-comment) edges are covered separately,
+// below (`knowledge_documents_edge_satisfies_band_invariant_non_vacuously`) —
+// K3's addition, closing the deferral this comment used to describe.
 //
 // Review finding F2: the fqn tier (0.80) alone already satisfies a bare
 // `Provenance::Inferred` check, so a prior version of this test could not
@@ -1195,6 +1196,67 @@ fn knowledge_name_tier_reaches_the_document_0_70_value_specifically() {
     );
 }
 
+// ── K3 (Knowledge plane): the band invariant extends to `Documents` edges ───
+//
+// Closes the K2 deferral above: `Documents` edges (from a doc comment
+// SYNTACTICALLY adjacent to its symbol, `RawSymbol::doc_span`) are graded at
+// a single tier — Extracted 0.95, always — since adjacency is a syntactic
+// fact the analyzer observed directly, never an inference. No markdown doc is
+// needed to exercise this path: `Documents` comes from `analyzed` alone.
+
+/// A single TS file with one JSDoc-documented function — the K3 fixture.
+fn knowledge_doc_comment_source() -> &'static str {
+    concat!(
+        "/**\n",
+        " * Adds one.\n",
+        " */\n",
+        "export function addOne(x) {}\n",
+    )
+}
+
+#[test]
+fn knowledge_documents_edge_satisfies_band_invariant_non_vacuously() {
+    let mut analyzed = BTreeMap::new();
+    analyzed.insert(
+        "src/app.ts".to_string(),
+        analyze("src/app.ts", knowledge_doc_comment_source()),
+    );
+    let (g, cov) = assemble_graph_with_knowledge(&analyzed, REPO, &ResolveOptions::default(), &[]);
+
+    assert!(
+        cov.doc_comments >= 1,
+        "expected at least one doc-comment Documents edge"
+    );
+
+    let mut seen_documents = false;
+    for node in g.nodes() {
+        for (edge, dst) in g.neighbors(&node.uid, Direction::Outgoing, &[EdgeKind::Documents]) {
+            assert_eq!(dst.fqn, "addOne");
+            assert_eq!(edge.provenance, Provenance::Extracted);
+            // Discrimination test mirroring F2 above: an EXACT, HARDCODED-
+            // LITERAL 0.95 assertion — deliberately NOT `(edge.confidence.value()
+            // - KNOW_DOC_COMMENT).abs() < 1e-6`, which would be circular (the
+            // edge's value is DERIVED from that same constant by construction,
+            // so it can never disagree with it regardless of what the constant
+            // is nudged to). Verified: nudging `KNOW_DOC_COMMENT` to 0.85 locally
+            // makes THIS assertion fail while the rest of the suite (including
+            // the Extracted-band membership check inside `assert_band_invariant`
+            // below, which would still pass at 0.85) stays green — confirming
+            // this is the one guard actually pinning the value.
+            assert!(
+                (edge.confidence.value() - 0.95).abs() < 1e-6,
+                "the Documents edge must sit at the pinned 0.95 Extracted value, got {}",
+                edge.confidence.value()
+            );
+            seen_documents = true;
+        }
+    }
+    assert!(seen_documents, "expected a Documents edge in the graph");
+
+    // The §4.1 band invariant must hold for every edge, including Documents.
+    assert_band_invariant(&g, "knowledge-documents");
+}
+
 #[test]
 fn knowledge_conf_constants_are_within_their_bands() {
     // Asserts the REAL knowledge.rs KNOW_* constants (re-exported from
@@ -1224,6 +1286,12 @@ fn knowledge_conf_constants_are_within_their_bands() {
         assert!(
             KNOW_AMBIGUOUS < 0.40,
             "KNOW_AMBIGUOUS is >= 0.40 (Ambiguous ceiling)"
+        )
+    };
+    const {
+        assert!(
+            KNOW_DOC_COMMENT >= 0.95 && KNOW_DOC_COMMENT <= 1.0,
+            "KNOW_DOC_COMMENT is outside the Extracted band [0.95, 1.0]"
         )
     };
 }
