@@ -4779,6 +4779,7 @@ name = "strata-mcp"
 version = "0.2.0"
 dependencies = [
  "serde_json",
+ "strata-contract",
  "strata-core",
  "strata-index",
  "tantivy",

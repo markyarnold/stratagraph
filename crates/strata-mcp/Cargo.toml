@@ -11,6 +11,12 @@ strata-core = { path = "../strata-core" }
 # intra-workspace path dependency (no cycle: strata-index does not depend on
 # strata-mcp), not a new third-party crate.
 strata-index = { path = "../strata-index" }
+# `guidance` (K6) re-extracts an ApiOperation/GraphqlField's spec description
+# LIVE from the spec file at query time (never stale) via the same
+# detects-then-extract routing `strata-index`'s `contract_op_sigs` uses. An
+# intra-workspace path dependency (no cycle: strata-contract does not depend
+# on strata-mcp).
+strata-contract = { path = "../strata-contract" }
 serde_json = { workspace = true }
 thiserror = "1"
 tantivy = "0.26.1"

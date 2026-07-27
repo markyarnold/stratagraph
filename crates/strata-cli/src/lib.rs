@@ -384,6 +384,36 @@ fn is_doc_kind_name(kind: &str) -> bool {
     matches!(kind, "Doc" | "DocSection")
 }
 
+/// How many refs `render_docs_to_review_line` shows before "+N more".
+const DOCS_TO_REVIEW_CAP: usize = 5;
+
+/// `detect_changes`'s "docs to review (N): path#anchor, …" summary line (K6):
+/// a scannable, refs-only roll-up of the doc-kind rows the `affected` table
+/// already marks "needs review" (K2) — same data, one line instead of hunting
+/// through the full table. `None` when nothing in `affected` is a doc kind
+/// (silent-when-clean).
+///
+/// The anchor is read straight out of the node's own uid: a knowledge-plane
+/// uid is `doc|<repo>|<path>|<path>#<anchor>|`, so the 4th `|`-field IS the
+/// `path#anchor` shape by construction (see `NodeKind::DocSection`'s doc
+/// comment) — no new `AffectedNode` field needed.
+fn render_docs_to_review_line(affected: &[strata_index::AffectedNode]) -> Option<String> {
+    let refs: Vec<&str> = affected
+        .iter()
+        .filter(|a| is_doc_kind_name(&a.kind))
+        .map(|a| a.uid.split('|').nth(3).unwrap_or(a.path.as_str()))
+        .collect();
+    if refs.is_empty() {
+        return None;
+    }
+    let shown: Vec<&str> = refs.iter().take(DOCS_TO_REVIEW_CAP).copied().collect();
+    let mut line = format!("docs to review ({}): {}", refs.len(), shown.join(", "));
+    if refs.len() > DOCS_TO_REVIEW_CAP {
+        line.push_str(&format!(", +{} more", refs.len() - DOCS_TO_REVIEW_CAP));
+    }
+    Some(line)
+}
+
 /// The §15.6 will-break verdict as a printer label — the call in words, for the
 /// affected-node tables shared by `impact`, `blast`, and `detect-changes`.
 ///
@@ -770,6 +800,9 @@ pub fn cmd_context(db: &Path, symbol: &str) -> Result<String, CliError> {
     bucket(&mut out, "imports_in", &ctx.imports_in);
     bucket(&mut out, "imports_out", &ctx.imports_out);
     bucket(&mut out, "members", &ctx.members);
+    // Knowledge plane (K6): every doc section that documents/mentions this
+    // symbol, refs-only. Always printed last (empty → `(0)`).
+    bucket_docs(&mut out, &ctx.docs);
     Ok(out.trim_end().to_string())
 }
 
@@ -777,6 +810,19 @@ fn bucket(out: &mut String, label: &str, nodes: &[strata_core::Node]) {
     out.push_str(&format!("  {label} ({}):\n", nodes.len()));
     for n in nodes {
         out.push_str(&format!("    - {} ({})\n", n.name, n.path));
+    }
+}
+
+/// The `docs` bucket's own renderer — [`bucket`]'s twin for
+/// [`strata_core::ContextDocRef`] (not a [`strata_core::Node`], so it carries
+/// the edge's own provenance/confidence rather than a bare name/path pair).
+fn bucket_docs(out: &mut String, docs: &[strata_core::ContextDocRef]) {
+    out.push_str(&format!("  docs ({}):\n", docs.len()));
+    for d in docs {
+        out.push_str(&format!(
+            "    - {}#{} ({:.2}, {:?})\n",
+            d.path, d.anchor, d.confidence, d.provenance
+        ));
     }
 }
 
@@ -904,6 +950,7 @@ pub fn cmd_context_workspace(manifest_path: &Path, symbol: &str) -> Result<Strin
     bucket(&mut out, "imports_in", &ctx.imports_in);
     bucket(&mut out, "imports_out", &ctx.imports_out);
     bucket(&mut out, "members", &ctx.members);
+    bucket_docs(&mut out, &ctx.docs);
     Ok(out.trim_end().to_string())
 }
 
@@ -1182,6 +1229,176 @@ fn render_search_docs(v: &serde_json::Value) -> String {
     out.trim_end().to_string()
 }
 
+// ── guidance ───────────────────────────────────────────────────────────────────
+
+/// `strata guidance <target> [--file] [--budget N] [--section ANCHOR] [--uid
+/// UID] [--db|--repo|--workspace]` — token-budgeted digest of what the repo
+/// knows about a symbol or file: its own doc comment, the docs that
+/// document/mention it, and (for a contract operation) its spec description
+/// re-extracted live from the spec file. Bodies are sliced from disk at query
+/// time — never stored in the graph.
+///
+/// `<target>` is a SYMBOL by default; pass `--file` to treat it as a
+/// repo-relative file path instead (aggregating over the file's symbols) —
+/// the CLI's one positional standing in for the MCP tool's two-way
+/// `symbol`/`file` args.
+///
+/// **One-dispatch rule** (mirrors `cmd_search_docs`/`cmd_blast`): this does
+/// NOT re-implement guidance's ordering/budget/live-re-extraction logic — it
+/// resolves the graph + a [`ToolCtx`] exactly like `cmd_blast`/
+/// `cmd_detect_changes` do, then calls the SAME [`call_tool_ctx`] dispatch
+/// the MCP server uses for `guidance`.
+///
+/// Three-way dispatch (mirrors `cmd_detect_changes`):
+/// 1. Explicit `--workspace <manifest>` → estate mode: the linked estate
+///    graph, with `ToolCtx.member_roots` covering every member (so a
+///    section's own repo resolves for disk reads regardless of which member
+///    directory the caller is standing in).
+/// 2. Explicit `--db <path>` → single-repo (the db's grandparent, or `--repo`).
+/// 3. Neither → auto-resolve via [`strata_index::resolve_context`] from
+///    `--repo`/cwd: `Estate` → estate mode (as #1); `Single` → that repo.
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_guidance(
+    target: &str,
+    as_file: bool,
+    budget: Option<u32>,
+    section: Option<&str>,
+    uid: Option<&str>,
+    db: Option<&Path>,
+    repo: Option<&Path>,
+    workspace: Option<&Path>,
+) -> Result<String, CliError> {
+    let (graph, ctx) = if let Some(manifest) = workspace {
+        let (graph, _results) = load_workspace_graph(manifest)?;
+        let ctx = ToolCtx {
+            repo_root: None,
+            member_roots: workspace_member_roots(manifest),
+        };
+        (graph, ctx)
+    } else if let Some(db) = db {
+        let graph = load_existing_graph(db)?;
+        let ctx = ToolCtx {
+            repo_root: repo
+                .map(Path::to_path_buf)
+                .or_else(|| repo_root_from_db(db)),
+            member_roots: Vec::new(),
+        };
+        (graph, ctx)
+    } else {
+        let root = repo
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                let default_db = PathBuf::from(DEFAULT_DB);
+                repo_root_from_db(&default_db)
+            })
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        match strata_index::resolve_context(&root) {
+            IndexContext::Estate { manifest, .. } => {
+                let (graph, _results) = load_workspace_graph(&manifest)?;
+                let ctx = ToolCtx {
+                    repo_root: None,
+                    member_roots: workspace_member_roots(&manifest),
+                };
+                (graph, ctx)
+            }
+            IndexContext::Single { db } => {
+                let graph = load_existing_graph(&db)?;
+                let ctx = ToolCtx {
+                    repo_root: Some(root),
+                    member_roots: Vec::new(),
+                };
+                (graph, ctx)
+            }
+        }
+    };
+
+    let mut args = serde_json::Map::new();
+    if as_file {
+        args.insert("file".into(), serde_json::json!(target));
+    } else {
+        args.insert("symbol".into(), serde_json::json!(target));
+    }
+    if let Some(b) = budget {
+        args.insert("budget".into(), serde_json::json!(b));
+    }
+    if let Some(s) = section {
+        args.insert("section".into(), serde_json::json!(s));
+    }
+    if let Some(u) = uid {
+        args.insert("uid".into(), serde_json::json!(u));
+    }
+
+    let v = call_tool_ctx(&graph, &ctx, "guidance", &serde_json::Value::Object(args))
+        .map_err(|e| CliError::Other(e.to_string()))?;
+
+    if v.get("ambiguous") == Some(&serde_json::json!(true)) {
+        let candidates = v["candidates"].as_array().cloned().unwrap_or_default();
+        return Err(ambiguous_error_from_json(target, &candidates));
+    }
+    Ok(render_guidance(&v))
+}
+
+/// The `guidance`/`context`-style JSON ambiguity payload
+/// (`{ambiguous:true, symbol, candidates:[…]}`) turned into the SAME
+/// [`CliError::Ambiguous`] shape/wording [`ambiguous_error`] produces for the
+/// direct (non-`call_tool_ctx`) commands — one message format for "an
+/// identifier is ambiguous" across the whole CLI, whether or not the command
+/// happens to go through the MCP JSON dispatch.
+fn ambiguous_error_from_json(symbol: &str, candidates: &[serde_json::Value]) -> CliError {
+    let mut msg = format!(
+        "ambiguous symbol {symbol}: {} candidates — pick one:\n",
+        candidates.len()
+    );
+    for c in candidates {
+        msg.push_str(&format!(
+            "  {uid}  [{kind}]  {name}  ({path})\n",
+            uid = c["uid"].as_str().unwrap_or(""),
+            kind = c["kind"].as_str().unwrap_or(""),
+            name = c["name"].as_str().unwrap_or(""),
+            path = c["path"].as_str().unwrap_or(""),
+        ));
+    }
+    msg.push_str("re-run with --uid <uid> (or a fully-qualified name) to disambiguate");
+    CliError::Ambiguous { message: msg }
+}
+
+/// Render `guidance`'s JSON result as human-readable text: a headline (target,
+/// section count, budget used), the engine's own top-level `note` when
+/// present, then each section as `path#anchor (conf, provenance)` followed by
+/// its text — or `[ref only — past budget]` / `[note]` in place of text for a
+/// budget-skipped or unavailable entry, so nothing is silently blank without
+/// saying why.
+fn render_guidance(v: &serde_json::Value) -> String {
+    let target_name = v["target"]["name"].as_str().unwrap_or("?");
+    let sections = v["sections"].as_array().cloned().unwrap_or_default();
+    let budget_used = v["budget_used"].as_u64().unwrap_or(0);
+    let mut out = format!(
+        "Guidance for {target_name} — {} section(s), budget_used {budget_used}\n",
+        sections.len()
+    );
+    if let Some(note) = v.get("note").and_then(|n| n.as_str()) {
+        out.push_str(&format!("  note: {note}\n"));
+    }
+    for s in &sections {
+        let path = s["path"].as_str().unwrap_or("");
+        let anchor = s["anchor"].as_str().unwrap_or("");
+        let conf = s["confidence"].as_f64().unwrap_or(0.0);
+        let prov = s["provenance"].as_str().unwrap_or("");
+        out.push_str(&format!("  {path}#{anchor} ({conf:.2}, {prov})"));
+        if s["ref_only"] == serde_json::json!(true) {
+            out.push_str(" [ref only — past budget]\n");
+        } else if let Some(note) = s.get("note").and_then(|n| n.as_str()) {
+            out.push_str(&format!(" [{note}]\n"));
+        } else {
+            out.push('\n');
+            for line in s["text"].as_str().unwrap_or("").lines() {
+                out.push_str(&format!("    {line}\n"));
+            }
+        }
+    }
+    out.trim_end().to_string()
+}
+
 // ── detect-changes ───────────────────────────────────────────────────────────────
 
 /// `strata detect-changes [--staged] [--db | --workspace] [--repo]` — the
@@ -1382,6 +1599,12 @@ fn render_change_report(report: &strata_index::ChangeReport) -> String {
         }
     }
 
+    // ── Docs to review (K6): a scannable refs-only summary of the doc-kind
+    // affected rows above — absent entirely when nothing touches docs. ──
+    if let Some(line) = render_docs_to_review_line(&report.affected) {
+        out.push_str(&format!("  {line}\n"));
+    }
+
     // ── Risk verdict. ──
     let level = match report.risk.level {
         RiskLevel::Low => "LOW",
@@ -1573,6 +1796,7 @@ fn blast_estate(
              blast radius is unknown — index this repo or run `strata index --workspace` first"
                 .to_string(),
         ),
+        docs: Vec::new(),
     })
 }
 
@@ -1692,6 +1916,55 @@ fn render_blast_text(report: &BlastReport) -> String {
 /// block — the discipline the hook enforces whether or not the agent remembers it.
 const BLAST_AGENT_INSTRUCTION: &str = "Before editing, run `impact`/`context` on the symbols above and report the blast radius. Treat confidence < 0.40 or `ambiguous` as UNKNOWN — never present it as certain. PAUSE for direction if risk is HIGH/CRITICAL, crosses a repo boundary, or touches contract surface.";
 
+/// Hard cap (bytes) for the agent-format `docs:` line (K6 design decision).
+const BLAST_DOCS_LINE_MAX: usize = 200;
+/// How many top (by-confidence) doc refs the line shows before "+N more".
+const BLAST_DOCS_TOP_N: usize = 3;
+
+/// The capped `docs:` line for [`render_blast_agent`]: `docs: {name} §{anchor}
+/// (conf) · … · +N more — guidance {file} for detail`, HARD capped at
+/// [`BLAST_DOCS_LINE_MAX`] bytes. `None` when the file has no doc links
+/// (silent-when-clean: the line is absent entirely, never a bare `docs: (0)`).
+///
+/// Fits as many of the top-3-by-confidence entries as the cap allows,
+/// dropping from the tail (never blowing past the cap) before ever touching
+/// the leading `docs:` tag or the trailing `guidance … for detail` hint — the
+/// `+N more` count always reflects exactly how many entries did NOT make it
+/// into the line (rank >3 originally, plus any of the top-3 dropped for
+/// length).
+fn render_blast_docs_line(docs: &[strata_index::BlastDocRef], file: &str) -> Option<String> {
+    if docs.is_empty() {
+        return None;
+    }
+    let total = docs.len();
+    let top: Vec<&strata_index::BlastDocRef> = docs.iter().take(BLAST_DOCS_TOP_N).collect();
+    let hint = format!(" — guidance {file} for detail");
+
+    let render_with = |shown: usize| -> String {
+        let mut body = top[..shown]
+            .iter()
+            .map(|d| format!("{} §{} ({:.2})", d.name, d.anchor, d.confidence))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let hidden = total - shown;
+        if hidden > 0 {
+            if !body.is_empty() {
+                body.push_str(" · ");
+            }
+            body.push_str(&format!("+{hidden} more"));
+        }
+        format!("docs: {body}{hint}")
+    };
+
+    for shown in (0..=top.len()).rev() {
+        let line = render_with(shown);
+        if line.len() <= BLAST_DOCS_LINE_MAX || shown == 0 {
+            return Some(line);
+        }
+    }
+    unreachable!("the shown == 0 iteration above always returns")
+}
+
 /// Render a [`BlastReport`] as the terse, token-lean block the PreToolUse hook
 /// injects as `additionalContext`. It carries: the file, the symbols it defines,
 /// the affected count + the top dependents, the risk + reasons, and the standing
@@ -1753,6 +2026,13 @@ fn render_blast_agent(report: &BlastReport) -> String {
                 report.affected.len() - TOP_N
             ));
         }
+    }
+
+    // Doc links into the file's symbols (K6) — absent entirely when the file
+    // has no doc links (silent-when-clean), flush-left so it reads as its own
+    // top-level fact rather than a sub-bullet of "top dependents".
+    if let Some(line) = render_blast_docs_line(&report.docs, &report.file) {
+        out.push_str(&format!("\n{line}"));
     }
 
     // The risk reasons, then the standing instruction.
@@ -2305,6 +2585,7 @@ mod tests {
                 reasons: vec!["1 affected".into()],
             },
             note: None,
+            docs: Vec::new(),
         }
     }
 
@@ -2363,6 +2644,7 @@ mod tests {
                 reasons: vec!["no indexed symbols (new/unindexed file)".into()],
             },
             note: Some("no indexed symbols for this file — it is new, unindexed, or not a code/contract/infra file; this is not a guarantee that nothing depends on it".into()),
+            docs: Vec::new(),
         };
         let out = render_blast_agent(&report);
         assert!(
@@ -2405,11 +2687,161 @@ mod tests {
                 reasons: vec!["12 affected".into()],
             },
             note: None,
+            docs: Vec::new(),
         };
         let out = render_blast_agent(&report);
         assert!(
             out.contains("… and 4 more"),
             "12 dependents capped at 8 ⇒ '… and 4 more'; got:\n{out}"
+        );
+    }
+
+    // ── blast docs: line (K6) ─────────────────────────────────────────────────
+
+    fn blast_doc_ref(name: &str, anchor: &str, confidence: f32) -> strata_index::BlastDocRef {
+        strata_index::BlastDocRef {
+            uid: format!("doc|r|docs/g.md|docs/g.md#{anchor}|"),
+            name: name.into(),
+            path: "docs/g.md".into(),
+            anchor: anchor.into(),
+            confidence,
+        }
+    }
+
+    #[test]
+    fn blast_agent_format_docs_line_is_capped() {
+        // A file whose symbols have 6 linked sections.
+        let mut report = sample_blast_report();
+        report.docs = vec![
+            blast_doc_ref("Alpha", "alpha", 0.95),
+            blast_doc_ref("Beta", "beta", 0.90),
+            blast_doc_ref("Gamma", "gamma", 0.85),
+            blast_doc_ref("Delta", "delta", 0.80),
+            blast_doc_ref("Epsilon", "epsilon", 0.75),
+            blast_doc_ref("Zeta", "zeta", 0.70),
+        ];
+        let out = render_blast_agent(&report);
+        let line = out
+            .lines()
+            .find(|l| l.starts_with("docs:"))
+            .expect("docs line present");
+        assert!(line.len() <= 200, "hard cap: {}", line.len());
+        assert!(line.contains("+3 more"), "top-3 + count: {line:?}");
+        assert!(
+            line.contains("guidance"),
+            "points at the drill-down tool: {line:?}"
+        );
+    }
+
+    #[test]
+    fn blast_agent_format_docs_line_absent_when_the_file_has_no_doc_links() {
+        // sample_blast_report() has `docs: Vec::new()` — silent-when-clean.
+        let out = render_blast_agent(&sample_blast_report());
+        assert!(
+            !out.lines().any(|l| l.starts_with("docs:")),
+            "docs: line must be absent entirely when clean; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_blast_docs_line_shows_names_confidences_and_a_guidance_hint() {
+        let docs = vec![
+            blast_doc_ref("Retry policy", "retry-policy", 0.95),
+            blast_doc_ref("Rate limits", "rate-limits", 0.80),
+        ];
+        let line = render_blast_docs_line(&docs, "src/a.ts").unwrap();
+        assert!(
+            line.starts_with("docs: Retry policy §retry-policy (0.95)"),
+            "{line:?}"
+        );
+        assert!(line.contains("Rate limits §rate-limits (0.80)"), "{line:?}");
+        assert!(line.ends_with("— guidance src/a.ts for detail"), "{line:?}");
+        assert!(
+            !line.contains("more"),
+            "only 2 entries total, both shown: {line:?}"
+        );
+    }
+
+    #[test]
+    fn render_blast_docs_line_is_none_for_an_empty_list() {
+        assert!(render_blast_docs_line(&[], "src/a.ts").is_none());
+    }
+
+    // ── detect-changes "docs to review" line (K6) ────────────────────────────
+
+    #[test]
+    fn render_docs_to_review_line_caps_at_five_with_a_count() {
+        let affected: Vec<strata_index::AffectedNode> = (0..7)
+            .map(|i| strata_index::AffectedNode {
+                uid: format!("doc|r|docs/g.md|docs/g.md#s{i}|"),
+                name: format!("Section {i}"),
+                kind: "DocSection".into(),
+                path: "docs/g.md".into(),
+                depth: 1,
+                confidence: 0.8,
+                ambiguous: false,
+                will_break: false,
+            })
+            .collect();
+        let line = render_docs_to_review_line(&affected).unwrap();
+        assert!(line.starts_with("docs to review (7): "), "{line:?}");
+        assert!(line.contains("+2 more"), "{line:?}");
+        assert!(line.contains("docs/g.md#s0"), "refs only: {line:?}");
+    }
+
+    #[test]
+    fn render_docs_to_review_line_ignores_non_doc_affected_nodes() {
+        let affected = vec![strata_index::AffectedNode {
+            uid: "ts|app|src/a.ts|caller|()".into(),
+            name: "caller".into(),
+            kind: "Function".into(),
+            path: "src/a.ts".into(),
+            depth: 1,
+            confidence: 0.9,
+            ambiguous: false,
+            will_break: true,
+        }];
+        assert!(render_docs_to_review_line(&affected).is_none());
+    }
+
+    #[test]
+    fn render_change_report_includes_the_docs_to_review_line() {
+        use strata_index::{
+            AffectedNode, ChangeKind, ChangeReport, ChangedSymbol, FileChange, Plane, Risk,
+            RiskLevel,
+        };
+        let report = ChangeReport {
+            scope: "working".into(),
+            files: vec![FileChange::Modified {
+                path: "src/a.ts".into(),
+            }],
+            symbols: vec![ChangedSymbol {
+                plane: Plane::Code,
+                change: ChangeKind::Modified,
+                key: "helper".into(),
+                file: "src/a.ts".into(),
+                contract_change: None,
+            }],
+            other_files: vec![],
+            affected: vec![AffectedNode {
+                uid: "doc|r|docs/g.md|docs/g.md#using-helper|".into(),
+                name: "Using helper".into(),
+                kind: "DocSection".into(),
+                path: "docs/g.md".into(),
+                depth: 1,
+                confidence: 0.8,
+                ambiguous: false,
+                will_break: false,
+            }],
+            risk: Risk {
+                level: RiskLevel::Low,
+                reasons: vec!["1 affected".into()],
+            },
+        };
+        let out = render_change_report(&report);
+        assert!(
+            out.contains("docs to review (1): docs/g.md#using-helper"),
+            "got:\n{out}"
         );
     }
 
@@ -3254,5 +3686,165 @@ mod tests {
             ),
             "valid estate marker → Estate {{ repo_root = member_dir }}; got: {launch:?}"
         );
+    }
+
+    // ── context docs bucket rendering (K6) ──────────────────────────────────────
+
+    #[test]
+    fn bucket_docs_renders_path_anchor_confidence_and_provenance() {
+        let docs = vec![strata_core::ContextDocRef {
+            uid: Uid("doc|r|docs/g.md|docs/g.md#h|".into()),
+            name: "Heading".into(),
+            anchor: "h".into(),
+            path: "docs/g.md".into(),
+            provenance: Provenance::Inferred,
+            confidence: 0.80,
+        }];
+        let mut out = String::new();
+        bucket_docs(&mut out, &docs);
+        assert!(out.contains("docs (1):"), "got: {out:?}");
+        assert!(out.contains("docs/g.md#h (0.80, Inferred)"), "got: {out:?}");
+    }
+
+    #[test]
+    fn bucket_docs_prints_zero_count_when_empty() {
+        let mut out = String::new();
+        bucket_docs(&mut out, &[]);
+        assert_eq!(out, "  docs (0):\n");
+    }
+
+    // ── cmd_guidance / render_guidance (K6) ─────────────────────────────────────
+
+    /// A tiny on-disk repo: `target` (Function) mentioned by a markdown
+    /// section — plus the REAL `docs/guide.md` file on disk (guidance reads
+    /// bodies from disk, never the graph) — for driving `cmd_guidance`
+    /// end-to-end. Returns the temp dir (keep it alive — it doubles as
+    /// `--repo`) and the db path.
+    fn guidance_fixture_db() -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("docs")).expect("mkdir docs");
+        std::fs::write(
+            tmp.path().join("docs/guide.md"),
+            "Using the target symbol.\n",
+        )
+        .expect("write guide.md");
+
+        let db = tmp.path().join("graph.duckdb");
+        let mut g = Graph::new();
+        g.add_node(Node {
+            uid: Uid("ts|app|src/a.ts|target|".into()),
+            kind: NodeKind::Function,
+            name: "target".into(),
+            fqn: "target".into(),
+            path: "src/a.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_node(Node {
+            uid: Uid("doc|app|docs/guide.md|docs/guide.md#h|".into()),
+            kind: NodeKind::DocSection,
+            name: "Heading".into(),
+            fqn: "docs/guide.md#h".into(),
+            path: "docs/guide.md".into(),
+            span: Span {
+                start_line: 1,
+                start_col: 0,
+                end_line: 1,
+                end_col: 0,
+            },
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_edge(Edge {
+            src: Uid("doc|app|docs/guide.md|docs/guide.md#h|".into()),
+            dst: Uid("ts|app|src/a.ts|target|".into()),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.80),
+        });
+        let mut store = DuckGraphStore::open(&db).expect("open store");
+        store.save_graph(&g).expect("save graph");
+        (tmp, db)
+    }
+
+    #[test]
+    fn cmd_guidance_end_to_end_reads_the_body_from_disk() {
+        let (tmp, db) = guidance_fixture_db();
+        let out = cmd_guidance(
+            "target",
+            false,
+            None,
+            None,
+            None,
+            Some(&db),
+            Some(tmp.path()),
+            None,
+        )
+        .unwrap();
+        assert!(out.contains("Guidance for target"), "got:\n{out}");
+        assert!(out.contains("docs/guide.md#h"), "got:\n{out}");
+        assert!(
+            out.contains("Using the target symbol."),
+            "body read from disk:\n{out}"
+        );
+    }
+
+    #[test]
+    fn cmd_guidance_ambiguous_target_is_exit_code_2_with_a_uid_hint() {
+        let (_tmp, db) = ambiguous_fixture_db();
+        let err =
+            cmd_guidance("publish", false, None, None, None, Some(&db), None, None).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        match &err {
+            CliError::Ambiguous { message } => {
+                assert!(message.contains("--uid"), "{message}");
+                assert!(message.contains("svc/a.ts|publish"), "{message}");
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_guidance_shows_sections_and_ref_only_markers() {
+        let v = serde_json::json!({
+            "target": {"uid": "u", "name": "target", "kind": "Function"},
+            "sections": [
+                {
+                    "uid": "s1", "name": "h", "path": "docs/g.md", "anchor": "h",
+                    "provenance": "Extracted", "confidence": 0.95,
+                    "text": "body text", "truncated": false, "ref_only": false
+                },
+                {
+                    "uid": "s2", "name": "h2", "path": "docs/g.md", "anchor": "h2",
+                    "provenance": "Inferred", "confidence": 0.5,
+                    "text": "", "truncated": false, "ref_only": true
+                },
+            ],
+            "budget_used": 9,
+        });
+        let out = render_guidance(&v);
+        assert!(
+            out.contains("Guidance for target — 2 section(s), budget_used 9"),
+            "got:\n{out}"
+        );
+        assert!(out.contains("docs/g.md#h (0.95, Extracted)"), "got:\n{out}");
+        assert!(out.contains("body text"), "got:\n{out}");
+        assert!(
+            out.contains("docs/g.md#h2 (0.50, Inferred) [ref only — past budget]"),
+            "got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_guidance_surfaces_the_top_level_note() {
+        let v = serde_json::json!({
+            "target": {"uid": "u", "name": "target", "kind": "Function"},
+            "sections": [],
+            "budget_used": 0,
+            "note": "no documentation found",
+        });
+        let out = render_guidance(&v);
+        assert!(out.contains("note: no documentation found"), "got:\n{out}");
     }
 }

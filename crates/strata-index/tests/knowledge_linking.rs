@@ -248,6 +248,53 @@ fn doc_comment_becomes_documents_edge_and_rides_impact() {
 }
 
 #[test]
+fn context_docs_bucket_lists_both_documents_and_mentions_refs_only() {
+    // K6: `context(alphaOne).docs` unions the doc-comment `Documents` edge
+    // (K3) and the markdown `Mentions` edge (K2) over the SAME real,
+    // builder-produced graph — not a hand-crafted fixture — so this pins the
+    // bucket end-to-end through the actual knowledge-plane pipeline.
+    let (g, _) = build_fixture_with_doc_comments();
+    let node = node_named(&g, "alphaOne");
+    let ctx = strata_core::context(&g, &node.uid).expect("context resolves alphaOne");
+
+    let anchors: Vec<&str> = ctx.docs.iter().map(|d| d.anchor.as_str()).collect();
+    assert!(
+        anchors.contains(&"doc:alphaOne"),
+        "the doc comment's Documents ref must be present: {anchors:?}"
+    );
+    assert!(
+        anchors.contains(&"using-alphaone"),
+        "the markdown section's Mentions ref must be present: {anchors:?}"
+    );
+
+    // Refs-only: each entry carries the EDGE's own provenance/confidence
+    // (never a node-level value), matching what `documents_of`/`mentions_of`
+    // read directly off the graph.
+    let doc_comment_ref = ctx
+        .docs
+        .iter()
+        .find(|d| d.anchor == "doc:alphaOne")
+        .expect("doc-comment ref present");
+    assert_eq!(doc_comment_ref.provenance, Provenance::Extracted);
+    assert!((doc_comment_ref.confidence - 0.95).abs() < 1e-6);
+    assert_eq!(doc_comment_ref.path, "src/app.ts");
+
+    let mention_ref = ctx
+        .docs
+        .iter()
+        .find(|d| d.anchor == "using-alphaone")
+        .expect("mention ref present");
+    assert_eq!(mention_ref.provenance, Provenance::Inferred);
+    assert!((mention_ref.confidence - 0.80).abs() < 1e-6);
+    assert_eq!(mention_ref.path, "docs/guide.md");
+
+    // Sorted by uid ascending, mirroring every other context bucket.
+    let mut sorted_anchors = ctx.docs.clone();
+    sorted_anchors.sort_by(|a, b| a.uid.cmp(&b.uid));
+    assert_eq!(ctx.docs, sorted_anchors, "docs bucket must be uid-sorted");
+}
+
+#[test]
 fn doc_and_docsection_nodes_exist_with_the_designed_shape() {
     let (g, _) = build_fixture();
 

@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use strata_core::{
-    context, explain, impact, query, EdgeKind, Explanation, Graph, ImpactOptions, Node, NodeKind,
+    context, explain, impact, query, Direction, EdgeKind, Explanation, Graph, ImpactOptions, Node,
+    NodeKind, Provenance,
 };
 use strata_index::{blast_for_file, detect_changes, rename, ChangeScope, RenameOptions};
 
@@ -81,6 +82,20 @@ fn provenance_name(prov: strata_core::Provenance) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_else(|| format!("{prov:?}"))
+}
+
+/// Compact JSON view of a [`strata_core::ContextDocRef`] — `context`'s `docs`
+/// bucket entry: refs-only (uid/name/anchor/path/provenance/confidence), never
+/// body text.
+fn doc_ref_json(d: &strata_core::ContextDocRef) -> Value {
+    json!({
+        "uid": d.uid.as_str(),
+        "name": d.name,
+        "anchor": d.anchor,
+        "path": d.path,
+        "provenance": provenance_name(d.provenance),
+        "confidence": d.confidence,
+    })
 }
 
 /// Read a required string argument from the tool's `args` object.
@@ -195,6 +210,7 @@ pub fn call_tool_ctx(
         "detect_changes" => tool_detect_changes(graph, ctx, args),
         "rename" => tool_rename(graph, ctx, args),
         "search_docs" => tool_search_docs(ctx, args),
+        "guidance" => tool_guidance(graph, ctx, args),
         other => Err(ToolError::BadArgs(format!("unknown tool: {other}"))),
     }
 }
@@ -241,6 +257,9 @@ fn tool_context(graph: &Graph, args: &Value) -> Result<Value, ToolError> {
                 // model classes that map to it; a model class's `maps_to` is its table.
                 "mapped_by": ctx.mapped_by.iter().map(node_json).collect::<Vec<_>>(),
                 "maps_to": ctx.maps_to.iter().map(node_json).collect::<Vec<_>>(),
+                // Knowledge plane (K6): every doc section that documents or mentions
+                // this node, refs-only (never body text — `guidance` fetches it).
+                "docs": ctx.docs.iter().map(doc_ref_json).collect::<Vec<_>>(),
             }))
         }
     }
@@ -822,9 +841,460 @@ fn tool_search_docs(ctx: &ToolCtx, args: &Value) -> Result<Value, ToolError> {
     }))
 }
 
+// ── guidance (K6): token-budgeted digest of what the repo knows about a
+// symbol/file — its own doc comment, the docs that document/mention it, and
+// (for a contract operation) its spec description, bodies sliced from disk at
+// query time. Token budgets here are TESTED requirements (plan Global
+// Constraints), not aspirations.
+
+/// `guidance`'s default total budget, in the SAME unit `str::len()` reports
+/// (UTF-8 bytes) — ~1,200 tokens per the plan.
+const GUIDANCE_DEFAULT_BUDGET: usize = 4800;
+/// The per-section cap within that budget.
+const GUIDANCE_SECTION_CAP: usize = 1200;
+/// Ordering tier 0: a live-re-extracted contract spec description (K4) —
+/// always first, regardless of its (fixed 1.0) confidence.
+const GUIDANCE_TIER_DESCRIPTION: u8 = 0;
+/// Ordering tier 1: incoming `Documents` edges (a symbol's own doc comment).
+const GUIDANCE_TIER_DOCUMENTS: u8 = 1;
+/// Ordering tier 2: incoming `Mentions` edges.
+const GUIDANCE_TIER_MENTIONS: u8 = 2;
+
+/// Where a [`GuidanceCandidate`]'s body text comes from.
+enum GuidanceBody {
+    /// Read from `<root>/<candidate.path>`, sliced to `[start_line, end_line]`
+    /// (1-based inclusive) — never stored in the graph, read fresh each call.
+    /// `section_repo` is the section's own uid `package` field (the 2nd
+    /// `|`-delimited component), used to pick the right root in estate mode.
+    Disk {
+        section_repo: String,
+        start_line: u32,
+        end_line: u32,
+    },
+    /// Already in hand (the live re-extracted spec description) — no disk IO.
+    Inline(String),
+}
+
+/// One resolved doc reference BEFORE budget trimming.
+struct GuidanceCandidate {
+    uid: String,
+    name: String,
+    path: String,
+    anchor: String,
+    provenance: Provenance,
+    confidence: f32,
+    tier: u8,
+    body: GuidanceBody,
+}
+
+/// The `k`-th `|`-delimited field of a uid string (`language|package|path|fqn|signature`).
+fn uid_field(uid: &str, k: usize) -> Option<&str> {
+    uid.split('|').nth(k)
+}
+
+/// Split a `DocSection`'s fqn (`<path>#<anchor>` by construction — see
+/// `NodeKind::DocSection`'s doc comment) into its anchor half.
+fn anchor_from_fqn(fqn: &str) -> &str {
+    fqn.split_once('#').map(|(_, anchor)| anchor).unwrap_or(fqn)
+}
+
+/// The repo root to read a knowledge-plane section's file from: `ctx.repo_root`
+/// when set (single-repo mode — the common case); else, in estate mode, the
+/// `ctx.member_roots` entry whose OWN final path component equals `repo` (the
+/// section's uid `package` field). No match (an unnamed/mismatched estate
+/// layout) → `None`, which the caller turns into an honest "body unavailable"
+/// rather than ever guessing a possibly-wrong repo's file.
+fn resolve_root_for_repo(ctx: &ToolCtx, repo: &str) -> Option<PathBuf> {
+    if let Some(root) = &ctx.repo_root {
+        return Some(root.clone());
+    }
+    ctx.member_roots
+        .iter()
+        .find(|r| r.file_name().and_then(|n| n.to_str()) == Some(repo))
+        .cloned()
+}
+
+/// Try both contract adapters' `detects`-then-`extract` routing (mirrors
+/// `strata-index`'s `contract_op_sigs`) so guidance re-parses a spec with the
+/// SAME format-detection logic the indexer uses — never a guess. gRPC is
+/// included for completeness (`ApiOperation` covers both OpenAPI and gRPC),
+/// though its adapter never captures a description (K4), so it always yields
+/// an empty description set in practice.
+fn extract_contract_operations(path: &str, content: &str) -> Vec<strata_contract::OperationDef> {
+    use strata_contract::{ContractAdapter, GraphqlAdapter, OpenApiAdapter, ProtoAdapter};
+    let openapi = OpenApiAdapter;
+    let graphql = GraphqlAdapter;
+    let grpc = ProtoAdapter;
+    if openapi.detects(path, content) {
+        openapi.extract(path, content).unwrap_or_default()
+    } else if graphql.detects(path, content) {
+        graphql.extract(path, content).unwrap_or_default()
+    } else if grpc.detects(path, content) {
+        grpc.extract(path, content).unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Live re-extraction (K4) of `target`'s spec description: read the spec file
+/// fresh and re-run the same adapter routing the indexer used, so the text is
+/// NEVER stale. `target.uid`'s `package`/`path` fields are the repo name and
+/// the spec's repo-relative path respectively (see `strata-index::contract`'s
+/// `operation_uid` — the per-repo shape this resolves against; an estate
+/// CANONICAL contract uid has a different 3rd field and honestly yields
+/// `None` here rather than misreading it as a path). `None` on ANY failure —
+/// no root, unreadable file, no adapter detects it, no matching operation key,
+/// or a blank declared description — never an error, never a guess.
+fn live_operation_description(ctx: &ToolCtx, target: &Node) -> Option<String> {
+    let repo = uid_field(target.uid.as_str(), 1)?;
+    let root = resolve_root_for_repo(ctx, repo)?;
+    let spec_path = uid_field(target.uid.as_str(), 2)?;
+    let content = std::fs::read_to_string(root.join(spec_path)).ok()?;
+    extract_contract_operations(spec_path, &content)
+        .into_iter()
+        .find(|op| op.key == target.fqn)
+        .and_then(|op| op.description)
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+}
+
+/// Push every incoming `Documents`/`Mentions` candidate for `uid` onto `out`
+/// (tier 1 / tier 2 respectively) — shared by the symbol and file gathering
+/// paths so both read the SAME edges the SAME way.
+fn push_doc_edge_candidates(
+    graph: &Graph,
+    uid: &strata_core::Uid,
+    out: &mut Vec<GuidanceCandidate>,
+) {
+    for (edge, node) in graph.neighbors(
+        uid,
+        Direction::Incoming,
+        &[EdgeKind::Documents, EdgeKind::Mentions],
+    ) {
+        let tier = if edge.kind == EdgeKind::Documents {
+            GUIDANCE_TIER_DOCUMENTS
+        } else {
+            GUIDANCE_TIER_MENTIONS
+        };
+        out.push(GuidanceCandidate {
+            uid: node.uid.as_str().to_string(),
+            name: node.name.clone(),
+            path: node.path.clone(),
+            anchor: anchor_from_fqn(&node.fqn).to_string(),
+            provenance: edge.provenance,
+            confidence: edge.confidence.value(),
+            tier,
+            body: GuidanceBody::Disk {
+                section_repo: uid_field(node.uid.as_str(), 1)
+                    .unwrap_or_default()
+                    .to_string(),
+                start_line: node.span.start_line,
+                end_line: node.span.end_line,
+            },
+        });
+    }
+}
+
+/// Every candidate for a SYMBOL target, unsorted: the live spec description
+/// (tier 0, ApiOperation/GraphqlField only) first if one resolves, then its
+/// incoming Documents/Mentions.
+fn guidance_candidates_for_symbol(
+    graph: &Graph,
+    ctx: &ToolCtx,
+    target: &Node,
+) -> Vec<GuidanceCandidate> {
+    let mut out = Vec::new();
+    if matches!(target.kind, NodeKind::ApiOperation | NodeKind::GraphqlField) {
+        if let Some(desc) = live_operation_description(ctx, target) {
+            out.push(GuidanceCandidate {
+                uid: format!("{}#description", target.uid.as_str()),
+                name: format!("{} description", target.name),
+                path: target.path.clone(),
+                anchor: "description".to_string(),
+                provenance: Provenance::Extracted,
+                confidence: 1.0,
+                tier: GUIDANCE_TIER_DESCRIPTION,
+                body: GuidanceBody::Inline(desc),
+            });
+        }
+    }
+    push_doc_edge_candidates(graph, &target.uid, &mut out);
+    out
+}
+
+/// Every candidate for a FILE target: the union of every node's (symbols +
+/// the file's own Module — anything whose `path == file`) incoming Documents/
+/// Mentions, deduped by section uid keeping the MAX confidence (a section can
+/// link to several of the file's symbols).
+fn guidance_candidates_for_file(graph: &Graph, file: &str) -> Vec<GuidanceCandidate> {
+    let mut by_uid: std::collections::BTreeMap<String, GuidanceCandidate> =
+        std::collections::BTreeMap::new();
+    for n in graph.nodes().filter(|n| n.path == file) {
+        let mut local = Vec::new();
+        push_doc_edge_candidates(graph, &n.uid, &mut local);
+        for cand in local {
+            use std::collections::btree_map::Entry;
+            match by_uid.entry(cand.uid.clone()) {
+                Entry::Vacant(e) => {
+                    e.insert(cand);
+                }
+                Entry::Occupied(mut e) => {
+                    if cand.confidence > e.get().confidence {
+                        e.insert(cand);
+                    }
+                }
+            }
+        }
+    }
+    by_uid.into_values().collect()
+}
+
+/// The joined source lines `[start_line, end_line]` (1-based, inclusive) —
+/// mirrors `strata-index`'s private `slice_span`; small and file-local enough
+/// to duplicate rather than plumb a new cross-crate export for one caller.
+fn slice_body_lines(content: &str, start_line: u32, end_line: u32) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let start = (start_line.saturating_sub(1)) as usize;
+    let end = (end_line as usize).min(lines.len());
+    if start >= end {
+        return String::new();
+    }
+    lines[start..end].join("\n")
+}
+
+/// Read one candidate's FULL, untrimmed body (before any budget/cap is
+/// applied). `Ok("")` is a legitimate empty body; `Err(note)` is the honest
+/// "could not read" case (no resolvable root, or the file is missing/unreadable
+/// on disk) — never a panic, never silence.
+fn guidance_read_body(ctx: &ToolCtx, cand: &GuidanceCandidate) -> Result<String, &'static str> {
+    match &cand.body {
+        GuidanceBody::Inline(text) => Ok(text.clone()),
+        GuidanceBody::Disk {
+            section_repo,
+            start_line,
+            end_line,
+        } => {
+            let root = resolve_root_for_repo(ctx, section_repo).ok_or("body unavailable")?;
+            let content =
+                std::fs::read_to_string(root.join(&cand.path)).map_err(|_| "body unavailable")?;
+            Ok(slice_body_lines(&content, *start_line, *end_line))
+        }
+    }
+}
+
+/// Slice `body` to at most `cap` BYTES (the same unit `str::len()`/the budget
+/// counts in) at a char boundary — never splitting a multi-byte UTF-8
+/// sequence. Returns `(slice, was_cut)`; `was_cut` is true iff the slice is
+/// STRICTLY shorter than the full body (a body that happens to be exactly
+/// `cap` bytes is not "cut" — the whole thing was shown).
+fn guidance_truncate(body: &str, cap: usize) -> (String, bool) {
+    if body.len() <= cap {
+        return (body.to_string(), false);
+    }
+    let mut end = cap;
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    (body[..end].to_string(), true)
+}
+
+/// The exact truncation marker appended when a section is cut — a fixed
+/// format so the guardrail test can match it literally.
+fn guidance_marker(path: &str, anchor: &str) -> String {
+    format!("… [truncated — fetch {path}#{anchor}]")
+}
+
+/// One `sections[]` entry's JSON shape, shared by the budgeted path and the
+/// `section` (full, no-budget) path.
+#[allow(clippy::too_many_arguments)]
+fn guidance_section_json(
+    cand: &GuidanceCandidate,
+    text: String,
+    truncated: bool,
+    ref_only: bool,
+    note: Option<&str>,
+) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("uid".into(), json!(cand.uid));
+    obj.insert("name".into(), json!(cand.name));
+    obj.insert("path".into(), json!(cand.path));
+    obj.insert("anchor".into(), json!(cand.anchor));
+    obj.insert("provenance".into(), json!(provenance_name(cand.provenance)));
+    obj.insert("confidence".into(), json!(cand.confidence));
+    obj.insert("text".into(), json!(text));
+    obj.insert("truncated".into(), json!(truncated));
+    obj.insert("ref_only".into(), json!(ref_only));
+    if let Some(n) = note {
+        obj.insert("note".into(), json!(n));
+    }
+    Value::Object(obj)
+}
+
+/// The budget-mechanics core: iterate `ordered` (already sorted), taking
+/// `min(1200, remaining)` bytes of each section's body at a char boundary;
+/// append the truncation marker when a section is cut; stop CONSUMING budget
+/// once exhausted but ALWAYS emit a `ref_only` entry for every remaining
+/// candidate so nothing is invisible. Returns the section JSON values plus the
+/// total bytes actually taken (`budget_used` — the slice portions only, never
+/// the marker text, so it stays a meaningful "how much of your budget" number).
+fn guidance_budgeted_sections(
+    ctx: &ToolCtx,
+    ordered: Vec<GuidanceCandidate>,
+    budget: usize,
+) -> (Vec<Value>, usize) {
+    let mut remaining = budget;
+    let mut budget_used = 0usize;
+    let mut sections = Vec::with_capacity(ordered.len());
+    for cand in ordered {
+        if remaining == 0 {
+            sections.push(guidance_section_json(
+                &cand,
+                String::new(),
+                false,
+                true,
+                None,
+            ));
+            continue;
+        }
+        match guidance_read_body(ctx, &cand) {
+            Err(note) => {
+                sections.push(guidance_section_json(
+                    &cand,
+                    String::new(),
+                    false,
+                    false,
+                    Some(note),
+                ));
+            }
+            Ok(body) => {
+                let cap = GUIDANCE_SECTION_CAP.min(remaining);
+                let (slice, cut) = guidance_truncate(&body, cap);
+                remaining -= slice.len();
+                budget_used += slice.len();
+                let text = if cut {
+                    format!("{slice}{}", guidance_marker(&cand.path, &cand.anchor))
+                } else {
+                    slice
+                };
+                sections.push(guidance_section_json(&cand, text, cut, false, None));
+            }
+        }
+    }
+    (sections, budget_used)
+}
+
+/// The `guidance` tool: `{ symbol?, file?, budget?: number=4800, section?:
+/// string }` → `{ target: {uid,name,kind}, sections: [...], budget_used,
+/// note? }`. Exactly one of `symbol`/`file` is required. Ordering: a live
+/// spec description (contract targets only) → incoming `Documents` → incoming
+/// `Mentions`, each confidence desc then uid asc. `section` (an anchor)
+/// returns that ONE candidate's FULL body — no budget/truncation applied —
+/// or `NotFound` when no candidate carries that anchor. Never touches the
+/// graph structure with body text: bodies are read fresh from disk every call.
+fn tool_guidance(graph: &Graph, ctx: &ToolCtx, args: &Value) -> Result<Value, ToolError> {
+    let symbol_arg = opt_str(args, "symbol")?;
+    let file_arg = opt_str(args, "file")?;
+    let (target_json, mut candidates) = match (symbol_arg, file_arg) {
+        (Some(_), Some(_)) => {
+            return Err(ToolError::BadArgs(
+                "provide exactly one of `symbol` or `file`, not both".into(),
+            ))
+        }
+        (None, None) => {
+            return Err(ToolError::BadArgs(
+                "missing `symbol` or `file` (guidance needs exactly one)".into(),
+            ))
+        }
+        (Some(symbol), None) => {
+            let node = match resolve_or_candidates(graph, args, symbol, "uid")? {
+                NodeOrCandidates::Node(n) => n,
+                NodeOrCandidates::Candidates(c) => return Ok(candidates_payload(symbol, &c, &[])),
+            };
+            let candidates = guidance_candidates_for_symbol(graph, ctx, &node);
+            (node_json(&node), candidates)
+        }
+        (None, Some(file)) => {
+            let candidates = guidance_candidates_for_file(graph, file);
+            (
+                json!({ "uid": file, "name": file, "kind": "File" }),
+                candidates,
+            )
+        }
+    };
+
+    // `section` (an anchor): return that ONE candidate FULL — no budget.
+    if let Some(anchor) = opt_str(args, "section")? {
+        let cand = candidates
+            .iter()
+            .find(|c| c.anchor == anchor)
+            .ok_or_else(|| ToolError::NotFound(format!("section `{anchor}`")))?;
+        let (text, note) = match guidance_read_body(ctx, cand) {
+            Ok(body) => (body, None),
+            Err(n) => (String::new(), Some(n)),
+        };
+        let budget_used = text.len();
+        let section = guidance_section_json(cand, text, false, false, note);
+        return Ok(json!({
+            "target": target_json,
+            "sections": [section],
+            "budget_used": budget_used,
+        }));
+    }
+
+    // Ordering: tier asc (description, Documents, Mentions), confidence desc,
+    // uid asc (determinism).
+    candidates.sort_by(|a, b| {
+        a.tier
+            .cmp(&b.tier)
+            .then_with(|| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+
+    let budget = match args.get("budget") {
+        None | Some(Value::Null) => GUIDANCE_DEFAULT_BUDGET,
+        Some(v) => v
+            .as_u64()
+            .ok_or_else(|| ToolError::BadArgs("`budget` must be a number".into()))?
+            as usize,
+    };
+
+    // Bare ctx (no repo_root, no member_roots at all) → every disk-backed
+    // candidate will honestly degrade to "body unavailable" below; ALSO surface
+    // a top-level note so the caller sees the root cause once, not just N
+    // per-entry notes. Only fires when it is actually relevant (at least one
+    // candidate needs disk access — an all-inline result, e.g. a bare
+    // description hit, is unaffected).
+    let bare_ctx_with_disk_candidates = ctx.repo_root.is_none()
+        && ctx.member_roots.is_empty()
+        && candidates
+            .iter()
+            .any(|c| matches!(c.body, GuidanceBody::Disk { .. }));
+
+    let (sections, budget_used) = guidance_budgeted_sections(ctx, candidates, budget);
+    let sections_empty = sections.is_empty();
+
+    let mut out = serde_json::Map::new();
+    out.insert("target".into(), target_json);
+    out.insert("sections".into(), json!(sections));
+    out.insert("budget_used".into(), json!(budget_used));
+    if sections_empty {
+        out.insert("note".into(), json!("no documentation found"));
+    } else if bare_ctx_with_disk_candidates {
+        out.insert(
+            "note".into(),
+            json!("no repo root configured — bodies unavailable (refs only)"),
+        );
+    }
+    Ok(Value::Object(out))
+}
+
 // ── schemas ─────────────────────────────────────────────────────────────────────
 
-/// The 8 tools' MCP `tools/list` descriptors (name + description + inputSchema).
+/// The 9 tools' MCP `tools/list` descriptors (name + description + inputSchema).
 pub fn tool_schemas() -> Value {
     json!([
         {
@@ -929,6 +1399,20 @@ pub fn tool_schemas() -> Value {
                     "limit": { "type": "integer", "minimum": 1, "maximum": 25, "description": "Max results (default 5, hard-capped at 25)." }
                 },
                 "required": ["query"]
+            }
+        },
+        {
+            "name": "guidance",
+            "description": "Token-budgeted digest of what the repo knows about a symbol or file: its own doc comment, the docs that document/mention it, and — for an ApiOperation/GraphqlField — its spec description RE-EXTRACTED LIVE from the spec file (never stale). Ordering: description (contract targets) → Documents (own doc comment) → Mentions, each confidence desc. Bodies are sliced from disk at query time (never stored in the graph): default total budget 4800 chars (~1,200 tokens), 1200 chars per section — a cut section gets a `… [truncated — fetch {path}#{anchor}]` marker and budget-exhausted sections still appear as `ref_only:true` refs (nothing is invisible). Pass `section` (an anchor) to fetch ONE section's FULL body with no budget applied. Honest degradation throughout: an unreadable/missing file yields `note: \"body unavailable\"` on that entry, never an error; no repo root configured degrades every disk-backed entry the same way plus a top-level note.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string", "description": "The symbol to summarize (fqn preferred, else name). Exactly one of `symbol`/`file` is required." },
+                    "file": { "type": "string", "description": "Aggregate over this file's symbols instead of one symbol (repo-relative path). Exactly one of `symbol`/`file` is required." },
+                    "uid": { "type": "string", "description": "Pin one candidate when `symbol` resolves to several nodes (an ambiguous symbol returns `{ambiguous:true, candidates:[…]}` — re-run with the chosen candidate's `uid`)." },
+                    "budget": { "type": "integer", "minimum": 0, "description": "Total character budget across all sections (default 4800). Ignored when `section` is given." },
+                    "section": { "type": "string", "description": "An anchor (from a prior `guidance`/`context`/`search_docs` result) — return that ONE section's FULL body, uncapped, no budget applied." }
+                }
             }
         }
     ])
@@ -1926,10 +2410,10 @@ mod tests {
     }
 
     #[test]
-    fn tool_schemas_lists_the_eight_object_schemas() {
+    fn tool_schemas_lists_the_nine_object_schemas() {
         let schemas = tool_schemas();
         let arr = schemas.as_array().unwrap();
-        assert_eq!(arr.len(), 8);
+        assert_eq!(arr.len(), 9);
         let names: Vec<&str> = arr.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
@@ -1941,7 +2425,8 @@ mod tests {
                 "blast",
                 "detect_changes",
                 "rename",
-                "search_docs"
+                "search_docs",
+                "guidance"
             ]
         );
         for t in arr {
@@ -2498,5 +2983,609 @@ mod tests {
             all.len(),
             "the advertised edge-kind list and the EdgeKind vocabulary must match exactly"
         );
+    }
+
+    // ── guidance (K6) ────────────────────────────────────────────────────────
+
+    /// A DocSection [`Node`] with an explicit `path#anchor` fqn shape — `node()`
+    /// conflates name==fqn, which does not fit a DocSection's naming, so
+    /// guidance's own tests build these directly.
+    fn doc_section(uid: &str, path: &str, anchor: &str, start_line: u32, end_line: u32) -> Node {
+        Node {
+            uid: Uid(uid.into()),
+            kind: NodeKind::DocSection,
+            name: format!("Section {anchor}"),
+            fqn: format!("{path}#{anchor}"),
+            path: path.into(),
+            span: Span {
+                start_line,
+                start_col: 0,
+                end_line,
+                end_col: 0,
+            },
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        }
+    }
+
+    fn doc_edge(src: &str, dst: &str, kind: EdgeKind, prov: Provenance, conf: f32) -> Edge {
+        Edge {
+            src: Uid(src.into()),
+            dst: Uid(dst.into()),
+            kind,
+            provenance: prov,
+            confidence: Confidence::new(conf),
+        }
+    }
+
+    /// Write `content` at `<root>/<rel>`, creating parent directories.
+    fn write_body_file(root: &std::path::Path, rel: &str, content: &str) {
+        let full = root.join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(full, content).unwrap();
+    }
+
+    /// **The budget guardrail.** One doc comment (Documents) + three Mentions
+    /// sections, each ~2000 bytes on disk (well over the 1200/section cap) —
+    /// pins the exact contract the plan's Global Constraints table specifies:
+    /// own doc comment first, default total budget holds (small marker slack),
+    /// fat sections truncate with the exact marker.
+    fn fixture_with_fat_docs() -> (Graph, ToolCtx, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        // `src/lib.rs` line 2 is the doc-comment section's ~2000-byte body;
+        // `docs/guide.md` lines 1-3 are the three Mentions sections' bodies —
+        // one line each, so `slice_body_lines` returns exactly that many bytes
+        // (no `\n` join overhead).
+        write_body_file(
+            tmp.path(),
+            "src/lib.rs",
+            &format!("pub fn alphaOne() {{}}\n{}\n", "x".repeat(2000)),
+        );
+        write_body_file(
+            tmp.path(),
+            "docs/guide.md",
+            &format!(
+                "{}\n{}\n{}\n",
+                "a".repeat(2000),
+                "b".repeat(2000),
+                "c".repeat(2000)
+            ),
+        );
+
+        let mut g = Graph::new();
+        g.add_node(node_kind("alphaOne", "alphaOne", NodeKind::Function));
+        g.add_node(doc_section(
+            "doc|kt|src/lib.rs|src/lib.rs#doc:alphaOne|",
+            "src/lib.rs",
+            "doc:alphaOne",
+            2,
+            2,
+        ));
+        g.add_node(doc_section(
+            "doc|kt|docs/guide.md|docs/guide.md#m-high|",
+            "docs/guide.md",
+            "m-high",
+            1,
+            1,
+        ));
+        g.add_node(doc_section(
+            "doc|kt|docs/guide.md|docs/guide.md#m-mid|",
+            "docs/guide.md",
+            "m-mid",
+            2,
+            2,
+        ));
+        g.add_node(doc_section(
+            "doc|kt|docs/guide.md|docs/guide.md#m-low|",
+            "docs/guide.md",
+            "m-low",
+            3,
+            3,
+        ));
+        g.add_edge(doc_edge(
+            "doc|kt|src/lib.rs|src/lib.rs#doc:alphaOne|",
+            "alphaOne",
+            EdgeKind::Documents,
+            Provenance::Extracted,
+            0.95,
+        ));
+        g.add_edge(doc_edge(
+            "doc|kt|docs/guide.md|docs/guide.md#m-high|",
+            "alphaOne",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.80,
+        ));
+        g.add_edge(doc_edge(
+            "doc|kt|docs/guide.md|docs/guide.md#m-mid|",
+            "alphaOne",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.70,
+        ));
+        g.add_edge(doc_edge(
+            "doc|kt|docs/guide.md|docs/guide.md#m-low|",
+            "alphaOne",
+            EdgeKind::Mentions,
+            Provenance::Ambiguous,
+            0.35,
+        ));
+
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        (g, ctx, tmp)
+    }
+
+    #[test]
+    fn guidance_orders_by_tier_and_respects_budget() {
+        let (graph, ctx, _tmp) = fixture_with_fat_docs();
+        let v = call_tool_ctx(&graph, &ctx, "guidance", &json!({"symbol": "alphaOne"})).unwrap();
+        let sections = v["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 4, "got {sections:?}");
+        assert!(
+            sections[0]["anchor"].as_str().unwrap().starts_with("doc:"),
+            "own doc comment first: {sections:?}"
+        );
+        let total: usize = sections
+            .iter()
+            .map(|s| s["text"].as_str().unwrap().len())
+            .sum();
+        assert!(
+            total <= 4800 + 200,
+            "default budget holds (marker slack), got {total}"
+        );
+        assert!(
+            sections.iter().any(|s| s["truncated"] == true),
+            "fat sections truncate with a marker: {sections:?}"
+        );
+        assert!(sections
+            .iter()
+            .any(|s| s["text"].as_str().unwrap().contains("[truncated — fetch")));
+        // budget_used tracks the slice portions only (never the markers).
+        assert!(v["budget_used"].as_u64().unwrap() <= 4800);
+    }
+
+    #[test]
+    fn guidance_orders_documents_before_mentions_by_confidence_desc() {
+        // Short bodies (no truncation noise) so the ORDER itself is pinned
+        // precisely: Documents (own doc comment) always first, then Mentions
+        // sorted by confidence desc.
+        let tmp = tempfile::tempdir().unwrap();
+        write_body_file(tmp.path(), "src/a.ts", "short\n");
+        write_body_file(tmp.path(), "docs/g.md", "short\nshort\nshort\n");
+        let mut g = Graph::new();
+        g.add_node(node_kind("target", "target", NodeKind::Function));
+        g.add_node(doc_section(
+            "doc|r|src/a.ts|src/a.ts#doc:target|",
+            "src/a.ts",
+            "doc:target",
+            1,
+            1,
+        ));
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#hi",
+            "docs/g.md",
+            "hi",
+            1,
+            1,
+        ));
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#mid",
+            "docs/g.md",
+            "mid",
+            2,
+            2,
+        ));
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#lo",
+            "docs/g.md",
+            "lo",
+            3,
+            3,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|src/a.ts|src/a.ts#doc:target|",
+            "target",
+            EdgeKind::Documents,
+            Provenance::Extracted,
+            0.95,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#hi",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.80,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#mid",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.70,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#lo",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Ambiguous,
+            0.35,
+        ));
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        let v = call_tool_ctx(&g, &ctx, "guidance", &json!({"symbol": "target"})).unwrap();
+        let anchors: Vec<&str> = v["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["anchor"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            anchors,
+            vec!["doc:target", "hi", "mid", "lo"],
+            "{anchors:?}"
+        );
+    }
+
+    #[test]
+    fn guidance_file_mode_aggregates_across_the_files_symbols_deduping_by_max_confidence() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_body_file(tmp.path(), "src/multi.ts", "one\ntwo\n");
+        write_body_file(tmp.path(), "docs/g.md", "shared section body\n");
+        let mut g = Graph::new();
+        g.add_node(Node {
+            path: "src/multi.ts".into(),
+            ..node_kind("fnA", "fnA", NodeKind::Function)
+        });
+        g.add_node(Node {
+            path: "src/multi.ts".into(),
+            ..node_kind("fnB", "fnB", NodeKind::Function)
+        });
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#shared",
+            "docs/g.md",
+            "shared",
+            1,
+            1,
+        ));
+        // The SAME section mentions both fnA (low conf) and fnB (high conf) —
+        // the file-level aggregation must dedupe to ONE entry keeping the max.
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#shared",
+            "fnA",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.70,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#shared",
+            "fnB",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.80,
+        ));
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        let v = call_tool_ctx(&g, &ctx, "guidance", &json!({"file": "src/multi.ts"})).unwrap();
+        let sections = v["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 1, "deduped to one section: {sections:?}");
+        assert!((sections[0]["confidence"].as_f64().unwrap() - 0.80).abs() < 1e-6);
+        assert_eq!(v["target"]["name"], "src/multi.ts");
+    }
+
+    #[test]
+    fn guidance_section_arg_returns_one_full_body_with_no_budget_applied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fat = "y".repeat(3000); // well over the 1200 per-section cap
+        write_body_file(tmp.path(), "docs/g.md", &format!("{fat}\n"));
+        let mut g = Graph::new();
+        g.add_node(node_kind("target", "target", NodeKind::Function));
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#full",
+            "docs/g.md",
+            "full",
+            1,
+            1,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#full",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.80,
+        ));
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        let v = call_tool_ctx(
+            &g,
+            &ctx,
+            "guidance",
+            &json!({"symbol": "target", "section": "full"}),
+        )
+        .unwrap();
+        let sections = v["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(
+            sections[0]["text"].as_str().unwrap().len(),
+            3000,
+            "full, uncapped body"
+        );
+        assert_eq!(sections[0]["truncated"], false);
+    }
+
+    #[test]
+    fn guidance_unknown_section_anchor_is_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut g = Graph::new();
+        g.add_node(node_kind("target", "target", NodeKind::Function));
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        let err = call_tool_ctx(
+            &g,
+            &ctx,
+            "guidance",
+            &json!({"symbol": "target", "section": "nope"}),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ToolError::NotFound(_)), "{err:?}");
+    }
+
+    #[test]
+    fn guidance_budget_arg_overrides_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_body_file(
+            tmp.path(),
+            "docs/g.md",
+            &format!("{}\n{}\n", "a".repeat(500), "b".repeat(500)),
+        );
+        let mut g = Graph::new();
+        g.add_node(node_kind("target", "target", NodeKind::Function));
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#one",
+            "docs/g.md",
+            "one",
+            1,
+            1,
+        ));
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#two",
+            "docs/g.md",
+            "two",
+            2,
+            2,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#one",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.80,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#two",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.70,
+        ));
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        let v = call_tool_ctx(
+            &g,
+            &ctx,
+            "guidance",
+            &json!({"symbol": "target", "budget": 400}),
+        )
+        .unwrap();
+        let sections = v["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0]["anchor"], "one");
+        assert_eq!(sections[0]["truncated"], true);
+        assert_eq!(sections[0]["ref_only"], false);
+        // Budget exhausted by section 1 (400 bytes taken of a 400 budget) — the
+        // second section is a ref_only entry, never invisible.
+        assert_eq!(sections[1]["anchor"], "two");
+        assert_eq!(sections[1]["ref_only"], true);
+        assert_eq!(sections[1]["text"], "");
+        assert_eq!(v["budget_used"], 400);
+    }
+
+    #[test]
+    fn guidance_missing_file_on_disk_is_body_unavailable_never_an_error() {
+        let tmp = tempfile::tempdir().unwrap(); // "docs/gone.md" never written.
+        let mut g = Graph::new();
+        g.add_node(node_kind("target", "target", NodeKind::Function));
+        g.add_node(doc_section(
+            "doc|r|docs/gone.md|docs/gone.md#h",
+            "docs/gone.md",
+            "h",
+            1,
+            1,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/gone.md|docs/gone.md#h",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.80,
+        ));
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        let v = call_tool_ctx(&g, &ctx, "guidance", &json!({"symbol": "target"})).unwrap();
+        let sections = v["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0]["text"], "");
+        assert_eq!(sections[0]["truncated"], false);
+        assert_eq!(
+            sections[0]["ref_only"], false,
+            "attempted, not budget-skipped"
+        );
+        assert_eq!(sections[0]["note"], "body unavailable");
+        // A file-level problem, not a bare-ctx problem — no top-level note.
+        assert!(v.get("note").is_none());
+    }
+
+    #[test]
+    fn guidance_with_no_repo_root_at_all_degrades_to_refs_with_a_top_level_note() {
+        let mut g = Graph::new();
+        g.add_node(node_kind("target", "target", NodeKind::Function));
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#h",
+            "docs/g.md",
+            "h",
+            1,
+            1,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#h",
+            "target",
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.80,
+        ));
+        // Bare ctx: no repo_root, no member_roots — "bare-db" per the design's
+        // self-review bar.
+        let v = call_tool(&g, "guidance", &json!({"symbol": "target"})).unwrap();
+        let sections = v["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0]["text"], "");
+        assert_eq!(sections[0]["note"], "body unavailable");
+        assert_eq!(
+            v["note"], "no repo root configured — bodies unavailable (refs only)",
+            "a bare ctx must explain itself at the top level too: {v}"
+        );
+    }
+
+    #[test]
+    fn guidance_no_docs_found_is_an_honest_empty_result_not_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut g = Graph::new();
+        g.add_node(node_kind("lonely", "lonely", NodeKind::Function));
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        let v = call_tool_ctx(&g, &ctx, "guidance", &json!({"symbol": "lonely"})).unwrap();
+        assert!(v["sections"].as_array().unwrap().is_empty());
+        assert_eq!(v["note"], "no documentation found");
+    }
+
+    #[test]
+    fn guidance_requires_exactly_one_of_symbol_or_file() {
+        let g = bar_calls_foo();
+        let neither = call_tool(&g, "guidance", &json!({})).unwrap_err();
+        assert!(matches!(neither, ToolError::BadArgs(_)));
+        let both =
+            call_tool(&g, "guidance", &json!({"symbol": "foo", "file": "foo.ts"})).unwrap_err();
+        assert!(matches!(both, ToolError::BadArgs(_)));
+    }
+
+    #[test]
+    fn guidance_unknown_symbol_is_not_found() {
+        let g = bar_calls_foo();
+        let err = call_tool(&g, "guidance", &json!({"symbol": "vanished"})).unwrap_err();
+        assert!(matches!(err, ToolError::NotFound(_)), "{err:?}");
+    }
+
+    #[test]
+    fn guidance_ambiguous_symbol_returns_candidates_not_an_error() {
+        let mut g = Graph::new();
+        g.add_node(Node {
+            fqn: "a.dup".into(),
+            ..node_kind("u1", "dup", NodeKind::Function)
+        });
+        g.add_node(Node {
+            fqn: "b.dup".into(),
+            ..node_kind("u2", "dup", NodeKind::Function)
+        });
+        let v = call_tool(&g, "guidance", &json!({"symbol": "dup"})).unwrap();
+        assert_eq!(v["ambiguous"], true);
+        assert_eq!(v["candidates"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn guidance_contract_operation_gets_the_live_description_as_the_first_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_body_file(
+            tmp.path(),
+            "openapi.json",
+            r#"{
+  "openapi": "3.0.0",
+  "paths": {
+    "/users": {
+      "get": {
+        "operationId": "getUser",
+        "summary": "Fetch a user by id."
+      }
+    }
+  }
+}"#,
+        );
+        write_body_file(tmp.path(), "docs/g.md", "a mention\n");
+
+        let mut g = Graph::new();
+        let op_uid = "contract|repo|openapi.json|getUser|";
+        g.add_node(Node {
+            uid: Uid(op_uid.into()),
+            kind: NodeKind::ApiOperation,
+            name: "getUser".into(),
+            fqn: "getUser".into(),
+            path: "/users".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_node(doc_section(
+            "doc|r|docs/g.md|docs/g.md#h",
+            "docs/g.md",
+            "h",
+            1,
+            1,
+        ));
+        g.add_edge(doc_edge(
+            "doc|r|docs/g.md|docs/g.md#h",
+            op_uid,
+            EdgeKind::Mentions,
+            Provenance::Inferred,
+            0.95, // deliberately HIGHER than the description's fixed 1.0 tier
+                  // never matters — tier always wins over confidence.
+        ));
+        let ctx = ToolCtx {
+            repo_root: Some(tmp.path().to_path_buf()),
+            member_roots: Vec::new(),
+        };
+        let v = call_tool_ctx(&g, &ctx, "guidance", &json!({"symbol": "getUser"})).unwrap();
+        let sections = v["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 2, "got {sections:?}");
+        assert_eq!(sections[0]["anchor"], "description");
+        assert_eq!(sections[0]["text"], "Fetch a user by id.");
+        assert_eq!(sections[0]["provenance"], "Extracted");
+        assert_eq!(sections[1]["anchor"], "h");
+    }
+
+    #[test]
+    fn guidance_reachable_via_the_ctx_less_call_tool_entry_point_too() {
+        // Unlike detect_changes/rename, guidance never HARD errors without a
+        // repo root — it degrades honestly (see the bare-ctx test above). This
+        // pins that it is dispatched at all through the ctx-less `call_tool`.
+        let g = bar_calls_foo();
+        let v = call_tool(&g, "guidance", &json!({"symbol": "foo"})).unwrap();
+        assert!(v.get("sections").is_some());
     }
 }

@@ -58,8 +58,8 @@ pub use data::{CONF_DATA_FACT, CONF_ORM_EXPLICIT};
 // The infra-plane band constants (Extracted refs/runs/produces + Inferred refs/produces).
 pub use changes::{
     blast_for_file, blast_for_file_in_repo, detect_changes, detect_changes_in_repo, AffectedNode,
-    BlastReport, BlastSymbol, ChangeKind, ChangeReport, ChangeScope, ChangedSymbol, ChangesError,
-    ContractChange, FileChange, Plane, Risk, RiskLevel, LOW_MAX, MEDIUM_MAX,
+    BlastDocRef, BlastReport, BlastSymbol, ChangeKind, ChangeReport, ChangeScope, ChangedSymbol,
+    ChangesError, ContractChange, FileChange, Plane, Risk, RiskLevel, LOW_MAX, MEDIUM_MAX,
 };
 pub use contract::{assemble_graph_with_contracts, build_contract_plane};
 pub use data::{

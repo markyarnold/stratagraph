@@ -11,9 +11,9 @@ use clap::{Parser, Subcommand};
 use strata_cli::init::{self, Agent, KiroVersion};
 use strata_cli::{
     cmd_blast, cmd_context, cmd_context_workspace, cmd_detect_changes, cmd_explain,
-    cmd_explain_workspace, cmd_impact, cmd_impact_workspace, cmd_index, cmd_index_workspace,
-    cmd_mcp, cmd_mcp_workspace, cmd_query, cmd_query_workspace, cmd_rename, cmd_search_docs,
-    db_path, BlastFormat, CliError, McpLaunch,
+    cmd_explain_workspace, cmd_guidance, cmd_impact, cmd_impact_workspace, cmd_index,
+    cmd_index_workspace, cmd_mcp, cmd_mcp_workspace, cmd_query, cmd_query_workspace, cmd_rename,
+    cmd_search_docs, db_path, BlastFormat, CliError, McpLaunch,
 };
 use strata_index::ResolveMode;
 
@@ -236,6 +236,42 @@ enum Command {
         repo: Option<PathBuf>,
         /// Estate workspace manifest path. Forces estate search: every
         /// member's docs.idx is searched and merged. Conflicts with --db.
+        #[arg(long, value_name = "MANIFEST", conflicts_with = "db")]
+        workspace: Option<PathBuf>,
+    },
+    /// Token-budgeted digest of what the repo knows about a symbol or file:
+    /// its own doc comment, the docs that document/mention it, and (for a
+    /// contract operation) its spec description re-extracted live from the
+    /// spec file. Bodies are sliced from disk, never stored in the graph.
+    Guidance {
+        /// The symbol to summarize (fqn preferred, else name). Pass --file to
+        /// treat this as a repo-relative file path instead.
+        target: String,
+        /// Treat <target> as a repo-relative file path (aggregate over its
+        /// symbols) instead of a symbol.
+        #[arg(long, default_value_t = false)]
+        file: bool,
+        /// Total character budget across all sections (default 4800).
+        /// Ignored when --section is given.
+        #[arg(long, value_name = "N")]
+        budget: Option<u32>,
+        /// An anchor (from a prior guidance/context/search-docs result) —
+        /// return that ONE section's full body, uncapped, no budget applied.
+        #[arg(long, value_name = "ANCHOR")]
+        section: Option<String>,
+        /// Pin one candidate when <target> resolves to several nodes.
+        #[arg(long, value_name = "UID")]
+        uid: Option<String>,
+        /// Graph database path (default: .strata/graph.duckdb). Forces
+        /// single-repo mode (no estate). Conflicts with --workspace.
+        #[arg(long, value_name = "PATH", conflicts_with = "workspace")]
+        db: Option<PathBuf>,
+        /// Repository root (default: the grandparent of --db when it ends
+        /// `.strata/graph.duckdb`, else the current directory).
+        #[arg(long, value_name = "PATH")]
+        repo: Option<PathBuf>,
+        /// Estate workspace manifest path. Forces estate mode: every
+        /// member's root is available for disk reads. Conflicts with --db.
         #[arg(long, value_name = "MANIFEST", conflicts_with = "db")]
         workspace: Option<PathBuf>,
     },
@@ -559,6 +595,26 @@ fn main() -> ExitCode {
         } => cmd_search_docs(
             &query,
             limit,
+            db.as_deref(),
+            repo.as_deref(),
+            workspace.as_deref(),
+        )
+        .map(Some),
+        Command::Guidance {
+            target,
+            file,
+            budget,
+            section,
+            uid,
+            db,
+            repo,
+            workspace,
+        } => cmd_guidance(
+            &target,
+            file,
+            budget,
+            section.as_deref(),
+            uid.as_deref(),
             db.as_deref(),
             repo.as_deref(),
             workspace.as_deref(),
