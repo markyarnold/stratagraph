@@ -2078,9 +2078,27 @@ fn render_blast_agent(report: &BlastReport) -> String {
         .filter(|a| !is_doc_kind_name(&a.kind))
         .collect();
     if non_doc_affected.is_empty() {
-        out.push_str(
+        if report.affected.is_empty() {
+            out.push_str(
             "\n  dependents: none in the loaded graph (NOT a guarantee — the index may be stale).",
-        );
+            );
+        } else {
+            // C4 re-review fix: every affected node here is doc-kind (the filter
+            // above emptied non_doc_affected while `affected` is non-empty), so
+            // the headline above ALREADY said "N dependent(s) in the blast
+            // radius" — "none in the loaded graph" would flatly contradict it.
+            // Point at the dedicated `docs:` line below instead, which is
+            // guaranteed non-empty here: a doc-kind node can only land in
+            // `affected` with no non-doc entry alongside it when it was reached
+            // at depth 1 directly from one of this file's own symbols (any
+            // deeper reach requires a non-doc intermediate hop, which would
+            // itself populate `non_doc_affected`) — exactly the population
+            // `render_blast_docs_line` draws `report.docs` from.
+            out.push_str(&format!(
+                "\n  dependents: none outside the docs below ({} doc section(s)).",
+                report.affected.len()
+            ));
+        }
     } else {
         out.push_str("\n  top dependents (depth/conf/verdict):");
         for a in non_doc_affected.iter().take(TOP_N) {
@@ -2824,6 +2842,100 @@ mod tests {
         assert!(
             !out.contains("Section 0"),
             "docs must not occupy top-dependent slots at all (they have their own line):\n{out}"
+        );
+    }
+
+    /// **K6 re-review fix.** Every `affected` entry is doc-kind (no non-doc
+    /// dependents at all), so `non_doc_affected` is empty while `report.affected`
+    /// is NOT — the headline already says "2 dependent(s) in the blast radius".
+    /// The OLD wording ("dependents: none in the loaded graph") directly
+    /// contradicted that headline. The fix must say there ARE dependents, just
+    /// none outside the docs listed on the dedicated `docs:` line below.
+    #[test]
+    fn render_blast_agent_all_doc_affected_points_at_the_docs_line_not_none() {
+        use strata_index::{AffectedNode, BlastSymbol, Risk, RiskLevel};
+        let affected = vec![
+            AffectedNode {
+                uid: "doc|r|docs/g.md|docs/g.md#s0|".into(),
+                name: "Section 0".into(),
+                kind: "DocSection".into(),
+                path: "docs/g.md".into(),
+                depth: 1,
+                confidence: 0.80,
+                ambiguous: false,
+                will_break: false,
+            },
+            AffectedNode {
+                uid: "doc|r|docs/g.md|docs/g.md#s1|".into(),
+                name: "Section 1".into(),
+                kind: "DocSection".into(),
+                path: "docs/g.md".into(),
+                depth: 1,
+                confidence: 0.70,
+                ambiguous: false,
+                will_break: false,
+            },
+        ];
+        let report = BlastReport {
+            file: "src/a.ts".into(),
+            symbols: vec![BlastSymbol {
+                fqn: "target".into(),
+                name: "target".into(),
+                kind: "Function".into(),
+            }],
+            affected,
+            risk: Risk {
+                level: RiskLevel::Low,
+                reasons: vec!["2 affected".into()],
+            },
+            note: None,
+            docs: vec![
+                blast_doc_ref("Section 0", "s0", 0.80),
+                blast_doc_ref("Section 1", "s1", 0.70),
+            ],
+        };
+        let out = render_blast_agent(&report);
+        assert!(
+            out.contains("2 dependent(s) in the blast radius"),
+            "headline must still report the real count; got:\n{out}"
+        );
+        assert!(
+            out.contains("dependents: none outside the docs below (2 doc section(s))."),
+            "must point at the docs: line instead of contradicting the headline; got:\n{out}"
+        );
+        assert!(
+            !out.contains("none in the loaded graph"),
+            "the contradictory wording must be gone when affected is doc-only; got:\n{out}"
+        );
+    }
+
+    /// Regression guard: when there are truly NO dependents anywhere (not even
+    /// doc-kind ones — `affected` itself is empty), the original honest wording
+    /// must survive unchanged.
+    #[test]
+    fn render_blast_agent_truly_empty_affected_keeps_the_original_wording() {
+        use strata_index::{BlastSymbol, Risk, RiskLevel};
+        let report = BlastReport {
+            file: "src/a.ts".into(),
+            symbols: vec![BlastSymbol {
+                fqn: "target".into(),
+                name: "target".into(),
+                kind: "Function".into(),
+            }],
+            affected: vec![],
+            risk: Risk {
+                level: RiskLevel::Low,
+                reasons: vec!["0 affected".into()],
+            },
+            note: None,
+            docs: Vec::new(),
+        };
+        let out = render_blast_agent(&report);
+        assert!(
+            out.contains(
+                "dependents: none in the loaded graph (NOT a guarantee — the index may be stale)."
+            ),
+            "a genuinely empty blast radius keeps the original honest wording; got:\n{out}"
         );
     }
 
