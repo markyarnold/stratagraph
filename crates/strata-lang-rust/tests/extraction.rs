@@ -648,13 +648,10 @@ fn rustdoc_on_struct_and_impl_method_captures_span() {
 }
 
 #[test]
-fn rustdoc_block_comment_and_inner_marker_are_also_doc_spans() {
+fn rustdoc_block_comment_is_a_doc_span() {
     let src = concat!(
         "/** Block doc for f. */\n",
         "pub fn f() {}\n",
-        "\n",
-        "//! Inner doc for g.\n",
-        "pub fn g() {}\n",
         "\n",
         "// plain, not a doc comment\n",
         "pub fn h() {}\n",
@@ -665,12 +662,27 @@ fn rustdoc_block_comment_and_inner_marker_are_also_doc_spans() {
         "a /** */ block comment is a doc comment"
     );
     assert!(
-        sym(&file, "g").doc_span.is_some(),
-        "a //! inner-doc comment immediately above an item is still captured"
-    );
-    assert!(
         sym(&file, "h").doc_span.is_none(),
         "a plain // comment is never a doc comment"
+    );
+}
+
+#[test]
+fn rustdoc_inner_marker_documents_the_enclosing_scope_not_the_following_item() {
+    // Review finding: `//!` is an INNER doc comment — it documents the scope
+    // it sits INSIDE (the enclosing module/file/block), never the item that
+    // happens to follow it syntactically. Forward-capturing it as though it
+    // documented the next declaration would mint a confidently-wrong
+    // Extracted 0.95 `Documents` edge to the WRONG symbol, so it must NOT be
+    // captured that way: `//! Module docs.` directly above `pub fn first()`
+    // must leave `first`'s `doc_span` `None`. Module-doc attribution to its
+    // real target (the enclosing scope) is deferred to a later
+    // knowledge-plane task, not approximated here.
+    let file = analyze("src/inner.rs", "//! Module docs.\npub fn first() {}\n");
+    assert!(
+        sym(&file, "first").doc_span.is_none(),
+        "an inner //! doc comment must NOT be forward-captured as the \
+         following item's doc_span"
     );
 }
 

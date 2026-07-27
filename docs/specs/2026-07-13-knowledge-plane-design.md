@@ -126,7 +126,9 @@ No filesystem access in the core; the indexer feeds it content.
 `RawSymbol` gains `doc_span: Option<Span>` (serde-default; analyzer schema
 bump; the incremental==full invariant holds). Per-language capture:
 
-- Rust: outer `///` and `//!` blocks.
+- Rust: outer `///` line runs and `/** */` blocks (inner `//!` documents the
+  enclosing scope, not the following item — excluded from forward capture;
+  module-doc attribution is deferred).
 - TS/JS: JSDoc/TSDoc block immediately preceding the declaration.
 - Python: docstring (first string statement inside the def/class body).
 - C#: `///` XML doc block.

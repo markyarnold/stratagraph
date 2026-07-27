@@ -84,23 +84,37 @@ fn text<'a>(node: Node, bytes: &'a [u8]) -> &'a str {
     node.utf8_text(bytes).unwrap_or("")
 }
 
-/// Whether a `line_comment`/`block_comment` node is a DOC comment (`///`,
-/// `//!`, `/** */`, `/*! */`) rather than a plain `//`/`/* */` comment.
-/// tree-sitter-rust surfaces this structurally: a doc comment's node has an
-/// `outer`/`inner` field (the marker) plus a `doc` field (its content); a plain
-/// comment has neither. Checking the field beats a text-prefix scan — it is the
-/// grammar's own distinction (immune to `////`/`/***`-style banner-comment
-/// edge cases) and works identically for both node kinds.
+/// Whether a `line_comment`/`block_comment` node is an OUTER doc comment
+/// (`///`, `/** */`) that documents the FOLLOWING item — never an inner one
+/// (`//!`, `/*! */`), which documents the ENCLOSING scope (the module/file/
+/// block it sits inside) instead. tree-sitter-rust surfaces the outer/inner
+/// distinction structurally: an outer doc comment's node has an `outer` field
+/// (the marker) plus a `doc` field (its content); an inner one has `inner`
+/// instead; a plain `//`/`/* */` comment has neither.
+///
+/// `inner` is deliberately EXCLUDED here, not merely un-preferred: forward-
+/// capturing a `//!` as if it documented the next declaration would mint a
+/// confidently-wrong Extracted 0.95 `Documents` edge to the WRONG symbol —
+/// `//! Module docs.` directly above `pub fn first_item()` documents the
+/// module (or enclosing block), not `first_item`. The never-confidently-wrong
+/// rule governs: a real module-doc attribution needs its own container-aware
+/// target (the file's `Module` node, or the enclosing `mod`/`impl` block),
+/// which is deferred to a later knowledge-plane task, not approximated by
+/// pointing it at whatever declaration happens to follow.
+///
+/// Checking the field beats a text-prefix scan — it is the grammar's own
+/// distinction (immune to `////`/`/***`-style banner-comment edge cases) and
+/// works identically for both node kinds.
 fn is_doc_comment(node: Node) -> bool {
     matches!(node.kind(), "line_comment" | "block_comment")
-        && (node.child_by_field_name("outer").is_some()
-            || node.child_by_field_name("inner").is_some())
+        && node.child_by_field_name("outer").is_some()
 }
 
 /// A comment node's own [`Span`], correcting a tree-sitter-rust quirk: a DOC
-/// LINE comment's (`///`/`//!`) node range includes its own trailing newline
-/// (so the external scanner can merge consecutive `///` lines), which makes the
-/// raw `end_position()` misreport one row low with column 0 — a plain `//`
+/// LINE comment's (`///`, the only line-comment shape [`is_doc_comment`] ever
+/// admits here) node range includes its own trailing newline (so the external
+/// scanner can merge consecutive `///` lines), which makes the raw
+/// `end_position()` misreport one row low with column 0 — a plain `//`
 /// comment or a `/** */` block does not do this. Detected structurally (the
 /// node's own text ends with `\n`) rather than by kind, and corrected using the
 /// node's own start row: a line comment runs to end-of-line by construction, so
