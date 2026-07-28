@@ -129,3 +129,6 @@ server. Two further pieces are optional:
 ## Next
 
 Index your first repository: [Index your first repository](first-index.md).
+
+Already running an older StrataGraph? The upgrade sequence — binary, reindex,
+kit re-run, desktop rebuild — is one short page: [Upgrading](upgrading.md).

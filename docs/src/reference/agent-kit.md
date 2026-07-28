@@ -304,7 +304,7 @@ At runtime, the agent kit reads this marker to resolve the estate automatically:
   with its estate-qualified identity and keeps the marker, so the estate stays
   fresh after each commit without re-running `--workspace`.
 
-### Re-running `strata init` is not required
+### Estate enrollment does not require re-running `strata init`
 
 `strata init` writes the MCP registration and hooks once. Because estate
 resolution happens at runtime (by reading the marker), enrolling a new repo in
@@ -315,6 +315,17 @@ If you run `strata init` again in a member repo after enrollment, the writers
 are idempotent: the MCP args will be updated to the bare `["mcp"]` estate form
 (the server auto-resolves the estate from the marker at runtime) and the hooks
 will be refreshed, but no existing foreign content is disturbed.
+
+### Updating the kit after an engine upgrade
+
+The one case where re-running **is** the required step: upgrading the binary.
+The installed steering, skills, and hook files are written text — they do not
+update themselves. After an upgrade, re-run `strata init claude` /
+`strata init kiro` in each kitted repo (and `strata init claude --global` if
+you use the global kit), then restart the editor session so the new hooks and
+server load. The re-run is idempotent and merge-safe as above; for Kiro it
+also upgrades or removes hook files that changed between releases. See
+[Upgrading](../getting-started/upgrading.md) for the full sequence.
 
 ### Explicit overrides
 

@@ -22,6 +22,7 @@
 # Getting started
 
 - [Install](getting-started/install.md)
+- [Upgrading](getting-started/upgrading.md)
 - [Index your first repository](getting-started/first-index.md)
 - [Your first queries](getting-started/first-queries.md)
 - [Wire up your editor (agent kit)](getting-started/agent-kit.md)

@@ -28,7 +28,9 @@ sections covering the file, and both agent kits (Claude Code, Kiro) teach an
 agent to fetch `guidance` only when that line shows coverage it hasn't
 consulted yet — never an unconditional call on every edit. Re-run `strata
 index .` to build the docs index (`.strata/docs.idx`), and `strata init
-claude` / `strata init kiro` to pick up the updated steering and skills.
+claude` / `strata init kiro` (plus `strata init claude --global` if you use
+the global kit) to pick up the updated steering and skills — the general
+procedure is [Upgrading](../getting-started/upgrading.md).
 
 **Kiro agent kit: pre-commit hook removed; hook format auto-detected.** Kiro can
 only trigger a hook by tool name and has no "git commit" tool, so a pre-commit
