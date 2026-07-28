@@ -144,6 +144,15 @@ describe("AMBIGUOUS edge colour is reserved", () => {
     // And it is the only row using that colour (no plane reuses it).
     expect(rows.filter((r) => r.color === AMBIGUOUS_EDGE_COLOR)).toHaveLength(1);
   });
+
+  it("the legend names all five planes, knowledge included", () => {
+    const labels = buildLegend(false).map((r) => r.label);
+    for (const plane of ["code", "contract", "infra", "data", "knowledge"]) {
+      expect(labels).toContain(plane);
+    }
+    const knowledge = buildLegend(false).find((r) => r.label === "knowledge");
+    expect(knowledge?.color).toBe(PLANE_COLORS.knowledge);
+  });
 });
 
 // ── confidence → width / opacity monotonicity ────────────────────────────────
