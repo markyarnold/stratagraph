@@ -79,6 +79,7 @@ const els = {
   planeContract: el<HTMLInputElement>("plane-contract"),
   planeInfra: el<HTMLInputElement>("plane-infra"),
   planeData: el<HTMLInputElement>("plane-data"),
+  planeKnowledge: el<HTMLInputElement>("plane-knowledge"),
   graphRefresh: el<HTMLButtonElement>("graph-refresh"),
   graphTruncated: el<HTMLSpanElement>("graph-truncated"),
   graphLegend: el<HTMLDivElement>("graph-legend"),
@@ -623,11 +624,13 @@ function renderImpact(
     tr.append(make("td", { class: "name", text: a.name }));
     tr.append(make("td", { text: String(a.depth) }));
     tr.append(make("td", { class: "conf-cell", text: a.confidence.toFixed(2) }));
-    // The §15.6 verdict column: the engine's will-break call, echoed verbatim.
+    // The §15.6 verdict column: the engine's will-break call, echoed verbatim —
+    // except a doc-kind dependent, which downgrades to "needs review" (a stale
+    // doc is not a code break; mirrors the CLI and the MCP-JSON caveat).
     tr.append(
       make("td", {
-        class: a.will_break ? "verdict will-break" : "verdict may-affect",
-        text: api.breakVerdict(a.will_break),
+        class: api.verdictClass(a.will_break, a.kind),
+        text: api.breakVerdict(a.will_break, a.kind),
       }),
     );
     tr.append(
@@ -713,7 +716,7 @@ function renderExplanation(cell: HTMLElement, res: ExplainResult): void {
   }
 
   const conf = res.confidence ?? 1;
-  const verdict = api.breakVerdict(res.will_break ?? false);
+  const verdict = api.breakVerdict(res.will_break ?? false, res.affected.kind);
   const ambNote = res.ambiguous ? ", via AMBIGUOUS" : "";
   panel.append(
     make("div", {
@@ -877,8 +880,9 @@ function selectedPlanes(): string[] | undefined {
   if (els.planeContract.checked) planes.push("contract");
   if (els.planeInfra.checked) planes.push("infra");
   if (els.planeData.checked) planes.push("data");
-  // All four on ⇒ no filter (let the server return everything).
-  return planes.length === 4 ? undefined : planes;
+  if (els.planeKnowledge.checked) planes.push("knowledge");
+  // All five on ⇒ no filter (let the server return everything).
+  return planes.length === 5 ? undefined : planes;
 }
 
 function setGraphMode(mode: GraphMode): void {
@@ -1057,7 +1061,13 @@ function wire(): void {
     void renderGraph();
   });
   els.graphDepth.addEventListener("change", () => void renderGraph());
-  for (const cb of [els.planeCode, els.planeContract, els.planeInfra, els.planeData]) {
+  for (const cb of [
+    els.planeCode,
+    els.planeContract,
+    els.planeInfra,
+    els.planeData,
+    els.planeKnowledge,
+  ]) {
     cb.addEventListener("change", () => {
       // A plane filter change re-queries the server, so the layout is fresh.
       graphView?.resetLayout();

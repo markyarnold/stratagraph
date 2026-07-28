@@ -11,6 +11,7 @@ import {
   formatHop,
   impactOutcome,
   membersHint,
+  verdictClass,
   type ImpactResult,
   type PathHop,
 } from "./api";
@@ -19,6 +20,34 @@ describe("breakVerdict", () => {
   it("renders the §15.6 will-break verdict in words", () => {
     expect(breakVerdict(true)).toBe("WILL BREAK");
     expect(breakVerdict(false)).toBe("may affect");
+  });
+
+  it("downgrades a doc-kind dependent to needs review regardless of the bool", () => {
+    // A stale doc is a different failure mode from code breaking: the CLI, the
+    // MCP JSON docs, and the steering all say a Doc/DocSection dependent is
+    // "needs review", never "WILL BREAK" — even though the mechanical
+    // will_break bool can be true (conf ≥ 0.40, non-ambiguous). Same rule here.
+    expect(breakVerdict(true, "DocSection")).toBe("needs review");
+    expect(breakVerdict(true, "Doc")).toBe("needs review");
+    expect(breakVerdict(false, "DocSection")).toBe("needs review");
+  });
+
+  it("keeps every non-doc kind on the boolean verdict", () => {
+    expect(breakVerdict(true, "Function")).toBe("WILL BREAK");
+    expect(breakVerdict(false, "Table")).toBe("may affect");
+  });
+});
+
+describe("verdictClass", () => {
+  it("doc kinds get the needs-review class, never will-break", () => {
+    expect(verdictClass(true, "DocSection")).toBe("verdict needs-review");
+    expect(verdictClass(false, "Doc")).toBe("verdict needs-review");
+  });
+
+  it("non-doc kinds keep the boolean classes (kind optional for old callers)", () => {
+    expect(verdictClass(true, "Function")).toBe("verdict will-break");
+    expect(verdictClass(false, "Function")).toBe("verdict may-affect");
+    expect(verdictClass(true)).toBe("verdict will-break");
   });
 });
 
@@ -122,7 +151,7 @@ describe("impactOutcome (F1/F2 — shape classification, no throw)", () => {
     const res: ImpactResult = {
       target: { uid: "u|t", name: "T", kind: "Function", path: "t.ts" },
       affected: [
-        { uid: "u|d", name: "dep", depth: 1, confidence: 0.95, ambiguous: false, will_break: true },
+        { uid: "u|d", name: "dep", kind: "Function", depth: 1, confidence: 0.95, ambiguous: false, will_break: true },
       ],
     };
     expect(impactOutcome(res).kind).toBe("affected");

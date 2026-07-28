@@ -366,6 +366,11 @@ tr.ambiguous .name::after {
 .verdict.may-affect {
   color: var(--text-muted);
 }
+/* Doc-kind dependents (Doc/DocSection): documentation put at risk, never a code
+   break — teal, matching PLANE_COLORS.knowledge in graphview/build.ts. */
+.verdict.needs-review {
+  color: #3fb6b2;
+}
 
 /* ── Impact controls ───────────────────────────────────────────────────────*/
 .impact-controls {

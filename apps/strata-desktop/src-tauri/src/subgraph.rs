@@ -15,7 +15,8 @@
 //!   and `truncated` is set so the UI can say "showing N of more".
 //! * An optional edge-kind filter (serde names, e.g. `"Calls"`, `"Produces"`)
 //!   restricts which edges are followed *and* which appear in the result.
-//! * An optional **plane** filter (`"code"`/`"contract"`/`"infra"`) restricts
+//! * An optional **plane** filter (one of [`PLANES`]:
+//!   `"code"`/`"contract"`/`"infra"`/`"data"`/`"knowledge"`) restricts
 //!   which nodes are admitted and traversed — the **one** server-side source of
 //!   the plane mapping, so the UI never re-derives a plane from a node kind.
 //! * An unknown `uid` is an error, not an empty graph (the caller asked about a
@@ -133,7 +134,7 @@ fn node_dto(n: &Node) -> SubgraphNode {
     }
 }
 
-/// Parse the optional plane filter (`"code"`/`"contract"`/`"infra"`).
+/// Parse the optional plane filter (one of [`PLANES`], all five planes).
 ///
 /// As with [`parse_kinds`], an unrecognised plane name is an error rather than a
 /// silent no-op. An empty/`None` filter means "all planes". Returns the set of
@@ -175,8 +176,8 @@ fn parse_kinds(kinds: &Option<Vec<String>>) -> Result<Vec<EdgeKind>, String> {
 /// Compute the bounded both-directions subgraph around `uid`.
 ///
 /// See the module docs for the guarantees. `kinds` is the optional edge-kind
-/// filter (serde names); `planes` is the optional plane filter
-/// (`"code"`/`"contract"`/`"infra"`); `depth` is clamped to [`MAX_DEPTH`].
+/// filter (serde names); `planes` is the optional plane filter (one of
+/// [`PLANES`], all five planes); `depth` is clamped to [`MAX_DEPTH`].
 ///
 /// The plane filter restricts which nodes are admitted to the result *and*
 /// traversed through — a node whose plane is not in the set is neither emitted
