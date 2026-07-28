@@ -14,7 +14,9 @@ use strata_index::{
     BlastReport, ChangeScope, FileChange, IndexContext, IndexOptions, Plane, RenameOptions,
     RenameOutcome, ResolveMode, Risk, RiskLevel, WorkspaceManifest,
 };
-use strata_mcp::{resolve_symbol, serve_stdio_reloadable, GraphReloader, ResolveOutcome, ToolCtx};
+use strata_mcp::{
+    call_tool_ctx, resolve_symbol, serve_stdio_reloadable, GraphReloader, ResolveOutcome, ToolCtx,
+};
 use strata_store::{DuckGraphStore, GraphStore};
 
 pub mod init;
@@ -311,6 +313,30 @@ pub fn cmd_index(repo: &Path, db: &Path, include_vendored: bool) -> Result<Strin
             ));
         }
     }
+    // Knowledge-plane summary — shown when at least one markdown doc was
+    // ingested (docs/**/*.md, a root *.md, or a nested README.md). A repo with
+    // no matching markdown prints nothing extra (additive).
+    let knowledge = &stats.knowledge_link;
+    if knowledge.docs > 0 {
+        out.push_str(&format!(
+            "\n  knowledge:      {docs} doc(s), {sections} section(s); {linked} mention(s) \
+             linked ({ambiguous} ambiguous), {stale} stale, {plain} plain unresolved",
+            docs = knowledge.docs,
+            sections = knowledge.sections,
+            linked = knowledge.mentions_linked,
+            ambiguous = knowledge.mentions_ambiguous,
+            stale = knowledge.stale_doc_mentions,
+            plain = knowledge.unresolved_plain_refs,
+        ));
+    }
+    // K5 lexical docs index (`.strata/docs.idx`) write failure — a review fix:
+    // this used to be `eprintln!`-only and silent in the CLI's own summary,
+    // so `strata index` could report success while the docs index quietly
+    // stayed stale. Mirrors the `[infra]`/`[data] FAILED` convention above; a
+    // successful write (the overwhelming common case) prints nothing extra.
+    if let Some(warning) = &stats.docs_index_warning {
+        out.push_str(&format!("\n  [docs] WARNING {warning}"));
+    }
     Ok(out)
 }
 
@@ -352,10 +378,55 @@ pub fn cmd_index_workspace(
 
 // ── impact ─────────────────────────────────────────────────────────────────────
 
+/// Whether a node-kind STRING names a knowledge-plane doc kind (`"Doc"` /
+/// `"DocSection"`). Shared by every printer that only has the serde kind name
+/// (not a typed `NodeKind`) to decide — see [`break_verdict`].
+fn is_doc_kind_name(kind: &str) -> bool {
+    matches!(kind, "Doc" | "DocSection")
+}
+
+/// How many refs `render_docs_to_review_line` shows before "+N more".
+const DOCS_TO_REVIEW_CAP: usize = 5;
+
+/// `detect_changes`'s "docs to review (N): path#anchor, …" summary line (K6):
+/// a scannable, refs-only roll-up of the doc-kind rows the `affected` table
+/// already marks "needs review" (K2) — same data, one line instead of hunting
+/// through the full table. `None` when nothing in `affected` is a doc kind
+/// (silent-when-clean).
+///
+/// The anchor is read straight out of the node's own uid: a knowledge-plane
+/// uid is `doc|<repo>|<path>|<path>#<anchor>|`, so the 4th `|`-field IS the
+/// `path#anchor` shape by construction (see `NodeKind::DocSection`'s doc
+/// comment) — no new `AffectedNode` field needed.
+fn render_docs_to_review_line(affected: &[strata_index::AffectedNode]) -> Option<String> {
+    let refs: Vec<&str> = affected
+        .iter()
+        .filter(|a| is_doc_kind_name(&a.kind))
+        .map(|a| a.uid.split('|').nth(3).unwrap_or(a.path.as_str()))
+        .collect();
+    if refs.is_empty() {
+        return None;
+    }
+    let shown: Vec<&str> = refs.iter().take(DOCS_TO_REVIEW_CAP).copied().collect();
+    let mut line = format!("docs to review ({}): {}", refs.len(), shown.join(", "));
+    if refs.len() > DOCS_TO_REVIEW_CAP {
+        line.push_str(&format!(", +{} more", refs.len() - DOCS_TO_REVIEW_CAP));
+    }
+    Some(line)
+}
+
 /// The §15.6 will-break verdict as a printer label — the call in words, for the
-/// affected-node tables shared by `impact` and `detect-changes`.
-fn break_verdict(will_break: bool) -> &'static str {
-    if will_break {
+/// affected-node tables shared by `impact`, `blast`, and `detect-changes`.
+///
+/// `is_doc` overrides `will_break` to the honest `"needs review"` call for a
+/// knowledge-plane `Doc`/`DocSection` node: a stale doc doesn't fail to
+/// compile, it goes stale — design §2 "Impact semantics". This is
+/// presentation-only; the JSON tool payloads keep the mechanical `will_break`
+/// bool unchanged regardless of node kind.
+fn break_verdict(is_doc: bool, will_break: bool) -> &'static str {
+    if is_doc {
+        "needs review"
+    } else if will_break {
         "WILL BREAK"
     } else {
         "may affect"
@@ -366,7 +437,7 @@ fn break_verdict(will_break: bool) -> &'static str {
 /// impact printers pass two spaces, the change report four).
 fn affected_header(indent: &str) -> String {
     format!(
-        "{indent}{:>5}  {:>4}  {:>3}  {:<10}  {}\n",
+        "{indent}{:>5}  {:>4}  {:>3}  {:<12}  {}\n",
         "depth", "conf", "amb", "verdict", "name (path)"
     )
 }
@@ -375,19 +446,21 @@ fn affected_header(indent: &str) -> String {
 /// `depth  conf  amb  verdict  name (path)`, prefixed by `indent`. `verdict` is
 /// the §15.6 will-break call ([`break_verdict`]); the depth/confidence/ambiguity
 /// columns are unchanged from before the label existed.
+#[allow(clippy::too_many_arguments)]
 fn affected_row(
     indent: &str,
     depth: usize,
     confidence: f32,
     ambiguous: bool,
+    is_doc: bool,
     will_break: bool,
     name: &str,
     path: &str,
 ) -> String {
     format!(
-        "{indent}{depth:>5}  {confidence:>4.2}  {amb:>3}  {verdict:<10}  {name} ({path})\n",
+        "{indent}{depth:>5}  {confidence:>4.2}  {amb:>3}  {verdict:<12}  {name} ({path})\n",
         amb = if ambiguous { "yes" } else { "no" },
-        verdict = break_verdict(will_break),
+        verdict = break_verdict(is_doc, will_break),
     )
 }
 
@@ -467,7 +540,26 @@ pub fn cmd_impact(
         include_infra,
     };
     let result = impact(&graph, &node.uid, &opts);
+    Ok(render_impact_result(&graph, &node, &result))
+}
 
+/// Render a [`strata_core::ImpactResult`] as the human-readable `strata impact`
+/// output: the headline (`node`/its path/affected count), the zero-affected
+/// honesty tail, or the affected-node table. Shared by [`cmd_impact`] and
+/// [`cmd_impact_workspace`] (single-repo and `--workspace` both call this SAME
+/// renderer, so their output shape can never drift) — and `pub` so a hermetic
+/// test can exercise the real CLI rendering against an in-memory graph, with
+/// no DB/disk IO, exactly proving the doc-kind "needs review" verdict (never
+/// "WILL BREAK") the impact/blast renderers carry.
+///
+/// A [`strata_core::NodeKind::Doc`]/[`strata_core::NodeKind::DocSection`]
+/// affected node prints the `"needs review"` verdict regardless of its
+/// mechanical `will_break` bool (design §2) — every OTHER kind is unchanged.
+pub fn render_impact_result(
+    graph: &Graph,
+    node: &Node,
+    result: &strata_core::ImpactResult,
+) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "Impact of {} ({}) — {} affected:\n",
@@ -477,26 +569,31 @@ pub fn cmd_impact(
     ));
     if result.affected.is_empty() {
         render_zero_affected(&mut out, &node.name, &result.members_with_dependents);
-        return Ok(out);
+        return out;
     }
     out.push_str(&affected_header("  "));
     for a in &result.affected {
         // The node always exists in the graph (impact only reports reachable uids).
-        let path = graph
-            .get_node(&a.uid)
-            .map(|n| n.path.clone())
-            .unwrap_or_default();
+        let affected_node = graph.get_node(&a.uid);
+        let path = affected_node.map(|n| n.path.clone()).unwrap_or_default();
+        let is_doc = affected_node.is_some_and(|n| {
+            matches!(
+                n.kind,
+                strata_core::NodeKind::Doc | strata_core::NodeKind::DocSection
+            )
+        });
         out.push_str(&affected_row(
             "  ",
             a.depth,
             a.confidence,
             a.ambiguous,
+            is_doc,
             a.will_break,
             &a.name,
             &path,
         ));
     }
-    Ok(out.trim_end().to_string())
+    out.trim_end().to_string()
 }
 
 // ── explain ──────────────────────────────────────────────────────────────────
@@ -532,12 +629,16 @@ fn render_explanation(
     };
 
     let will_break = strata_core::will_break_label(explanation.confidence, explanation.ambiguous);
+    let is_doc = matches!(
+        affected.kind,
+        strata_core::NodeKind::Doc | strata_core::NodeKind::DocSection
+    );
     let mut out = format!(
         "Why {} affects {} (conf {:.2}, {}{}):\n",
         target.name,
         affected.name,
         explanation.confidence,
-        break_verdict(will_break),
+        break_verdict(is_doc, will_break),
         if explanation.ambiguous {
             ", via AMBIGUOUS"
         } else {
@@ -700,6 +801,9 @@ pub fn cmd_context(db: &Path, symbol: &str) -> Result<String, CliError> {
     bucket(&mut out, "imports_in", &ctx.imports_in);
     bucket(&mut out, "imports_out", &ctx.imports_out);
     bucket(&mut out, "members", &ctx.members);
+    // Knowledge plane (K6): every doc section that documents/mentions this
+    // symbol, refs-only. Always printed last (empty → `(0)`).
+    bucket_docs(&mut out, &ctx.docs);
     Ok(out.trim_end().to_string())
 }
 
@@ -707,6 +811,19 @@ fn bucket(out: &mut String, label: &str, nodes: &[strata_core::Node]) {
     out.push_str(&format!("  {label} ({}):\n", nodes.len()));
     for n in nodes {
         out.push_str(&format!("    - {} ({})\n", n.name, n.path));
+    }
+}
+
+/// The `docs` bucket's own renderer — [`bucket`]'s twin for
+/// [`strata_core::ContextDocRef`] (not a [`strata_core::Node`], so it carries
+/// the edge's own provenance/confidence rather than a bare name/path pair).
+fn bucket_docs(out: &mut String, docs: &[strata_core::ContextDocRef]) {
+    out.push_str(&format!("  docs ({}):\n", docs.len()));
+    for d in docs {
+        out.push_str(&format!(
+            "    - {}#{} ({:.2}, {:?})\n",
+            d.path, d.anchor, d.confidence, d.provenance
+        ));
     }
 }
 
@@ -762,35 +879,7 @@ pub fn cmd_impact_workspace(
         include_infra,
     };
     let result = impact(&graph, &node.uid, &opts);
-
-    let mut out = String::new();
-    out.push_str(&format!(
-        "Impact of {} ({}) — {} affected:\n",
-        node.name,
-        node.path,
-        result.affected.len()
-    ));
-    if result.affected.is_empty() {
-        render_zero_affected(&mut out, &node.name, &result.members_with_dependents);
-        return Ok(out);
-    }
-    out.push_str(&affected_header("  "));
-    for a in &result.affected {
-        let path = graph
-            .get_node(&a.uid)
-            .map(|n| n.path.clone())
-            .unwrap_or_default();
-        out.push_str(&affected_row(
-            "  ",
-            a.depth,
-            a.confidence,
-            a.ambiguous,
-            a.will_break,
-            &a.name,
-            &path,
-        ));
-    }
-    Ok(out.trim_end().to_string())
+    Ok(render_impact_result(&graph, &node, &result))
 }
 
 /// `strata explain <target> <affected> --workspace <manifest> [--no-contracts]
@@ -862,6 +951,7 @@ pub fn cmd_context_workspace(manifest_path: &Path, symbol: &str) -> Result<Strin
     bucket(&mut out, "imports_in", &ctx.imports_in);
     bucket(&mut out, "imports_out", &ctx.imports_out);
     bucket(&mut out, "members", &ctx.members);
+    bucket_docs(&mut out, &ctx.docs);
     Ok(out.trim_end().to_string())
 }
 
@@ -946,7 +1036,14 @@ pub fn cmd_mcp(db: &Path, repo: Option<&Path>) -> Result<(), CliError> {
     // without a restart. The reloader is baselined to the db's current signal so
     // nothing looks stale until the next index; a failed reload keeps this graph.
     let reloader = SingleDbReloader::new(db);
-    serve_reloadable(graph, reloader, ToolCtx { repo_root })
+    serve_reloadable(
+        graph,
+        reloader,
+        ToolCtx {
+            repo_root,
+            member_roots: Vec::new(),
+        },
+    )
 }
 
 /// `strata mcp --workspace <manifest>` — load a **linked estate** graph and serve
@@ -970,8 +1067,31 @@ pub fn cmd_mcp_workspace(manifest_path: &Path, repo_root: Option<&Path>) -> Resu
         reloader,
         ToolCtx {
             repo_root: repo_root.map(Path::to_path_buf),
+            // `search_docs` fan-out (K5): every declared member's own root, so
+            // its `.strata/docs.idx` (if any) is searched and merged. A manifest
+            // that fails to (re)load yields an empty vec (degrade-safe: the
+            // server still starts, `search_docs` just reports "no docs index"
+            // rather than the whole `mcp --workspace` launch failing over it).
+            member_roots: workspace_member_roots(manifest_path),
         },
     )
+}
+
+/// The (un-canonicalized, manifest-relative) root directory of every repo
+/// listed in the workspace manifest at `manifest_path` — matching EXACTLY how
+/// `index_estate_with_options` computes each member's `repo_path`
+/// (`manifest_dir.join(&repo.path)`, no canonicalize), so joining `.strata/…`
+/// onto one of these lands on the same directory the indexer wrote to. A
+/// manifest that fails to parse/load yields an empty vec.
+fn workspace_member_roots(manifest_path: &Path) -> Vec<PathBuf> {
+    let Ok((manifest, manifest_dir)) = load_manifest(manifest_path) else {
+        return Vec::new();
+    };
+    manifest
+        .repos
+        .iter()
+        .map(|r| manifest_dir.join(&r.path))
+        .collect()
 }
 
 /// The repository working directory implied by a `--db` path, when it has the
@@ -1005,6 +1125,288 @@ fn serve_reloadable(
 ) -> Result<(), CliError> {
     serve_stdio_reloadable(graph, reloader, ctx)
         .map_err(|e| CliError::Other(format!("mcp server error: {e}")))
+}
+
+// ── search-docs ───────────────────────────────────────────────────────────────
+
+/// `strata search-docs "<query>" [--limit N] [--db|--repo|--workspace]` —
+/// lexical (tantivy, deterministic — no ML) search over the knowledge plane's
+/// indexed docs: markdown sections, doc comments, and spec descriptions.
+///
+/// **One-dispatch rule:** this does NOT re-implement the tantivy query itself
+/// — `strata-cli` never takes a tantivy dependency at all. It resolves a
+/// [`ToolCtx`] (repo root for single-repo mode; every member's root for
+/// estate mode) exactly like [`cmd_blast`]/[`cmd_detect_changes`] resolve
+/// their graph source, then calls the SAME [`call_tool_ctx`] dispatch the MCP
+/// server uses for `search_docs`, so there is exactly one implementation of
+/// "how to search the docs index" (`strata-mcp`'s `tool_search_docs`).
+///
+/// Three-way dispatch (mirrors `cmd_blast`/`cmd_detect_changes`):
+/// 1. Explicit `--workspace <manifest>` → estate mode: every member's
+///    `.strata/docs.idx` is searched and merged. `--repo` does not scope this
+///    down to one member — search always covers the whole estate — so only
+///    `member_roots` is populated, `repo_root` stays `None`.
+/// 2. Explicit `--db <path>` → single-repo (the db's grandparent, or `--repo`).
+/// 3. Neither → auto-resolve via [`strata_index::resolve_context`] from
+///    `--repo`/cwd: `Estate` → estate mode (every member, same as #1),
+///    `Single` → that one repo's own index via `repo_root`.
+///
+/// Estate mode deliberately leaves `repo_root` unset (rather than ALSO
+/// setting it to the current member, the way the long-running `mcp
+/// --workspace` server's ctx does for `detect_changes`/`rename`): this ctx is
+/// built fresh for one call and discarded, so there is no other tool call
+/// that needs `repo_root`'s different "current working member" meaning —
+/// leaving it `None` here means `member_roots` alone drives the search, with
+/// no risk of the current member's index being counted twice.
+///
+/// The graph passed to `call_tool_ctx` is a fresh, empty [`Graph`] —
+/// `search_docs` never reads it (see its own doc comment), so there is no
+/// reason to pay for loading the real code graph just to run a lexical query.
+pub fn cmd_search_docs(
+    query: &str,
+    limit: Option<u32>,
+    db: Option<&Path>,
+    repo: Option<&Path>,
+    workspace: Option<&Path>,
+) -> Result<String, CliError> {
+    let ctx = if let Some(manifest) = workspace {
+        ToolCtx {
+            repo_root: None,
+            member_roots: workspace_member_roots(manifest),
+        }
+    } else if let Some(db) = db {
+        ToolCtx {
+            repo_root: repo
+                .map(Path::to_path_buf)
+                .or_else(|| repo_root_from_db(db)),
+            member_roots: Vec::new(),
+        }
+    } else {
+        let root = repo
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        match strata_index::resolve_context(&root) {
+            IndexContext::Estate { manifest, .. } => ToolCtx {
+                repo_root: None,
+                member_roots: workspace_member_roots(&manifest),
+            },
+            IndexContext::Single { .. } => ToolCtx {
+                repo_root: Some(root),
+                member_roots: Vec::new(),
+            },
+        }
+    };
+
+    let mut args = serde_json::json!({ "query": query });
+    if let Some(l) = limit {
+        args["limit"] = serde_json::json!(l);
+    }
+    let v = call_tool_ctx(&Graph::new(), &ctx, "search_docs", &args)
+        .map_err(|e| CliError::Other(e.to_string()))?;
+    Ok(render_search_docs(&v))
+}
+
+/// Render `search_docs`'s JSON result as `path#anchor (score) — snippet`
+/// lines, headed by a `[lexical match]` label so the output is honest about
+/// what it is (deterministic term matches, never a summary or an answer) —
+/// or the engine's own `note` when there is nothing to search.
+fn render_search_docs(v: &serde_json::Value) -> String {
+    let results = v["results"].as_array().cloned().unwrap_or_default();
+    if results.is_empty() {
+        let note = v
+            .get("note")
+            .and_then(|n| n.as_str())
+            .unwrap_or("no matches");
+        return format!("[lexical match] {note}");
+    }
+    let mut out = format!("[lexical match] {} result(s)\n", results.len());
+    for r in &results {
+        let path = r["path"].as_str().unwrap_or("");
+        let anchor = r["anchor"].as_str().unwrap_or("");
+        let score = r["score"].as_f64().unwrap_or(0.0);
+        let snippet = r["snippet"].as_str().unwrap_or("");
+        out.push_str(&format!("  {path}#{anchor} ({score:.2}) — {snippet}\n"));
+    }
+    out.trim_end().to_string()
+}
+
+// ── guidance ───────────────────────────────────────────────────────────────────
+
+/// `strata guidance <target> [--file] [--budget N] [--section ANCHOR] [--uid
+/// UID] [--db|--repo|--workspace]` — token-budgeted digest of what the repo
+/// knows about a symbol or file: its own doc comment, the docs that
+/// document/mention it, and (for a contract operation) its spec description
+/// re-extracted live from the spec file. Bodies are sliced from disk at query
+/// time — never stored in the graph.
+///
+/// `<target>` is a SYMBOL by default; pass `--file` to treat it as a
+/// repo-relative file path instead (aggregating over the file's symbols) —
+/// the CLI's one positional standing in for the MCP tool's two-way
+/// `symbol`/`file` args.
+///
+/// **One-dispatch rule** (mirrors `cmd_search_docs`/`cmd_blast`): this does
+/// NOT re-implement guidance's ordering/budget/live-re-extraction logic — it
+/// resolves the graph + a [`ToolCtx`] exactly like `cmd_blast`/
+/// `cmd_detect_changes` do, then calls the SAME [`call_tool_ctx`] dispatch
+/// the MCP server uses for `guidance`.
+///
+/// Three-way dispatch (mirrors `cmd_detect_changes`):
+/// 1. Explicit `--workspace <manifest>` → estate mode: the linked estate
+///    graph, with `ToolCtx.member_roots` covering every member (so a
+///    section's own repo resolves for disk reads regardless of which member
+///    directory the caller is standing in).
+/// 2. Explicit `--db <path>` → single-repo (the db's grandparent, or `--repo`).
+/// 3. Neither → auto-resolve via [`strata_index::resolve_context`] from
+///    `--repo`/cwd: `Estate` → estate mode (as #1); `Single` → that repo.
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_guidance(
+    target: &str,
+    as_file: bool,
+    budget: Option<u32>,
+    section: Option<&str>,
+    uid: Option<&str>,
+    db: Option<&Path>,
+    repo: Option<&Path>,
+    workspace: Option<&Path>,
+) -> Result<String, CliError> {
+    let (graph, ctx) = if let Some(manifest) = workspace {
+        let (graph, _results) = load_workspace_graph(manifest)?;
+        let ctx = ToolCtx {
+            repo_root: None,
+            member_roots: workspace_member_roots(manifest),
+        };
+        (graph, ctx)
+    } else if let Some(db) = db {
+        let graph = load_existing_graph(db)?;
+        let ctx = ToolCtx {
+            repo_root: repo
+                .map(Path::to_path_buf)
+                .or_else(|| repo_root_from_db(db)),
+            member_roots: Vec::new(),
+        };
+        (graph, ctx)
+    } else {
+        let root = repo
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                let default_db = PathBuf::from(DEFAULT_DB);
+                repo_root_from_db(&default_db)
+            })
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        match strata_index::resolve_context(&root) {
+            IndexContext::Estate { manifest, .. } => {
+                let (graph, _results) = load_workspace_graph(&manifest)?;
+                let ctx = ToolCtx {
+                    repo_root: None,
+                    member_roots: workspace_member_roots(&manifest),
+                };
+                (graph, ctx)
+            }
+            IndexContext::Single { db } => {
+                let graph = load_existing_graph(&db)?;
+                let ctx = ToolCtx {
+                    repo_root: Some(root),
+                    member_roots: Vec::new(),
+                };
+                (graph, ctx)
+            }
+        }
+    };
+
+    // C3 fix (review): normalize an absolute `--file` path to repo-relative
+    // the SAME way `cmd_blast` does (`blast_rel_path`) — the PreToolUse hook
+    // always passes an absolute `tool_input.file_path`, so without this a
+    // real repo's `guidance --file <absolute>` silently found nothing while
+    // `blast` on the identical path found dependents. A no-op for `--symbol`
+    // targets and for estate mode (`ctx.repo_root` is `None` there; the
+    // `node_in_file` boundary-suffix match in `guidance_candidates_for_file`
+    // still matches an unnormalized absolute path regardless).
+    let mut args = serde_json::Map::new();
+    if as_file {
+        let rel = blast_rel_path(ctx.repo_root.as_deref(), target);
+        args.insert("file".into(), serde_json::json!(rel));
+    } else {
+        args.insert("symbol".into(), serde_json::json!(target));
+    }
+    if let Some(b) = budget {
+        args.insert("budget".into(), serde_json::json!(b));
+    }
+    if let Some(s) = section {
+        args.insert("section".into(), serde_json::json!(s));
+    }
+    if let Some(u) = uid {
+        args.insert("uid".into(), serde_json::json!(u));
+    }
+
+    let v = call_tool_ctx(&graph, &ctx, "guidance", &serde_json::Value::Object(args))
+        .map_err(|e| CliError::Other(e.to_string()))?;
+
+    if v.get("ambiguous") == Some(&serde_json::json!(true)) {
+        let candidates = v["candidates"].as_array().cloned().unwrap_or_default();
+        return Err(ambiguous_error_from_json(target, &candidates));
+    }
+    Ok(render_guidance(&v))
+}
+
+/// The `guidance`/`context`-style JSON ambiguity payload
+/// (`{ambiguous:true, symbol, candidates:[…]}`) turned into the SAME
+/// [`CliError::Ambiguous`] shape/wording [`ambiguous_error`] produces for the
+/// direct (non-`call_tool_ctx`) commands — one message format for "an
+/// identifier is ambiguous" across the whole CLI, whether or not the command
+/// happens to go through the MCP JSON dispatch.
+fn ambiguous_error_from_json(symbol: &str, candidates: &[serde_json::Value]) -> CliError {
+    let mut msg = format!(
+        "ambiguous symbol {symbol}: {} candidates — pick one:\n",
+        candidates.len()
+    );
+    for c in candidates {
+        msg.push_str(&format!(
+            "  {uid}  [{kind}]  {name}  ({path})\n",
+            uid = c["uid"].as_str().unwrap_or(""),
+            kind = c["kind"].as_str().unwrap_or(""),
+            name = c["name"].as_str().unwrap_or(""),
+            path = c["path"].as_str().unwrap_or(""),
+        ));
+    }
+    msg.push_str("re-run with --uid <uid> (or a fully-qualified name) to disambiguate");
+    CliError::Ambiguous { message: msg }
+}
+
+/// Render `guidance`'s JSON result as human-readable text: a headline (target,
+/// section count, budget used), the engine's own top-level `note` when
+/// present, then each section as `path#anchor (conf, provenance)` followed by
+/// its text — or `[ref only — past budget]` / `[note]` in place of text for a
+/// budget-skipped or unavailable entry, so nothing is silently blank without
+/// saying why.
+fn render_guidance(v: &serde_json::Value) -> String {
+    let target_name = v["target"]["name"].as_str().unwrap_or("?");
+    let sections = v["sections"].as_array().cloned().unwrap_or_default();
+    let budget_used = v["budget_used"].as_u64().unwrap_or(0);
+    let mut out = format!(
+        "Guidance for {target_name} — {} section(s), budget_used {budget_used}\n",
+        sections.len()
+    );
+    if let Some(note) = v.get("note").and_then(|n| n.as_str()) {
+        out.push_str(&format!("  note: {note}\n"));
+    }
+    for s in &sections {
+        let path = s["path"].as_str().unwrap_or("");
+        let anchor = s["anchor"].as_str().unwrap_or("");
+        let conf = s["confidence"].as_f64().unwrap_or(0.0);
+        let prov = s["provenance"].as_str().unwrap_or("");
+        out.push_str(&format!("  {path}#{anchor} ({conf:.2}, {prov})"));
+        if s["ref_only"] == serde_json::json!(true) {
+            out.push_str(" [ref only — past budget]\n");
+        } else if let Some(note) = s.get("note").and_then(|n| n.as_str()) {
+            out.push_str(&format!(" [{note}]\n"));
+        } else {
+            out.push('\n');
+            for line in s["text"].as_str().unwrap_or("").lines() {
+                out.push_str(&format!("    {line}\n"));
+            }
+        }
+    }
+    out.trim_end().to_string()
 }
 
 // ── detect-changes ───────────────────────────────────────────────────────────────
@@ -1127,6 +1529,19 @@ fn detect_changes_estate(
         .map_err(|e| CliError::Other(e.to_string()))
 }
 
+/// The display label for a [`Plane`] — an EXHAUSTIVE match (review minor: the
+/// per-plane render loop used to be a bare array literal that silently
+/// dropped `Plane::Knowledge` when it was added; a future `Plane` variant now
+/// fails to compile here until it is labeled).
+fn plane_label(plane: Plane) -> &'static str {
+    match plane {
+        Plane::Code => "code",
+        Plane::Contract => "contract",
+        Plane::Infra => "infra",
+        Plane::Knowledge => "knowledge",
+    }
+}
+
 /// Render a [`strata_index::ChangeReport`] as the human-readable CLI output:
 /// changed files, changed symbols grouped per plane, the affected table
 /// (depth/conf/amb), and the `Risk: LEVEL — reasons` line.
@@ -1152,11 +1567,15 @@ fn render_change_report(report: &strata_index::ChangeReport) -> String {
     }
 
     // ── Changed symbols, grouped per plane. ──
-    for (plane, label) in [
-        (Plane::Code, "code"),
-        (Plane::Contract, "contract"),
-        (Plane::Infra, "infra"),
-    ] {
+    // Minor (review): the old bare array literal silently dropped
+    // `Plane::Knowledge` when it was added — `plane_label` is an EXHAUSTIVE
+    // match instead, so a future `Plane` variant fails to compile here until
+    // it is labeled, and the iterated list below now names Knowledge too (a
+    // no-op today — `detect_changes`'s real git-diff path never produces a
+    // Knowledge-plane symbol, see `Plane::Knowledge`'s own doc comment — but
+    // honest/complete regardless of what currently populates it).
+    for plane in [Plane::Code, Plane::Contract, Plane::Infra, Plane::Knowledge] {
+        let label = plane_label(plane);
         let in_plane: Vec<_> = report.symbols.iter().filter(|s| s.plane == plane).collect();
         if in_plane.is_empty() {
             continue;
@@ -1199,11 +1618,18 @@ fn render_change_report(report: &strata_index::ChangeReport) -> String {
                 a.depth,
                 a.confidence,
                 a.ambiguous,
+                is_doc_kind_name(&a.kind),
                 a.will_break,
                 &a.name,
                 &a.path,
             ));
         }
+    }
+
+    // ── Docs to review (K6): a scannable refs-only summary of the doc-kind
+    // affected rows above — absent entirely when nothing touches docs. ──
+    if let Some(line) = render_docs_to_review_line(&report.affected) {
+        out.push_str(&format!("  {line}\n"));
     }
 
     // ── Risk verdict. ──
@@ -1397,6 +1823,7 @@ fn blast_estate(
              blast radius is unknown — index this repo or run `strata index --workspace` first"
                 .to_string(),
         ),
+        docs: Vec::new(),
     })
 }
 
@@ -1497,6 +1924,7 @@ fn render_blast_text(report: &BlastReport) -> String {
                 a.depth,
                 a.confidence,
                 a.ambiguous,
+                is_doc_kind_name(&a.kind),
                 a.will_break,
                 &a.name,
                 &a.path,
@@ -1514,6 +1942,93 @@ fn render_blast_text(report: &BlastReport) -> String {
 /// The standing pre-edit instruction injected verbatim in every agent-format blast
 /// block — the discipline the hook enforces whether or not the agent remembers it.
 const BLAST_AGENT_INSTRUCTION: &str = "Before editing, run `impact`/`context` on the symbols above and report the blast radius. Treat confidence < 0.40 or `ambiguous` as UNKNOWN — never present it as certain. PAUSE for direction if risk is HIGH/CRITICAL, crosses a repo boundary, or touches contract surface.";
+
+/// Hard cap (bytes) for the agent-format `docs:` line (K6 design decision).
+const BLAST_DOCS_LINE_MAX: usize = 200;
+/// How many top (by-confidence) doc refs the line shows before "+N more".
+const BLAST_DOCS_TOP_N: usize = 3;
+
+/// Truncate `s` to at most `max` BYTES at a char boundary — never splitting a
+/// multi-byte UTF-8 sequence — appending "…" (itself 3 bytes) when cut.
+/// Mirrors `strata-mcp`'s `guidance_truncate` contract; duplicated here since
+/// this module has no MCP dependency (small, pure, file-local).
+fn elide(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
+/// The capped `docs:` line for [`render_blast_agent`]: `docs: {name} §{anchor}
+/// (conf) · … · +N more — guidance {file} for detail`, HARD capped at
+/// [`BLAST_DOCS_LINE_MAX`] bytes. `None` when the file has no doc links
+/// (silent-when-clean: the line is absent entirely, never a bare `docs: (0)`).
+///
+/// **I7 fix (review):** long section names/anchors and a long file path used
+/// to make the OLD (entry-dropping) algorithm degrade top-3 → top-1 → top-0,
+/// hiding entries that DO exist rather than just shortening their labels.
+/// This version instead ELIDES — name and anchor are each independently
+/// truncated with "…" (so the `§` separator always survives; a long NAME can
+/// never swallow the anchor), and the hint's file-path display is elided too
+/// — trying progressively tighter caps until the whole line fits, so all of
+/// `top` (up to 3 entries) ALWAYS stay visible whenever 3+ exist. The leading
+/// `docs:` tag, the ` · +N more` count, and the ` — guidance … for detail`
+/// hint's fixed text are never touched — only entry labels and the path are
+/// candidates for eliding.
+fn render_blast_docs_line(docs: &[strata_index::BlastDocRef], file: &str) -> Option<String> {
+    if docs.is_empty() {
+        return None;
+    }
+    let total = docs.len();
+    let top: Vec<&strata_index::BlastDocRef> = docs.iter().take(BLAST_DOCS_TOP_N).collect();
+    let hidden = total - top.len();
+    let count_suffix = if hidden > 0 {
+        format!(" · +{hidden} more")
+    } else {
+        String::new()
+    };
+
+    for entry_cap in [usize::MAX, 30, 20, 14, 10, 6, 3] {
+        for path_cap in [usize::MAX, 40, 24, 16, 8, 3] {
+            let body = top
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{} §{} ({:.2})",
+                        elide(&d.name, entry_cap),
+                        elide(&d.anchor, entry_cap),
+                        d.confidence
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let line = format!(
+                "docs: {body}{count_suffix} — guidance {} for detail",
+                elide(file, path_cap)
+            );
+            if line.len() <= BLAST_DOCS_LINE_MAX {
+                return Some(line);
+            }
+        }
+    }
+    // Last-resort safety net — should not be reached (the tightest grid point
+    // above comfortably fits any realistic input; pinned by
+    // `render_blast_docs_line_elides_long_entries_and_path_to_keep_three_shown`)
+    // but this still NEVER panics and NEVER exceeds the hard cap, even for a
+    // pathological input (e.g. an enormous hidden count).
+    let mut line = format!(
+        "docs: +{total} more — guidance {} for detail",
+        elide(file, 3)
+    );
+    if line.len() > BLAST_DOCS_LINE_MAX {
+        line = elide(&line, BLAST_DOCS_LINE_MAX.saturating_sub(1));
+    }
+    Some(line)
+}
 
 /// Render a [`BlastReport`] as the terse, token-lean block the PreToolUse hook
 /// injects as `additionalContext`. It carries: the file, the symbols it defines,
@@ -1552,14 +2067,42 @@ fn render_blast_agent(report: &BlastReport) -> String {
         out.push_str(&format!("\n  symbols: {}", names.join(", ")));
     }
 
-    // The top dependents (highest confidence first; affected is already sorted).
-    if report.affected.is_empty() {
-        out.push_str(
+    // The top dependents (highest confidence first; affected is already
+    // sorted). C4 (review): doc-kind entries are EXCLUDED here — they have
+    // their own dedicated `docs:` line below, and competing for the same
+    // TOP_N slots let a run of tied-confidence doc sections evict a real
+    // WILL BREAK caller behind "+N more" (the caller then never showed
+    // anywhere in the block) while the SAME docs repeated on the docs: line.
+    let non_doc_affected: Vec<&strata_index::AffectedNode> = report
+        .affected
+        .iter()
+        .filter(|a| !is_doc_kind_name(&a.kind))
+        .collect();
+    if non_doc_affected.is_empty() {
+        if report.affected.is_empty() {
+            out.push_str(
             "\n  dependents: none in the loaded graph (NOT a guarantee — the index may be stale).",
-        );
+            );
+        } else {
+            // C4 re-review fix: every affected node here is doc-kind (the filter
+            // above emptied non_doc_affected while `affected` is non-empty), so
+            // the headline above ALREADY said "N dependent(s) in the blast
+            // radius" — "none in the loaded graph" would flatly contradict it.
+            // Point at the dedicated `docs:` line below instead, which is
+            // guaranteed non-empty here: a doc-kind node can only land in
+            // `affected` with no non-doc entry alongside it when it was reached
+            // at depth 1 directly from one of this file's own symbols (any
+            // deeper reach requires a non-doc intermediate hop, which would
+            // itself populate `non_doc_affected`) — exactly the population
+            // `render_blast_docs_line` draws `report.docs` from.
+            out.push_str(&format!(
+                "\n  dependents: none outside the docs below ({} doc section(s)).",
+                report.affected.len()
+            ));
+        }
     } else {
         out.push_str("\n  top dependents (depth/conf/verdict):");
-        for a in report.affected.iter().take(TOP_N) {
+        for a in non_doc_affected.iter().take(TOP_N) {
             out.push_str(&format!(
                 "\n    - {} ({}) d={} conf={:.2}{} {}",
                 a.name,
@@ -1567,15 +2110,22 @@ fn render_blast_agent(report: &BlastReport) -> String {
                 a.depth,
                 a.confidence,
                 if a.ambiguous { " AMBIGUOUS" } else { "" },
-                break_verdict(a.will_break),
+                break_verdict(is_doc_kind_name(&a.kind), a.will_break),
             ));
         }
-        if report.affected.len() > TOP_N {
+        if non_doc_affected.len() > TOP_N {
             out.push_str(&format!(
                 "\n    … and {} more",
-                report.affected.len() - TOP_N
+                non_doc_affected.len() - TOP_N
             ));
         }
+    }
+
+    // Doc links into the file's symbols (K6) — absent entirely when the file
+    // has no doc links (silent-when-clean), flush-left so it reads as its own
+    // top-level fact rather than a sub-bullet of "top dependents".
+    if let Some(line) = render_blast_docs_line(&report.docs, &report.file) {
+        out.push_str(&format!("\n{line}"));
     }
 
     // The risk reasons, then the standing instruction.
@@ -1759,6 +2309,101 @@ mod tests {
         assert_eq!(db_path(Some(&p)), p);
     }
 
+    // ── search-docs (K5): the CLI sibling over the SAME call_tool_ctx dispatch ──
+
+    #[test]
+    fn cmd_search_docs_single_repo_auto_resolve_renders_a_hit() {
+        // No estate marker under `.strata/` → resolve_context reports Single,
+        // exactly the auto-resolve path a plain `strata search-docs "…"` takes
+        // with no --db/--workspace given.
+        let tmp = tempfile::tempdir().unwrap();
+        let strata_dir = tmp.path().join(".strata");
+        std::fs::create_dir_all(&strata_dir).unwrap();
+        strata_index::write_docs_index(
+            &strata_dir,
+            &[strata_index::DocsIndexEntry {
+                uid: "doc|r|README.md|README.md#h|".to_string(),
+                name: "Heading".to_string(),
+                path: "README.md".to_string(),
+                anchor: "h".to_string(),
+                kind: strata_index::DocsEntryKind::Section,
+                body: "gadgetflow appears here".to_string(),
+            }],
+        )
+        .unwrap();
+
+        let out = cmd_search_docs("gadgetflow", None, None, Some(tmp.path()), None).unwrap();
+        assert!(
+            out.starts_with("[lexical match]"),
+            "output must be labeled lexical: {out}"
+        );
+        assert!(out.contains("README.md#h"), "{out}");
+        assert!(out.to_lowercase().contains("gadgetflow"), "{out}");
+    }
+
+    #[test]
+    fn cmd_search_docs_without_an_index_renders_the_honest_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = cmd_search_docs("anything", None, None, Some(tmp.path()), None).unwrap();
+        assert_eq!(out, "[lexical match] no docs index — run strata index");
+    }
+
+    #[test]
+    fn cmd_search_docs_explicit_limit_is_forwarded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let strata_dir = tmp.path().join(".strata");
+        std::fs::create_dir_all(&strata_dir).unwrap();
+        let entries: Vec<strata_index::DocsIndexEntry> = (0..5)
+            .map(|i| strata_index::DocsIndexEntry {
+                uid: format!("doc|r|README.md|README.md#s{i}|"),
+                name: "S".to_string(),
+                path: "README.md".to_string(),
+                anchor: format!("s{i}"),
+                kind: strata_index::DocsEntryKind::Section,
+                body: "flumboterm shared text".to_string(),
+            })
+            .collect();
+        strata_index::write_docs_index(&strata_dir, &entries).unwrap();
+
+        let out = cmd_search_docs("flumboterm", Some(2), None, Some(tmp.path()), None).unwrap();
+        assert_eq!(
+            out.matches("flumboterm").count(),
+            2,
+            "limit:2 must cap the rendered hit lines: {out}"
+        );
+    }
+
+    /// Review fix: a K5 docs-index write failure must be visible in
+    /// `strata index`'s own human-readable summary, not just an
+    /// `eprintln!` nobody reads — `cmd_index`'s output must carry the
+    /// `IndexStats::docs_index_warning` line. Forced the same deterministic
+    /// way as the engine-level test in
+    /// `crates/strata-index/tests/docs_index.rs`: a plain FILE sitting where
+    /// `docs.idx.tmp` needs to be a directory.
+    #[test]
+    fn cmd_index_surfaces_a_docs_index_write_failure_in_its_summary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("README.md"), "# H\nbody\n").unwrap();
+        let strata_dir = repo.join(".strata");
+        std::fs::create_dir_all(&strata_dir).unwrap();
+        std::fs::write(strata_dir.join("docs.idx.tmp"), b"not a directory").unwrap();
+
+        let db = strata_dir.join("graph.duckdb");
+        let out = cmd_index(&repo, &db, false)
+            .expect("a docs-index write failure must never fail the whole `strata index` run");
+
+        assert!(
+            out.contains("[docs] WARNING"),
+            "the summary must carry a visible docs-index warning line: {out}"
+        );
+        assert!(
+            out.contains("search_docs will serve the previous index"),
+            "got: {out}"
+        );
+    }
+
     // ── repo_root_from_db: the canonical `<repo>/.strata/graph.duckdb` derivation ──
 
     #[test]
@@ -1855,10 +2500,10 @@ mod tests {
     #[test]
     fn affected_row_labels_the_will_break_verdict() {
         // The §15.6 verdict in words, and one rendered row of each kind.
-        assert_eq!(break_verdict(true), "WILL BREAK");
-        assert_eq!(break_verdict(false), "may affect");
+        assert_eq!(break_verdict(false, true), "WILL BREAK");
+        assert_eq!(break_verdict(false, false), "may affect");
 
-        let will = affected_row("  ", 1, 0.95, false, true, "caller", "a.ts");
+        let will = affected_row("  ", 1, 0.95, false, false, true, "caller", "a.ts");
         assert!(
             will.contains("WILL BREAK"),
             "will-break row carries it: {will:?}"
@@ -1868,7 +2513,7 @@ mod tests {
             "the name (path) is still present: {will:?}"
         );
 
-        let may = affected_row("  ", 2, 0.30, true, false, "weak", "b.ts");
+        let may = affected_row("  ", 2, 0.30, true, false, false, "weak", "b.ts");
         assert!(
             may.contains("may affect"),
             "may-affect row says so: {may:?}"
@@ -1877,6 +2522,132 @@ mod tests {
             !may.contains("WILL BREAK"),
             "a may-affect row is not labelled will-break: {may:?}"
         );
+    }
+
+    // ── knowledge plane (K2): doc kinds render "needs review", never "WILL BREAK" ──
+
+    #[test]
+    fn is_doc_kind_name_matches_only_doc_and_docsection() {
+        assert!(is_doc_kind_name("Doc"));
+        assert!(is_doc_kind_name("DocSection"));
+        assert!(!is_doc_kind_name("Function"));
+        assert!(!is_doc_kind_name("Module"));
+    }
+
+    #[test]
+    fn break_verdict_overrides_will_break_for_doc_kinds() {
+        // is_doc=true always reads "needs review", regardless of will_break —
+        // a stale doc doesn't fail to compile, it goes stale (design §2).
+        assert_eq!(break_verdict(true, true), "needs review");
+        assert_eq!(break_verdict(true, false), "needs review");
+        // A non-doc kind is unaffected — the pre-existing WILL BREAK/may affect
+        // calls stay exactly as they were.
+        assert_eq!(break_verdict(false, true), "WILL BREAK");
+        assert_eq!(break_verdict(false, false), "may affect");
+    }
+
+    #[test]
+    fn affected_row_prints_needs_review_for_a_doc_kind_even_when_will_break_is_true() {
+        // A doc row's mechanical `will_break` CAN be true (confidence/ambiguity
+        // alone don't know the kind) — the row must still say "needs review",
+        // never "WILL BREAK".
+        let row = affected_row(
+            "  ",
+            1,
+            0.95,
+            false,
+            true,
+            true,
+            "Using alphaOne",
+            "docs/guide.md",
+        );
+        assert!(
+            row.contains("needs review"),
+            "a doc-kind row must say needs review: {row:?}"
+        );
+        assert!(
+            !row.contains("WILL BREAK"),
+            "a doc-kind row must never say WILL BREAK: {row:?}"
+        );
+    }
+
+    #[test]
+    fn render_impact_result_marks_a_doc_section_needs_review_never_will_break() {
+        // Review verdict: a hermetic strata-cli unit test replaces the earlier
+        // strata-index dev-dependency test (which called this same function
+        // cross-crate). A 3-node graph: `target` is reached by `caller`
+        // (Calls, a real WILL BREAK dependent) and by `section` (a
+        // DocSection, via Mentions) — ONE `render_impact_result` call must
+        // show the doc row as "needs review" and the non-doc row as
+        // "WILL BREAK", proving the row-level distinction end-to-end through
+        // the real `impact` walk, not just `affected_row`'s own unit test.
+        let target_uid = Uid("ts|app|src/a.ts|target|()".to_string());
+        let caller_uid = Uid("ts|app|src/b.ts|caller|()".to_string());
+        let section_uid = Uid("doc|app|docs/g.md|docs/g.md#h|".to_string());
+
+        let mut g = Graph::new();
+        g.add_node(Node {
+            uid: target_uid.clone(),
+            kind: NodeKind::Function,
+            name: "target".into(),
+            fqn: "target".into(),
+            path: "src/a.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_node(Node {
+            uid: caller_uid.clone(),
+            kind: NodeKind::Function,
+            name: "caller".into(),
+            fqn: "caller".into(),
+            path: "src/b.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_node(Node {
+            uid: section_uid.clone(),
+            kind: NodeKind::DocSection,
+            name: "Heading".into(),
+            fqn: "docs/g.md#h".into(),
+            path: "docs/g.md".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_edge(Edge {
+            src: caller_uid,
+            dst: target_uid.clone(),
+            kind: EdgeKind::Calls,
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(0.95),
+        });
+        g.add_edge(Edge {
+            src: section_uid,
+            dst: target_uid.clone(),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.80),
+        });
+
+        let target_node = g.get_node(&target_uid).unwrap().clone();
+        let result = impact(&g, &target_uid, &ImpactOptions::default());
+        let rendered = render_impact_result(&g, &target_node, &result);
+
+        let doc_row = rendered
+            .lines()
+            .find(|l| l.contains("Heading"))
+            .unwrap_or_else(|| panic!("doc row present: {rendered}"));
+        assert!(doc_row.contains("needs review"), "doc row: {doc_row:?}");
+        assert!(!doc_row.contains("WILL BREAK"), "doc row: {doc_row:?}");
+
+        let fn_row = rendered
+            .lines()
+            .find(|l| l.contains("caller"))
+            .unwrap_or_else(|| panic!("non-doc row present: {rendered}"));
+        assert!(fn_row.contains("WILL BREAK"), "non-doc row: {fn_row:?}");
+        assert!(!fn_row.contains("needs review"), "non-doc row: {fn_row:?}");
     }
 
     // ── blast renderers (Slice 20: the pre-edit blast radius printers) ──────────
@@ -1907,6 +2678,7 @@ mod tests {
                 reasons: vec!["1 affected".into()],
             },
             note: None,
+            docs: Vec::new(),
         }
     }
 
@@ -1965,6 +2737,7 @@ mod tests {
                 reasons: vec!["no indexed symbols (new/unindexed file)".into()],
             },
             note: Some("no indexed symbols for this file — it is new, unindexed, or not a code/contract/infra file; this is not a guarantee that nothing depends on it".into()),
+            docs: Vec::new(),
         };
         let out = render_blast_agent(&report);
         assert!(
@@ -2007,12 +2780,407 @@ mod tests {
                 reasons: vec!["12 affected".into()],
             },
             note: None,
+            docs: Vec::new(),
         };
         let out = render_blast_agent(&report);
         assert!(
             out.contains("… and 4 more"),
             "12 dependents capped at 8 ⇒ '… and 4 more'; got:\n{out}"
         );
+    }
+
+    /// **C4 review.** 8 doc-kind entries all tied at 0.80 confidence (which,
+    /// under the OLD code's bare `.take(TOP_N)` over the WHOLE `affected`
+    /// list, would occupy every one of the 8 "top dependents" slots) plus one
+    /// REAL `Function` caller (also 0.80, `will_break: true`) — the caller
+    /// must survive: docs have their own dedicated `docs:` line now and must
+    /// never compete for (or evict anything from) the top-dependents slots.
+    #[test]
+    fn render_blast_agent_docs_never_evict_a_will_break_caller_from_top_dependents() {
+        use strata_index::{AffectedNode, BlastSymbol, Risk, RiskLevel};
+        let mut affected: Vec<AffectedNode> = (0..8)
+            .map(|i| AffectedNode {
+                uid: format!("doc|r|docs/g.md|docs/g.md#s{i}|"),
+                name: format!("Section {i}"),
+                kind: "DocSection".into(),
+                path: "docs/g.md".into(),
+                depth: 1,
+                confidence: 0.80,
+                ambiguous: false,
+                will_break: false,
+            })
+            .collect();
+        affected.push(AffectedNode {
+            uid: "ts|app|src/caller.ts|caller|()".into(),
+            name: "caller".into(),
+            kind: "Function".into(),
+            path: "src/caller.ts".into(),
+            depth: 1,
+            confidence: 0.80,
+            ambiguous: false,
+            will_break: true,
+        });
+        let report = BlastReport {
+            file: "src/a.ts".into(),
+            symbols: vec![BlastSymbol {
+                fqn: "target".into(),
+                name: "target".into(),
+                kind: "Function".into(),
+            }],
+            affected,
+            risk: Risk {
+                level: RiskLevel::Medium,
+                reasons: vec!["9 affected".into()],
+            },
+            note: None,
+            docs: Vec::new(),
+        };
+        let out = render_blast_agent(&report);
+        assert!(
+            out.contains("caller") && out.contains("WILL BREAK"),
+            "the real caller must survive the cut, never evicted by tied-confidence docs:\n{out}"
+        );
+        assert!(
+            !out.contains("Section 0"),
+            "docs must not occupy top-dependent slots at all (they have their own line):\n{out}"
+        );
+    }
+
+    /// **K6 re-review fix.** Every `affected` entry is doc-kind (no non-doc
+    /// dependents at all), so `non_doc_affected` is empty while `report.affected`
+    /// is NOT — the headline already says "2 dependent(s) in the blast radius".
+    /// The OLD wording ("dependents: none in the loaded graph") directly
+    /// contradicted that headline. The fix must say there ARE dependents, just
+    /// none outside the docs listed on the dedicated `docs:` line below.
+    #[test]
+    fn render_blast_agent_all_doc_affected_points_at_the_docs_line_not_none() {
+        use strata_index::{AffectedNode, BlastSymbol, Risk, RiskLevel};
+        let affected = vec![
+            AffectedNode {
+                uid: "doc|r|docs/g.md|docs/g.md#s0|".into(),
+                name: "Section 0".into(),
+                kind: "DocSection".into(),
+                path: "docs/g.md".into(),
+                depth: 1,
+                confidence: 0.80,
+                ambiguous: false,
+                will_break: false,
+            },
+            AffectedNode {
+                uid: "doc|r|docs/g.md|docs/g.md#s1|".into(),
+                name: "Section 1".into(),
+                kind: "DocSection".into(),
+                path: "docs/g.md".into(),
+                depth: 1,
+                confidence: 0.70,
+                ambiguous: false,
+                will_break: false,
+            },
+        ];
+        let report = BlastReport {
+            file: "src/a.ts".into(),
+            symbols: vec![BlastSymbol {
+                fqn: "target".into(),
+                name: "target".into(),
+                kind: "Function".into(),
+            }],
+            affected,
+            risk: Risk {
+                level: RiskLevel::Low,
+                reasons: vec!["2 affected".into()],
+            },
+            note: None,
+            docs: vec![
+                blast_doc_ref("Section 0", "s0", 0.80),
+                blast_doc_ref("Section 1", "s1", 0.70),
+            ],
+        };
+        let out = render_blast_agent(&report);
+        assert!(
+            out.contains("2 dependent(s) in the blast radius"),
+            "headline must still report the real count; got:\n{out}"
+        );
+        assert!(
+            out.contains("dependents: none outside the docs below (2 doc section(s))."),
+            "must point at the docs: line instead of contradicting the headline; got:\n{out}"
+        );
+        assert!(
+            !out.contains("none in the loaded graph"),
+            "the contradictory wording must be gone when affected is doc-only; got:\n{out}"
+        );
+    }
+
+    /// Regression guard: when there are truly NO dependents anywhere (not even
+    /// doc-kind ones — `affected` itself is empty), the original honest wording
+    /// must survive unchanged.
+    #[test]
+    fn render_blast_agent_truly_empty_affected_keeps_the_original_wording() {
+        use strata_index::{BlastSymbol, Risk, RiskLevel};
+        let report = BlastReport {
+            file: "src/a.ts".into(),
+            symbols: vec![BlastSymbol {
+                fqn: "target".into(),
+                name: "target".into(),
+                kind: "Function".into(),
+            }],
+            affected: vec![],
+            risk: Risk {
+                level: RiskLevel::Low,
+                reasons: vec!["0 affected".into()],
+            },
+            note: None,
+            docs: Vec::new(),
+        };
+        let out = render_blast_agent(&report);
+        assert!(
+            out.contains(
+                "dependents: none in the loaded graph (NOT a guarantee — the index may be stale)."
+            ),
+            "a genuinely empty blast radius keeps the original honest wording; got:\n{out}"
+        );
+    }
+
+    // ── blast docs: line (K6) ─────────────────────────────────────────────────
+
+    fn blast_doc_ref(name: &str, anchor: &str, confidence: f32) -> strata_index::BlastDocRef {
+        strata_index::BlastDocRef {
+            uid: format!("doc|r|docs/g.md|docs/g.md#{anchor}|"),
+            name: name.into(),
+            path: "docs/g.md".into(),
+            anchor: anchor.into(),
+            confidence,
+        }
+    }
+
+    #[test]
+    fn blast_agent_format_docs_line_is_capped() {
+        // A file whose symbols have 6 linked sections.
+        let mut report = sample_blast_report();
+        report.docs = vec![
+            blast_doc_ref("Alpha", "alpha", 0.95),
+            blast_doc_ref("Beta", "beta", 0.90),
+            blast_doc_ref("Gamma", "gamma", 0.85),
+            blast_doc_ref("Delta", "delta", 0.80),
+            blast_doc_ref("Epsilon", "epsilon", 0.75),
+            blast_doc_ref("Zeta", "zeta", 0.70),
+        ];
+        let out = render_blast_agent(&report);
+        let line = out
+            .lines()
+            .find(|l| l.starts_with("docs:"))
+            .expect("docs line present");
+        assert!(line.len() <= 200, "hard cap: {}", line.len());
+        assert!(line.contains("+3 more"), "top-3 + count: {line:?}");
+        assert!(
+            line.contains("guidance"),
+            "points at the drill-down tool: {line:?}"
+        );
+    }
+
+    #[test]
+    fn blast_agent_format_docs_line_absent_when_the_file_has_no_doc_links() {
+        // sample_blast_report() has `docs: Vec::new()` — silent-when-clean.
+        let out = render_blast_agent(&sample_blast_report());
+        assert!(
+            !out.lines().any(|l| l.starts_with("docs:")),
+            "docs: line must be absent entirely when clean; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_blast_docs_line_shows_names_confidences_and_a_guidance_hint() {
+        let docs = vec![
+            blast_doc_ref("Retry policy", "retry-policy", 0.95),
+            blast_doc_ref("Rate limits", "rate-limits", 0.80),
+        ];
+        let line = render_blast_docs_line(&docs, "src/a.ts").unwrap();
+        assert!(
+            line.starts_with("docs: Retry policy §retry-policy (0.95)"),
+            "{line:?}"
+        );
+        assert!(line.contains("Rate limits §rate-limits (0.80)"), "{line:?}");
+        assert!(line.ends_with("— guidance src/a.ts for detail"), "{line:?}");
+        assert!(
+            !line.contains("more"),
+            "only 2 entries total, both shown: {line:?}"
+        );
+    }
+
+    #[test]
+    fn render_blast_docs_line_is_none_for_an_empty_list() {
+        assert!(render_blast_docs_line(&[], "src/a.ts").is_none());
+    }
+
+    /// **I7 review.** 6 doc sections with LONG names/anchors, plus a 78-byte
+    /// file path — the OLD (entry-dropping) algorithm degraded top-3 → top-1
+    /// or top-0 here because whole entries were dropped to fit 200. The FIX
+    /// elides instead: all 3 of the top entries stay visible (each with a
+    /// shortened name/anchor), and the path is elided too, while still
+    /// respecting the hard cap and naming the correct hidden count.
+    #[test]
+    fn render_blast_docs_line_elides_long_entries_and_path_to_keep_three_shown() {
+        let long_path = format!(
+            "packages/{}/src/very/deeply/nested/module.ts",
+            "x".repeat(40)
+        );
+        assert!(
+            long_path.len() >= 78,
+            "fixture path must be long: {long_path}"
+        );
+        let docs: Vec<strata_index::BlastDocRef> = (0..6)
+            .map(|i| strata_index::BlastDocRef {
+                uid: format!("doc|r|docs/g.md|docs/g.md#s{i}|"),
+                name: format!("A Very Long And Descriptive Section Heading Number {i}"),
+                path: "docs/g.md".into(),
+                anchor: format!("a-very-long-and-descriptive-anchor-slug-number-{i}"),
+                confidence: 0.9 - (i as f32) * 0.05,
+            })
+            .collect();
+        let line = render_blast_docs_line(&docs, &long_path).unwrap();
+        assert!(
+            line.len() <= 200,
+            "hard cap: {} bytes: {line:?}",
+            line.len()
+        );
+        assert!(line.contains("+3 more"), "6 total, top 3 shown: {line:?}");
+        assert!(
+            line.starts_with("docs:"),
+            "the leading tag is never elided: {line:?}"
+        );
+        assert!(
+            line.contains("guidance") && line.contains("for detail"),
+            "the trailing hint's fixed text is never elided: {line:?}"
+        );
+        // All 3 top entries remain visible (elided, never dropped) — each
+        // entry's `§` separator survives eliding since name/anchor are
+        // elided INDEPENDENTLY, never as one swallowed blob.
+        let entry_count = line.matches('§').count();
+        assert_eq!(
+            entry_count, 3,
+            "3 entries must stay visible (elided, not dropped): {line:?}"
+        );
+    }
+
+    // ── detect-changes "docs to review" line (K6) ────────────────────────────
+
+    #[test]
+    fn render_docs_to_review_line_caps_at_five_with_a_count() {
+        let affected: Vec<strata_index::AffectedNode> = (0..7)
+            .map(|i| strata_index::AffectedNode {
+                uid: format!("doc|r|docs/g.md|docs/g.md#s{i}|"),
+                name: format!("Section {i}"),
+                kind: "DocSection".into(),
+                path: "docs/g.md".into(),
+                depth: 1,
+                confidence: 0.8,
+                ambiguous: false,
+                will_break: false,
+            })
+            .collect();
+        let line = render_docs_to_review_line(&affected).unwrap();
+        assert!(line.starts_with("docs to review (7): "), "{line:?}");
+        assert!(line.contains("+2 more"), "{line:?}");
+        assert!(line.contains("docs/g.md#s0"), "refs only: {line:?}");
+    }
+
+    #[test]
+    fn render_docs_to_review_line_ignores_non_doc_affected_nodes() {
+        let affected = vec![strata_index::AffectedNode {
+            uid: "ts|app|src/a.ts|caller|()".into(),
+            name: "caller".into(),
+            kind: "Function".into(),
+            path: "src/a.ts".into(),
+            depth: 1,
+            confidence: 0.9,
+            ambiguous: false,
+            will_break: true,
+        }];
+        assert!(render_docs_to_review_line(&affected).is_none());
+    }
+
+    #[test]
+    fn render_change_report_includes_the_docs_to_review_line() {
+        use strata_index::{
+            AffectedNode, ChangeKind, ChangeReport, ChangedSymbol, FileChange, Plane, Risk,
+            RiskLevel,
+        };
+        let report = ChangeReport {
+            scope: "working".into(),
+            files: vec![FileChange::Modified {
+                path: "src/a.ts".into(),
+            }],
+            symbols: vec![ChangedSymbol {
+                plane: Plane::Code,
+                change: ChangeKind::Modified,
+                key: "helper".into(),
+                file: "src/a.ts".into(),
+                contract_change: None,
+            }],
+            other_files: vec![],
+            affected: vec![AffectedNode {
+                uid: "doc|r|docs/g.md|docs/g.md#using-helper|".into(),
+                name: "Using helper".into(),
+                kind: "DocSection".into(),
+                path: "docs/g.md".into(),
+                depth: 1,
+                confidence: 0.8,
+                ambiguous: false,
+                will_break: false,
+            }],
+            risk: Risk {
+                level: RiskLevel::Low,
+                reasons: vec!["1 affected".into()],
+            },
+        };
+        let out = render_change_report(&report);
+        assert!(
+            out.contains("docs to review (1): docs/g.md#using-helper"),
+            "got:\n{out}"
+        );
+    }
+
+    /// Minor (a) review: the per-plane render loop used to be a bare array
+    /// literal that silently dropped `Plane::Knowledge`. `plane_label` is
+    /// exhaustive and the iterated list now names it — a Knowledge-plane
+    /// `ChangedSymbol` (however it got there) must render its own "knowledge
+    /// symbols (N):" section, not vanish silently.
+    #[test]
+    fn render_change_report_labels_the_knowledge_plane_when_present() {
+        use strata_index::{
+            ChangeKind, ChangeReport, ChangedSymbol, FileChange, Plane, Risk, RiskLevel,
+        };
+        let report = ChangeReport {
+            scope: "working".into(),
+            files: vec![FileChange::Modified {
+                path: "docs/g.md".into(),
+            }],
+            symbols: vec![ChangedSymbol {
+                plane: Plane::Knowledge,
+                change: ChangeKind::Modified,
+                key: "docs/g.md#h".into(),
+                file: "docs/g.md".into(),
+                contract_change: None,
+            }],
+            other_files: vec![],
+            affected: vec![],
+            risk: Risk {
+                level: RiskLevel::Low,
+                reasons: vec!["0 affected".into()],
+            },
+        };
+        let out = render_change_report(&report);
+        assert!(
+            out.contains("knowledge symbols (1):") && out.contains("docs/g.md#h"),
+            "a Knowledge-plane symbol must get its own labeled section, never vanish; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn plane_label_is_exhaustive_and_matches_serde_naming() {
+        assert_eq!(plane_label(Plane::Code), "code");
+        assert_eq!(plane_label(Plane::Contract), "contract");
+        assert_eq!(plane_label(Plane::Infra), "infra");
+        assert_eq!(plane_label(Plane::Knowledge), "knowledge");
     }
 
     #[test]
@@ -2856,5 +4024,277 @@ mod tests {
             ),
             "valid estate marker → Estate {{ repo_root = member_dir }}; got: {launch:?}"
         );
+    }
+
+    // ── context docs bucket rendering (K6) ──────────────────────────────────────
+
+    #[test]
+    fn bucket_docs_renders_path_anchor_confidence_and_provenance() {
+        let docs = vec![strata_core::ContextDocRef {
+            uid: Uid("doc|r|docs/g.md|docs/g.md#h|".into()),
+            name: "Heading".into(),
+            anchor: "h".into(),
+            path: "docs/g.md".into(),
+            provenance: Provenance::Inferred,
+            confidence: 0.80,
+        }];
+        let mut out = String::new();
+        bucket_docs(&mut out, &docs);
+        assert!(out.contains("docs (1):"), "got: {out:?}");
+        assert!(out.contains("docs/g.md#h (0.80, Inferred)"), "got: {out:?}");
+    }
+
+    #[test]
+    fn bucket_docs_prints_zero_count_when_empty() {
+        let mut out = String::new();
+        bucket_docs(&mut out, &[]);
+        assert_eq!(out, "  docs (0):\n");
+    }
+
+    // ── cmd_guidance / render_guidance (K6) ─────────────────────────────────────
+
+    /// A tiny on-disk repo: `target` (Function) mentioned by a markdown
+    /// section — plus the REAL `docs/guide.md` file on disk (guidance reads
+    /// bodies from disk, never the graph) — for driving `cmd_guidance`
+    /// end-to-end. Returns the temp dir (keep it alive — it doubles as
+    /// `--repo`) and the db path.
+    fn guidance_fixture_db() -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("docs")).expect("mkdir docs");
+        std::fs::write(
+            tmp.path().join("docs/guide.md"),
+            "Using the target symbol.\n",
+        )
+        .expect("write guide.md");
+
+        let db = tmp.path().join("graph.duckdb");
+        let mut g = Graph::new();
+        g.add_node(Node {
+            uid: Uid("ts|app|src/a.ts|target|".into()),
+            kind: NodeKind::Function,
+            name: "target".into(),
+            fqn: "target".into(),
+            path: "src/a.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_node(Node {
+            uid: Uid("doc|app|docs/guide.md|docs/guide.md#h|".into()),
+            kind: NodeKind::DocSection,
+            name: "Heading".into(),
+            fqn: "docs/guide.md#h".into(),
+            path: "docs/guide.md".into(),
+            span: Span {
+                start_line: 1,
+                start_col: 0,
+                end_line: 1,
+                end_col: 0,
+            },
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_edge(Edge {
+            src: Uid("doc|app|docs/guide.md|docs/guide.md#h|".into()),
+            dst: Uid("ts|app|src/a.ts|target|".into()),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.80),
+        });
+        let mut store = DuckGraphStore::open(&db).expect("open store");
+        store.save_graph(&g).expect("save graph");
+        (tmp, db)
+    }
+
+    #[test]
+    fn cmd_guidance_end_to_end_reads_the_body_from_disk() {
+        let (tmp, db) = guidance_fixture_db();
+        let out = cmd_guidance(
+            "target",
+            false,
+            None,
+            None,
+            None,
+            Some(&db),
+            Some(tmp.path()),
+            None,
+        )
+        .unwrap();
+        assert!(out.contains("Guidance for target"), "got:\n{out}");
+        assert!(out.contains("docs/guide.md#h"), "got:\n{out}");
+        assert!(
+            out.contains("Using the target symbol."),
+            "body read from disk:\n{out}"
+        );
+    }
+
+    /// A tiny on-disk repo whose `src/a.ts` defines `target` (called by
+    /// `caller` in `src/b.ts` — so `blast` finds a dependent) AND is
+    /// mentioned by a markdown doc section (so `guidance --file` finds a
+    /// section) — for the C3 absolute-path agreement test. Returns the temp
+    /// dir (keep it alive) and the db path.
+    fn blast_and_guidance_fixture_db() -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("docs")).expect("mkdir docs");
+        std::fs::write(
+            tmp.path().join("docs/guide.md"),
+            "Using the target symbol.\n",
+        )
+        .expect("write guide.md");
+
+        let db = tmp.path().join("graph.duckdb");
+        let mut g = Graph::new();
+        g.add_node(Node {
+            uid: Uid("ts|app|src/a.ts|target|".into()),
+            kind: NodeKind::Function,
+            name: "target".into(),
+            fqn: "target".into(),
+            path: "src/a.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_node(Node {
+            uid: Uid("ts|app|src/b.ts|caller|".into()),
+            kind: NodeKind::Function,
+            name: "caller".into(),
+            fqn: "caller".into(),
+            path: "src/b.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_edge(Edge {
+            src: Uid("ts|app|src/b.ts|caller|".into()),
+            dst: Uid("ts|app|src/a.ts|target|".into()),
+            kind: EdgeKind::Calls,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.9),
+        });
+        g.add_node(Node {
+            uid: Uid("doc|app|docs/guide.md|docs/guide.md#h|".into()),
+            kind: NodeKind::DocSection,
+            name: "Heading".into(),
+            fqn: "docs/guide.md#h".into(),
+            path: "docs/guide.md".into(),
+            span: Span {
+                start_line: 1,
+                start_col: 0,
+                end_line: 1,
+                end_col: 0,
+            },
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_edge(Edge {
+            src: Uid("doc|app|docs/guide.md|docs/guide.md#h|".into()),
+            dst: Uid("ts|app|src/a.ts|target|".into()),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.80),
+        });
+        let mut store = DuckGraphStore::open(&db).expect("open store");
+        store.save_graph(&g).expect("save graph");
+        (tmp, db)
+    }
+
+    /// **C3 review E2E.** The SAME absolute path through BOTH `cmd_blast` and
+    /// `cmd_guidance --file` must agree: `blast` finds `caller` as a
+    /// dependent of `src/a.ts`'s symbols, and `guidance --file` finds the
+    /// markdown section mentioning `target` — proving the absolute-path fix
+    /// lands in the actual CLI dispatch path, not just the MCP tool in
+    /// isolation.
+    #[test]
+    fn cmd_blast_and_cmd_guidance_agree_on_the_same_absolute_path() {
+        let (tmp, db) = blast_and_guidance_fixture_db();
+        let absolute = tmp.path().join("src/a.ts");
+        let absolute_str = absolute.to_str().unwrap();
+
+        let blast_out = cmd_blast(
+            Some(&db),
+            Some(tmp.path()),
+            None,
+            absolute_str,
+            BlastFormat::Text,
+        )
+        .unwrap();
+        assert!(
+            blast_out.contains("caller"),
+            "blast must find the dependent via the absolute path:\n{blast_out}"
+        );
+
+        let guidance_out = cmd_guidance(
+            absolute_str,
+            true, // --file
+            None,
+            None,
+            None,
+            Some(&db),
+            Some(tmp.path()),
+            None,
+        )
+        .unwrap();
+        assert!(
+            guidance_out.contains("docs/guide.md#h") && guidance_out.contains("Using the target symbol."),
+            "guidance --file must find the SAME file's doc section via the absolute path:\n{guidance_out}"
+        );
+    }
+
+    #[test]
+    fn cmd_guidance_ambiguous_target_is_exit_code_2_with_a_uid_hint() {
+        let (_tmp, db) = ambiguous_fixture_db();
+        let err =
+            cmd_guidance("publish", false, None, None, None, Some(&db), None, None).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        match &err {
+            CliError::Ambiguous { message } => {
+                assert!(message.contains("--uid"), "{message}");
+                assert!(message.contains("svc/a.ts|publish"), "{message}");
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_guidance_shows_sections_and_ref_only_markers() {
+        let v = serde_json::json!({
+            "target": {"uid": "u", "name": "target", "kind": "Function"},
+            "sections": [
+                {
+                    "uid": "s1", "name": "h", "path": "docs/g.md", "anchor": "h",
+                    "provenance": "Extracted", "confidence": 0.95,
+                    "text": "body text", "truncated": false, "ref_only": false
+                },
+                {
+                    "uid": "s2", "name": "h2", "path": "docs/g.md", "anchor": "h2",
+                    "provenance": "Inferred", "confidence": 0.5,
+                    "text": "", "truncated": false, "ref_only": true
+                },
+            ],
+            "budget_used": 9,
+        });
+        let out = render_guidance(&v);
+        assert!(
+            out.contains("Guidance for target — 2 section(s), budget_used 9"),
+            "got:\n{out}"
+        );
+        assert!(out.contains("docs/g.md#h (0.95, Extracted)"), "got:\n{out}");
+        assert!(out.contains("body text"), "got:\n{out}");
+        assert!(
+            out.contains("docs/g.md#h2 (0.50, Inferred) [ref only — past budget]"),
+            "got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_guidance_surfaces_the_top_level_note() {
+        let v = serde_json::json!({
+            "target": {"uid": "u", "name": "target", "kind": "Function"},
+            "sections": [],
+            "budget_used": 0,
+            "note": "no documentation found",
+        });
+        let out = render_guidance(&v);
+        assert!(out.contains("note: no documentation found"), "got:\n{out}");
     }
 }

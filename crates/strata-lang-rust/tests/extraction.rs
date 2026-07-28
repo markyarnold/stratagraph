@@ -590,3 +590,144 @@ fn rust_does_not_capture_non_sql_string() {
         file.sql_candidates
     );
 }
+
+// --- doc_span capture (Knowledge plane, K3) ----------------------------------
+//
+// A contiguous run of `///` (outer) / `//!` (inner) line comments, or a
+// `/** */` block comment, immediately above a declaration (no blank line
+// between the run and the declaration) sets `RawSymbol::doc_span` to the SPAN
+// of that run — never its text (bodies-from-disk). A comment separated by a
+// blank line is NOT a doc comment for that symbol: `doc_span` stays `None`.
+
+#[test]
+fn rustdoc_block_sets_doc_span_adjacent_only() {
+    let f = analyze(
+        "src/a.rs",
+        "/// Adds one.\n/// Really.\npub fn add_one(x: i32) -> i32 { x + 1 }\n\n// detached comment\n\npub fn plain() {}\n",
+    );
+    let add = f.symbols.iter().find(|s| s.name == "add_one").unwrap();
+    let span = add.doc_span.expect("doc span captured");
+    assert_eq!((span.start_line, span.end_line), (1, 2));
+    assert!(
+        f.symbols
+            .iter()
+            .find(|s| s.name == "plain")
+            .unwrap()
+            .doc_span
+            .is_none(),
+        "a blank-line-separated comment is NOT a doc comment"
+    );
+}
+
+#[test]
+fn rustdoc_on_struct_and_impl_method_captures_span() {
+    let src = concat!(
+        "/// Documents Widget.\n",
+        "pub struct Widget;\n",
+        "\n",
+        "impl Widget {\n",
+        "    /// Documents new.\n",
+        "    pub fn new() -> Widget { Widget }\n",
+        "\n",
+        "    pub fn undocumented(&self) {}\n",
+        "}\n",
+    );
+    let file = analyze("src/w.rs", src);
+    assert!(
+        sym(&file, "Widget").doc_span.is_some(),
+        "a struct's own doc comment sets doc_span"
+    );
+    assert!(
+        sym(&file, "new").doc_span.is_some(),
+        "a method's own doc comment sets doc_span"
+    );
+    assert!(
+        sym(&file, "undocumented").doc_span.is_none(),
+        "a method with no preceding comment has no doc_span"
+    );
+}
+
+#[test]
+fn rustdoc_block_comment_is_a_doc_span() {
+    let src = concat!(
+        "/** Block doc for f. */\n",
+        "pub fn f() {}\n",
+        "\n",
+        "// plain, not a doc comment\n",
+        "pub fn h() {}\n",
+    );
+    let file = analyze("src/b.rs", src);
+    assert!(
+        sym(&file, "f").doc_span.is_some(),
+        "a /** */ block comment is a doc comment"
+    );
+    assert!(
+        sym(&file, "h").doc_span.is_none(),
+        "a plain // comment is never a doc comment"
+    );
+}
+
+#[test]
+fn rustdoc_inner_marker_documents_the_enclosing_scope_not_the_following_item() {
+    // Review finding: `//!` is an INNER doc comment — it documents the scope
+    // it sits INSIDE (the enclosing module/file/block), never the item that
+    // happens to follow it syntactically. Forward-capturing it as though it
+    // documented the next declaration would mint a confidently-wrong
+    // Extracted 0.95 `Documents` edge to the WRONG symbol, so it must NOT be
+    // captured that way: `//! Module docs.` directly above `pub fn first()`
+    // must leave `first`'s `doc_span` `None`. Module-doc attribution to its
+    // real target (the enclosing scope) is deferred to a later
+    // knowledge-plane task, not approximated here.
+    let file = analyze("src/inner.rs", "//! Module docs.\npub fn first() {}\n");
+    assert!(
+        sym(&file, "first").doc_span.is_none(),
+        "an inner //! doc comment must NOT be forward-captured as the \
+         following item's doc_span"
+    );
+}
+
+#[test]
+fn rustdoc_run_stops_at_a_blank_line_gap_within_the_comment_block() {
+    // "Line A." is separated from "Line B." by a blank line, so the run
+    // collected for `foo` is ONLY "Line B." — the gap breaks the chain rather
+    // than being silently bridged.
+    let src = concat!("/// Line A.\n", "\n", "/// Line B.\n", "pub fn foo() {}\n",);
+    let file = analyze("src/c.rs", src);
+    let span = sym(&file, "foo")
+        .doc_span
+        .expect("the adjacent \"Line B.\" comment is still captured");
+    assert_eq!(
+        (span.start_line, span.end_line),
+        (3, 3),
+        "the run stops at the gap: only the adjacent \"Line B.\" line is included, got {span:?}"
+    );
+}
+
+#[test]
+fn rustdoc_skips_an_attribute_between_the_comment_and_the_item() {
+    // `#[derive(Debug)]` (or any attribute) between a doc comment and the
+    // item it decorates is idiomatic Rust everywhere, including this repo —
+    // the attribute must be transparent to doc-comment adjacency.
+    let file = analyze(
+        "src/a.rs",
+        "/// Documented.\n#[derive(Debug)]\npub struct Wrapped { }\n",
+    );
+    let span = sym(&file, "Wrapped")
+        .doc_span
+        .expect("doc span captured through the attribute");
+    assert_eq!((span.start_line, span.end_line), (1, 1));
+}
+
+#[test]
+fn rustdoc_blank_line_before_the_attribute_still_blocks_capture() {
+    // A blank line between the doc comment and the attribute is a real gap —
+    // the attribute-skip must not silently bridge it.
+    let file = analyze(
+        "src/a.rs",
+        "/// Doc.\n\n#[derive(Debug)]\npub struct Gap {}\n",
+    );
+    assert!(
+        sym(&file, "Gap").doc_span.is_none(),
+        "a blank line between the comment and the attribute blocks capture"
+    );
+}

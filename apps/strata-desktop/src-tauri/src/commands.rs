@@ -348,7 +348,10 @@ pub fn run_tool(
     name: &str,
     args: &Value,
 ) -> Result<Value, String> {
-    let ctx = strata_mcp::ToolCtx { repo_root };
+    let ctx = strata_mcp::ToolCtx {
+        repo_root,
+        ..strata_mcp::ToolCtx::default()
+    };
     strata_mcp::call_tool_ctx(graph, &ctx, name, args).map_err(|e| e.to_string())
 }
 

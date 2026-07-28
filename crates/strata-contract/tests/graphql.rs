@@ -52,6 +52,9 @@ fn extract_schema_basic_default_roots() {
             norm_path: "getUser".into(),
             operation_id: None,
             spec_path: "schema.graphql".into(),
+            // The fixture's docstring sits above the `Query` TYPE, not above
+            // this field — `getUser` itself has no field-level docstring.
+            description: None,
         }
     );
 
@@ -161,4 +164,18 @@ fn detects_schemas_not_operations_or_arbitrary() {
     // False for arbitrary text / JSON.
     assert!(!GraphqlAdapter.detects("package.json", r#"{ "name": "x", "version": "1.0.0" }"#));
     assert!(!GraphqlAdapter.detects("notes.txt", "just some prose, not GraphQL at all"));
+}
+
+// ── Test 6: field-level docstring capture (K4, knowledge plane) ─────────────
+
+#[test]
+fn sdl_description_is_captured() {
+    // The docstring sits above the FIELD, inside the type — not above the type
+    // itself (that would describe the type, not `getUser`).
+    let sdl = "type Query {\n  \"\"\"Fetch one user\"\"\"\n  getUser: String\n}\n";
+    let ops = GraphqlAdapter
+        .extract("schema.graphql", sdl)
+        .expect("SDL with a field docstring parses");
+    let get_user = op_by_key(&ops, "Query.getUser");
+    assert_eq!(get_user.description.as_deref(), Some("Fetch one user"));
 }

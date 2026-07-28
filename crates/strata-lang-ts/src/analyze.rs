@@ -101,6 +101,75 @@ fn make_fqn(container: Option<&str>, name: &str) -> String {
     }
 }
 
+/// Whether a `comment` node is a JSDoc-style doc comment (`/** … */`) rather
+/// than a plain `//`/`/* */` comment. TS/JS's grammar does not distinguish
+/// comment styles at the node-kind level (both are `"comment"`), unlike
+/// Rust's `outer`/`inner` fields, so this is a text check: exactly `/**` (not
+/// a bare `/*`), excluding the degenerate empty `/**/`.
+fn is_doc_comment(node: Node, bytes: &[u8]) -> bool {
+    node.kind() == "comment" && {
+        let t = text(node, bytes);
+        t.starts_with("/**") && t != "/**/"
+    }
+}
+
+/// The node whose `prev_sibling` chain doc-comment adjacency is measured
+/// against: `decl` itself, UNLESS it is directly wrapped by an
+/// `export_statement` (`export function f(){}`, `export class C {}`,
+/// `export const x = …`, `export default function f(){}`) — a doc comment
+/// sits before the `export` keyword, not before the wrapped declaration
+/// (which has no comment as its own prev_sibling inside the wrapper). This is
+/// the one wrapper K3 tolerates; every other case measures adjacency against
+/// `decl` directly.
+fn doc_anchor(decl: Node) -> Node {
+    match decl.parent() {
+        Some(p) if p.kind() == "export_statement" => p,
+        _ => decl,
+    }
+}
+
+/// Walk `decl`'s doc-comment [`doc_anchor`]'s `prev_sibling` chain collecting a
+/// contiguous, gap-free run of JSDoc comments immediately above it — no blank
+/// line between the run and the anchor, and none between two comments within
+/// the run (checked via each comment's own `span_of` end row against the next
+/// node's start row — TS/JS comment nodes carry no trailing-newline quirk, so
+/// no correction is needed here the way Rust's line comments require). A
+/// non-doc comment, or a row gap, stops the walk right there. Returns the
+/// SPAN of the whole run — never its text (bodies-from-disk, design decision
+/// 4/§8).
+fn doc_span_of(decl: Node, bytes: &[u8]) -> Option<Span> {
+    let anchor = doc_anchor(decl);
+    let mut expected_row = anchor.start_position().row as u32;
+    let mut nearest: Option<Node> = None;
+    let mut topmost: Option<Node> = None;
+    let mut cursor = anchor.prev_sibling();
+    while let Some(node) = cursor {
+        if !is_doc_comment(node, bytes) {
+            break;
+        }
+        let span = span_of(node);
+        if span.end_line != expected_row {
+            break;
+        }
+        if nearest.is_none() {
+            nearest = Some(node);
+        }
+        topmost = Some(node);
+        expected_row = node.start_position().row as u32;
+        cursor = node.prev_sibling();
+    }
+    let nearest = nearest?;
+    let topmost = topmost.unwrap_or(nearest);
+    let nearest_span = span_of(nearest);
+    let topmost_start = topmost.start_position();
+    Some(Span {
+        start_line: topmost_start.row as u32 + 1,
+        start_col: topmost_start.column as u32,
+        end_line: nearest_span.end_line,
+        end_col: nearest_span.end_col,
+    })
+}
+
 /// Recursive walk. `container` is the enclosing class fqn for member symbols;
 /// `enclosing_fqn` is the nearest enclosing function/method fqn for call sites
 /// (empty string at module top level).
@@ -122,6 +191,7 @@ fn walk(
                     fqn: fqn.clone(),
                     container_fqn: None,
                     span: span_of(node),
+                    doc_span: doc_span_of(node, bytes),
                 });
                 // Descend into the body with this function as the enclosing scope.
                 walk_children(node, bytes, None, &fqn, out);
@@ -138,6 +208,7 @@ fn walk(
                     fqn: fqn.clone(),
                     container_fqn: None,
                     span: span_of(node),
+                    doc_span: doc_span_of(node, bytes),
                 });
                 // ORM model hint (Slice 25, D3, M2b): a TypeORM `@Entity("…")` class
                 // decorator with an explicit first string-literal arg. Captured
@@ -160,6 +231,7 @@ fn walk(
                     fqn: name,
                     container_fqn: None,
                     span: span_of(node),
+                    doc_span: doc_span_of(node, bytes),
                 });
                 return;
             }
@@ -180,6 +252,7 @@ fn walk(
                         fqn: fqn.clone(),
                         container_fqn: container.map(str::to_string),
                         span: span_of(node),
+                        doc_span: doc_span_of(node, bytes),
                     });
                     // Method body: enclosing scope becomes the method fqn; no new container.
                     walk_children(node, bytes, None, &fqn, out);
@@ -359,6 +432,12 @@ fn extract_const_functions(node: Node, bytes: &[u8], enclosing_fqn: &str, out: &
                     // Span the whole declarator (binding through body) for a
                     // useful, stable range.
                     span: span_of(child),
+                    // Doc-comment adjacency is measured against the whole
+                    // `const`/`let` DECLARATION (`node`), not this one
+                    // declarator (`child`) — the comment sits above `const`,
+                    // and `child` (a `variable_declarator`) has no comment as
+                    // its own prev_sibling even when it is the only binding.
+                    doc_span: doc_span_of(node, bytes),
                 });
                 if let Some(value) = value {
                     walk_children(value, bytes, None, &fqn, out);

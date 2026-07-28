@@ -92,6 +92,95 @@ fn dot(prefix: &str, leaf: &str) -> String {
     }
 }
 
+/// Whether a `comment` node is a C# XML doc comment (`///`) rather than a
+/// plain `//`/`/* */` comment. Like TS/JS, C#'s grammar does not distinguish
+/// comment styles at the node-kind level (all are `"comment"`), so this is a
+/// text check: exactly three slashes — `////` (a common banner-comment style)
+/// is deliberately excluded, mirroring rustdoc's own `////`-is-not-a-doc-comment
+/// convention.
+fn is_doc_comment(node: Node, bytes: &[u8]) -> bool {
+    node.kind() == "comment" && {
+        let t = text(node, bytes);
+        t.starts_with("///") && !t.starts_with("////")
+    }
+}
+
+/// Walk `decl`'s `prev_sibling` chain collecting a contiguous, gap-free run of
+/// `///` XML doc comments immediately above it — no blank line between the run
+/// and `decl`, and none between two comments within the run (checked via each
+/// comment's own `span_of` end row against the next node's start row; C#
+/// comment nodes carry no trailing-newline quirk, matching TS/JS — unlike
+/// Rust's `///`/`//!`). A non-doc comment, or a row gap, stops the walk right
+/// there. Returns the SPAN of the whole run — never its text
+/// (bodies-from-disk, design decision 4/§8).
+///
+/// An `attribute_list` (`[Serializable]` and friends) immediately above
+/// `decl` is meant to be transparent here too, matching Rust's
+/// `#[derive(...)]` handling — `/// Doc\n[Serializable]\nclass Foo {}` should
+/// still document `Foo`. The prelude below walks past a contiguous, gap-free
+/// run of such siblings before the comment-scanning loop, exactly mirroring
+/// the Rust analyzer's `attribute_item` prelude.
+///
+/// **Verified empirically (three declaration kinds — `class_declaration`,
+/// `method_declaration`, `local_function_statement` — via a scratch
+/// tree-sitter-c-sharp dump) that this prelude never actually fires today**:
+/// unlike Rust, where `attribute_item` is a preceding SIBLING of the
+/// declaration, tree-sitter-c-sharp's grammar parses `[Attr]` as the FIRST
+/// CHILD of the declaration node itself (alongside its `modifier`/`class`/
+/// name fields) — so `decl.prev_sibling()` already lands directly on the
+/// comment, skipping straight past the attribute with no help needed. The
+/// two tests below (`xmldoc_skips_an_attribute_between_the_comment_and_the_item`,
+/// `xmldoc_blank_line_before_the_attribute_still_blocks_capture`) both pass
+/// identically with or without this prelude — confirmed by running them
+/// against the pre-prelude implementation before adding this code. It is
+/// kept anyway for structural symmetry with the Rust walker and as a
+/// defensive guard against a future `tree-sitter-c-sharp` grammar bump
+/// changing this internal shape (this crate's grammar dep is `=`-pinned,
+/// reviewed bumps only — see the crate docs) — never confidently assume a
+/// parser's internal tree shape is permanent.
+fn doc_span_of(decl: Node, bytes: &[u8]) -> Option<Span> {
+    let mut expected_row = decl.start_position().row as u32;
+    let mut cursor = decl.prev_sibling();
+    while let Some(node) = cursor {
+        if node.kind() != "attribute_list" {
+            break;
+        }
+        if span_of(node).end_line != expected_row {
+            break;
+        }
+        expected_row = node.start_position().row as u32;
+        cursor = node.prev_sibling();
+    }
+
+    let mut nearest: Option<Node> = None;
+    let mut topmost: Option<Node> = None;
+    while let Some(node) = cursor {
+        if !is_doc_comment(node, bytes) {
+            break;
+        }
+        let span = span_of(node);
+        if span.end_line != expected_row {
+            break;
+        }
+        if nearest.is_none() {
+            nearest = Some(node);
+        }
+        topmost = Some(node);
+        expected_row = node.start_position().row as u32;
+        cursor = node.prev_sibling();
+    }
+    let nearest = nearest?;
+    let topmost = topmost.unwrap_or(nearest);
+    let nearest_span = span_of(nearest);
+    let topmost_start = topmost.start_position();
+    Some(Span {
+        start_line: topmost_start.row as u32 + 1,
+        start_col: topmost_start.column as u32,
+        end_line: nearest_span.end_line,
+        end_col: nearest_span.end_col,
+    })
+}
+
 /// The fully-qualified name of a type/member: `namespace` then `container` then
 /// `name`, each joined with `.` when non-empty. In `namespace App { class C { void
 /// M() } }`, `M`'s fqn is `App.C.M` (the chosen convention).
@@ -312,6 +401,7 @@ fn extract_type(node: Node, bytes: &[u8], ctx: &Ctx, out: &mut AnalyzedFile) {
         fqn: fqn.clone(),
         container_fqn: None,
         span: span_of(node),
+        doc_span: doc_span_of(node, bytes),
     });
 
     // Bases (`: Base, IFace` → a `base_list`) are parsed for the type header but,
@@ -363,6 +453,7 @@ fn extract_callable(node: Node, bytes: &[u8], ctx: &Ctx, out: &mut AnalyzedFile,
         fqn: fqn.clone(),
         container_fqn,
         span: span_of(node),
+        doc_span: doc_span_of(node, bytes),
     });
 
     // Body calls attribute to this callable; the container is unchanged (a method
@@ -398,6 +489,7 @@ fn extract_local_function(node: Node, bytes: &[u8], ctx: &Ctx, out: &mut Analyze
         fqn: fqn.clone(),
         container_fqn: None,
         span: span_of(node),
+        doc_span: doc_span_of(node, bytes),
     });
     let inner = Ctx {
         namespace: ctx.namespace,

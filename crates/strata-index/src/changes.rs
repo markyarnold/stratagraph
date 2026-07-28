@@ -21,7 +21,7 @@ use std::path::Path;
 use std::process::Command;
 
 use serde::Serialize;
-use strata_core::{impact, Graph, ImpactOptions, NodeKind};
+use strata_core::{impact, Direction, EdgeKind, Graph, ImpactOptions, NodeKind};
 
 use crate::{analyze_for_path, code_language_of};
 
@@ -90,6 +90,15 @@ pub enum Plane {
     Code,
     Contract,
     Infra,
+    /// The knowledge plane (`Doc`/`DocSection`, K6 controller addendum): a doc
+    /// kind must not classify under the code rubric (`plane_for_kind`'s honest
+    /// fix). `detect_changes`'s real git-diff path never PRODUCES a Knowledge-
+    /// plane [`ChangedSymbol`] today (`plane_for_path` has no markdown route —
+    /// docs enter the picture only via [`BlastReport::docs`]/the "docs to
+    /// review" summary, not the per-plane changed-symbol groups), so this
+    /// variant is reached only through [`plane_for_kind`] — the pre-edit blast
+    /// radius's per-node classification.
+    Knowledge,
 }
 
 /// How a symbol changed between the old and new revision of a file.
@@ -228,6 +237,29 @@ pub struct BlastSymbol {
     pub kind: String,
 }
 
+/// One doc/mention reference into a blast target file's symbols — [`BlastReport::docs`]'s
+/// dedicated, kind-pure view (K6). Distinct from [`BlastReport::affected`],
+/// which mixes `DocSection`s in with every other dependent kind: an agent (or
+/// the CLI's capped `docs:` line) that only wants "which docs need review"
+/// would otherwise have to filter `affected` by kind client-side. Refs-only —
+/// never body text; `guidance` fetches the body on demand.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BlastDocRef {
+    /// The `DocSection` (or doc-comment section)'s own uid.
+    pub uid: String,
+    /// The section's name (a markdown heading, or `"doc: {symbol}"` for a
+    /// doc-comment section).
+    pub name: String,
+    /// The containing file's repo-relative path.
+    pub path: String,
+    /// The section's anchor (the part of its fqn after `#`).
+    pub anchor: String,
+    /// The linking edge's own confidence (`Documents` or `Mentions`) — the
+    /// MAX confidence when the same section links to several of the file's
+    /// symbols.
+    pub confidence: f32,
+}
+
 /// The blast radius of editing one **file**: the symbols it defines across all
 /// planes, the aggregated reverse blast radius of changing them, and the risk —
 /// the pre-edit answer to "what depends on this file before I touch it?".
@@ -255,6 +287,22 @@ pub struct BlastReport {
     /// empty report is never mistaken for "nothing depends on it"); `None` when
     /// the file defines at least one symbol.
     pub note: Option<String>,
+    /// Every doc section that `Documents`/`Mentions` one of the file's symbols
+    /// (K6), sorted by confidence desc then uid asc. Empty when the file has no
+    /// doc links — the CLI's agent-format `docs:` line is absent entirely in
+    /// that case (silent-when-clean).
+    ///
+    /// **Depth-1 direct links only** — a fresh traversal from the file's OWN
+    /// symbol nodes, NOT derived from [`Self::affected`]. `affected` is the
+    /// full transitive blast radius and CAN legitimately disagree: a doc
+    /// section that mentions some OTHER file's symbol (say, a caller of one
+    /// of THIS file's symbols) shows up in `affected` at depth 2+ via that
+    /// caller, but never in `docs` — `docs` only looks at direct edges into
+    /// this file's own symbols. Neither view is wrong; they answer different
+    /// questions ("what does impact reach?" vs "what directly documents
+    /// this file?"). See `blast_docs_is_depth_one_only_affected_can_reach_a_doc_transitively_docs_does_not`
+    /// for a pinned example of the disagreement.
+    pub docs: Vec<BlastDocRef>,
 }
 
 // ── thresholds (these constants EQUAL the steering's published rubric) ──────────
@@ -341,7 +389,12 @@ pub fn detect_changes_in_repo(
             // non-spec (e.g. a `.json` that is neither OpenAPI nor CFN): the diff
             // helpers return nothing, and we additionally record it as `other`
             // only when NO plane claimed it. Handled below.
-            None => other_files.push(path),
+            //
+            // `plane_for_path` never routes a file to `Plane::Knowledge` (no
+            // markdown route exists here — see `Plane::Knowledge`'s own doc
+            // comment), so this arm is unreached in practice; it exists only to
+            // keep the match exhaustive now that `Plane` has a 4th variant.
+            None | Some(Plane::Knowledge) => other_files.push(path),
         }
     }
     // Sort symbols deterministically: plane, then file, then key.
@@ -927,8 +980,15 @@ fn kind_name(kind: NodeKind) -> String {
 /// (`ApiOperation`/`GraphqlField`) → [`Plane::Contract`] so the synthetic
 /// changed symbol fires `classify_risk`'s CRITICAL "breaking change to contract surface"
 /// trigger exactly as a real contract-file change would; the infra kinds →
-/// [`Plane::Infra`]; everything else → [`Plane::Code`]. (The plane only affects
-/// risk classification — the impact aggregation is plane-agnostic.)
+/// [`Plane::Infra`]; the knowledge kinds (`Doc`/`DocSection`, K6 controller
+/// addendum) → [`Plane::Knowledge`] — a doc kind must not classify under the
+/// code rubric (it was folded into the `Plane::Code` wildcard arm before this
+/// fix, which is honest-but-misleading: `blast_for_file_in_repo` is the only
+/// caller today, and its `ChangedSymbol`s never reach `classify_risk`'s
+/// contract-only trigger regardless of Code vs Knowledge, so this is a pure
+/// naming-correctness fix, not a behavior change); everything else →
+/// [`Plane::Code`]. (The plane only affects risk classification/labeling — the
+/// impact aggregation itself is plane-agnostic.)
 fn plane_for_kind(kind: NodeKind) -> Plane {
     match kind {
         NodeKind::ApiOperation | NodeKind::GraphqlField => Plane::Contract,
@@ -938,6 +998,7 @@ fn plane_for_kind(kind: NodeKind) -> Plane {
         | NodeKind::AppSyncResolver
         | NodeKind::AppSyncDataSource
         | NodeKind::CloudResource => Plane::Infra,
+        NodeKind::Doc | NodeKind::DocSection => Plane::Knowledge,
         _ => Plane::Code,
     }
 }
@@ -979,6 +1040,49 @@ fn node_in_file(node_path: &str, file: &str) -> bool {
             && longer.as_bytes()[longer.len() - shorter.len() - 1] == b'/'
     };
     boundary_suffix(file, node_path) || boundary_suffix(node_path, file)
+}
+
+/// The anchor half of a `DocSection`'s fqn (`<path>#<anchor>` by construction
+/// — see `NodeKind::DocSection`'s doc comment). A node with no `#` (should not
+/// happen for a real DocSection) falls back to the whole fqn.
+fn anchor_from_fqn(fqn: &str) -> &str {
+    fqn.split_once('#').map(|(_, anchor)| anchor).unwrap_or(fqn)
+}
+
+/// [`BlastReport::docs`]'s aggregation: every doc section that `Documents`/
+/// `Mentions` ANY of `file_nodes`, deduped by section uid keeping the MAX
+/// confidence (a section can link to several symbols in the same file), sorted
+/// confidence desc then uid asc (deterministic; matches the design's "top N by
+/// confidence" contract for the CLI's capped `docs:` line).
+fn file_doc_refs(graph: &Graph, file_nodes: &[&strata_core::Node]) -> Vec<BlastDocRef> {
+    let mut by_uid: BTreeMap<String, BlastDocRef> = BTreeMap::new();
+    for n in file_nodes {
+        for (edge, doc_node) in graph.neighbors(
+            &n.uid,
+            Direction::Incoming,
+            &[EdgeKind::Documents, EdgeKind::Mentions],
+        ) {
+            let conf = edge.confidence.value();
+            by_uid
+                .entry(doc_node.uid.as_str().to_string())
+                .and_modify(|r| r.confidence = r.confidence.max(conf))
+                .or_insert_with(|| BlastDocRef {
+                    uid: doc_node.uid.as_str().to_string(),
+                    name: doc_node.name.clone(),
+                    path: doc_node.path.clone(),
+                    anchor: anchor_from_fqn(&doc_node.fqn).to_string(),
+                    confidence: conf,
+                });
+        }
+    }
+    let mut refs: Vec<BlastDocRef> = by_uid.into_values().collect();
+    refs.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    refs
 }
 
 /// The pre-edit blast radius of editing **one file**, optionally scoped to a
@@ -1040,6 +1144,8 @@ pub fn blast_for_file_in_repo(graph: &Graph, file: &str, repo: Option<&str>) -> 
     blast_symbols.sort_by(|a, b| a.fqn.cmp(&b.fqn));
 
     // No indexed symbols → an explicit empty report (never a fake all-clear).
+    // No symbols means no doc links either (docs attach to a file's symbols
+    // via `file_doc_refs`, which needs at least one symbol node to walk from).
     if symbols.is_empty() {
         return BlastReport {
             file: file.to_string(),
@@ -1052,12 +1158,17 @@ pub fn blast_for_file_in_repo(graph: &Graph, file: &str, repo: Option<&str>) -> 
             note: Some(
                 "no indexed symbols for this file — it is new, unindexed, or not a code/contract/infra file; this is not a guarantee that nothing depends on it".to_string(),
             ),
+            docs: Vec::new(),
         };
     }
 
     // REUSE the detect_changes aggregation + risk verbatim (parity by construction).
     let affected = aggregate_impact(graph, &symbols);
     let risk = classify_risk(graph, &symbols, &affected, None);
+    // Dedicated doc-links aggregation (K6): a fresh traversal from the file's OWN
+    // symbol nodes (not derived from `affected`, which mixes doc sections in with
+    // every other dependent kind).
+    let docs = file_doc_refs(graph, &file_nodes);
 
     BlastReport {
         file: file.to_string(),
@@ -1065,6 +1176,7 @@ pub fn blast_for_file_in_repo(graph: &Graph, file: &str, repo: Option<&str>) -> 
         affected,
         risk,
         note: None,
+        docs,
     }
 }
 
@@ -1118,6 +1230,22 @@ mod tests {
         assert_eq!(plane_for_path("openapi.yaml"), Some(Plane::Contract));
         assert_eq!(plane_for_path("README.md"), None);
         assert_eq!(plane_for_path("package.json"), Some(Plane::Contract)); // candidate; helper rejects
+    }
+
+    #[test]
+    fn plane_for_kind_classifies_doc_kinds_as_knowledge_not_code() {
+        // K6 controller addendum: a doc kind must not classify under the code
+        // rubric — it was folded into the `_ => Plane::Code` wildcard before
+        // this fix.
+        assert_eq!(plane_for_kind(NodeKind::Doc), Plane::Knowledge);
+        assert_eq!(plane_for_kind(NodeKind::DocSection), Plane::Knowledge);
+        // The pre-existing classifications are unchanged.
+        assert_eq!(plane_for_kind(NodeKind::ApiOperation), Plane::Contract);
+        assert_eq!(plane_for_kind(NodeKind::GraphqlField), Plane::Contract);
+        assert_eq!(plane_for_kind(NodeKind::LambdaFn), Plane::Infra);
+        assert_eq!(plane_for_kind(NodeKind::IamRole), Plane::Infra);
+        assert_eq!(plane_for_kind(NodeKind::Function), Plane::Code);
+        assert_eq!(plane_for_kind(NodeKind::Table), Plane::Code);
     }
 
     // ── code symbol diff (pure, no git) ──
@@ -1621,6 +1749,144 @@ mod tests {
         assert!(
             names.contains(&"mid") && names.contains(&"far"),
             "got {names:?}"
+        );
+    }
+
+    // ── BlastReport.docs (K6): the dedicated doc-links view ──
+
+    #[test]
+    fn blast_docs_aggregates_documents_and_mentions_sorted_by_confidence_desc() {
+        use strata_core::{Confidence, EdgeKind, NodeKind, Provenance};
+        // a.ts defines `target`, documented by its own doc comment (Documents,
+        // 0.95) and mentioned by two markdown sections at different confidence
+        // tiers (Mentions, 0.80 and 0.35) — the docs list must come back sorted
+        // confidence desc, and never include the unrelated `caller` dependent.
+        let mut g = Graph::new();
+        g.add_node(blast_node("a|target", "target", "a.ts", NodeKind::Function));
+        g.add_node(blast_node("b|caller", "caller", "b.ts", NodeKind::Function));
+        g.add_edge(blast_edge("b|caller", "a|target", EdgeKind::Calls));
+        // `blast_node`'s `name` param doubles as `fqn` (see its own doc
+        // comment), so it is passed the full `path#anchor` shape here —
+        // `anchor_from_fqn` is what splits it back apart.
+        g.add_node(blast_node(
+            "doc|r|a.ts|a.ts#doc:target|",
+            "a.ts#doc:target",
+            "a.ts",
+            NodeKind::DocSection,
+        ));
+        g.add_node(blast_node(
+            "doc|r|docs/g.md|docs/g.md#fqn-hit|",
+            "docs/g.md#fqn-hit",
+            "docs/g.md",
+            NodeKind::DocSection,
+        ));
+        g.add_node(blast_node(
+            "doc|r|docs/g.md|docs/g.md#ambiguous-hit|",
+            "docs/g.md#ambiguous-hit",
+            "docs/g.md",
+            NodeKind::DocSection,
+        ));
+        g.add_edge(strata_core::Edge {
+            src: strata_core::Uid("doc|r|a.ts|a.ts#doc:target|".into()),
+            dst: strata_core::Uid("a|target".into()),
+            kind: EdgeKind::Documents,
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(0.95),
+        });
+        g.add_edge(strata_core::Edge {
+            src: strata_core::Uid("doc|r|docs/g.md|docs/g.md#fqn-hit|".into()),
+            dst: strata_core::Uid("a|target".into()),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.80),
+        });
+        g.add_edge(strata_core::Edge {
+            src: strata_core::Uid("doc|r|docs/g.md|docs/g.md#ambiguous-hit|".into()),
+            dst: strata_core::Uid("a|target".into()),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Ambiguous,
+            confidence: Confidence::new(0.35),
+        });
+
+        let report = blast_for_file(&g, "a.ts");
+        assert_eq!(report.docs.len(), 3, "got {:?}", report.docs);
+        assert_eq!(report.docs[0].anchor, "doc:target");
+        assert!((report.docs[0].confidence - 0.95).abs() < 1e-6);
+        assert_eq!(report.docs[1].anchor, "fqn-hit");
+        assert!((report.docs[1].confidence - 0.80).abs() < 1e-6);
+        assert_eq!(report.docs[2].anchor, "ambiguous-hit");
+        assert!((report.docs[2].confidence - 0.35).abs() < 1e-6);
+        // The unrelated code dependent must never leak into `docs`.
+        assert!(!report.docs.iter().any(|d| d.name == "caller"));
+        // ...but it's still in the general `affected` blast radius, unaffected.
+        assert!(report.affected.iter().any(|a| a.name == "caller"));
+    }
+
+    #[test]
+    fn blast_docs_is_empty_when_the_file_has_no_doc_links() {
+        // The plain Calls-only fixture from `blast_for_file_reports_dependents_of_a_files_symbols`
+        // has no Doc/DocSection nodes at all — `docs` must be an honest empty
+        // list (never fabricated), matching "silent-when-clean" for the CLI line.
+        use strata_core::{EdgeKind, NodeKind};
+        let mut g = Graph::new();
+        g.add_node(blast_node("a|target", "target", "a.ts", NodeKind::Function));
+        g.add_node(blast_node("b|caller", "caller", "b.ts", NodeKind::Function));
+        g.add_edge(blast_edge("b|caller", "a|target", EdgeKind::Calls));
+
+        let report = blast_for_file(&g, "a.ts");
+        assert!(report.docs.is_empty(), "got {:?}", report.docs);
+    }
+
+    #[test]
+    fn blast_docs_is_empty_for_the_no_indexed_symbols_empty_report() {
+        let g = Graph::new();
+        let report = blast_for_file(&g, "brand/new.ts");
+        assert!(report.note.is_some());
+        assert!(report.docs.is_empty());
+    }
+
+    /// Minor (b) review: a PINNED, legitimate disagreement between
+    /// `BlastReport.affected` (the full transitive blast radius) and
+    /// `BlastReport.docs` (depth-1 direct links into THIS file's own
+    /// symbols only) — see `BlastReport::docs`'s own doc comment.
+    #[test]
+    fn blast_docs_is_depth_one_only_affected_can_reach_a_doc_transitively_docs_does_not() {
+        use strata_core::{Confidence, EdgeKind, NodeKind, Provenance};
+        // `caller` (b.ts) depends on `target` (a.ts); a DocSection mentions
+        // CALLER (not target) — so `impact(target)` reaches it TRANSITIVELY
+        // at depth 2 (via caller), landing it in `affected`, but `docs` —
+        // which only looks at a.ts's OWN symbols' direct incoming links —
+        // must NOT list it.
+        let mut g = Graph::new();
+        g.add_node(blast_node("a|target", "target", "a.ts", NodeKind::Function));
+        g.add_node(blast_node("b|caller", "caller", "b.ts", NodeKind::Function));
+        g.add_edge(blast_edge("b|caller", "a|target", EdgeKind::Calls));
+        g.add_node(blast_node(
+            "doc|r|docs/g.md|docs/g.md#about-caller",
+            "docs/g.md#about-caller",
+            "docs/g.md",
+            NodeKind::DocSection,
+        ));
+        g.add_edge(strata_core::Edge {
+            src: strata_core::Uid("doc|r|docs/g.md|docs/g.md#about-caller".into()),
+            dst: strata_core::Uid("b|caller".into()),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.80),
+        });
+
+        let report = blast_for_file(&g, "a.ts");
+        assert!(
+            report.affected.iter().any(|a| a.kind == "DocSection"),
+            "affected reaches the doc transitively via caller: {:?}",
+            report.affected
+        );
+        assert!(
+            report.docs.is_empty(),
+            "docs is depth-1 direct-only — a.ts's own symbol (target) has no \
+             direct Documents/Mentions edge; only caller (a DIFFERENT file) \
+             does: {:?}",
+            report.docs
         );
     }
 }

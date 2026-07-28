@@ -53,9 +53,9 @@ Every estate command takes `--workspace` instead of `--db`. Run `impact` on the 
 ```console
 $ strata impact getUser --workspace strata.workspace.toml
 Impact of getUser (src/resolvers.ts) — 2 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.80   no  WILL BREAK  QUERY getUser (getUser)
-      2  0.76   no  WILL BREAK  loadUserProfile (src/queries.ts)
+  depth  conf  amb  verdict       name (path)
+      1  0.80   no  WILL BREAK    QUERY getUser (getUser)
+      2  0.76   no  WILL BREAK    loadUserProfile (src/queries.ts)
 ```
 
 There it is. Changing the `getUser` resolver in `repo-schema` reaches **`loadUserProfile` in `repo-app`** (a different repository) at depth 2, through the operation node `Query.getUser` at depth 1. That d=2 row is the cross-repo blast radius. (`src/queries.ts` is repo-app's file; the estate view shows repo-relative paths.)

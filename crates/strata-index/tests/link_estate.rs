@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use strata_contract::{ContractAdapter, OpenApiAdapter};
 use strata_core::{Direction, EdgeKind, NodeKind, Provenance, Uid};
 use strata_index::{index_estate, link_estate, ResolveMode, WorkspaceManifest};
 
@@ -193,6 +194,55 @@ fn link_estate_dedups_same_operation_id_across_repos_when_api_declared() {
             .iter()
             .any(|(d, _, _)| *d == canonical),
         "repo-y handler produces the SAME canonical node"
+    );
+}
+
+// ── Test 6 (K4 extension): description is NOT part of the dedup identity —
+// merging a shared api id keeps each member's own description and still
+// collapses to ONE canonical node, never two, never a dropped op ───────────
+
+#[test]
+fn link_estate_dedup_keeps_description_and_stays_one_node() {
+    // Same `dedup` fixture as the test above (repo-x and repo-y both declare
+    // api id `user`, both spec a `getUser`), except each repo's `getUser` now
+    // carries its OWN, DIFFERENT `summary` — deliberately divergent, so a dedup
+    // that accidentally keyed on the whole `OperationDef` (instead of just
+    // `(api_id, format, key)`) would be caught here by fragmenting into two
+    // nodes.
+
+    // Each repo's own extraction keeps its own description — proves K4
+    // capture survives independently of the other member (neither is ever
+    // silently dropped at the source).
+    let repo_x_spec = std::fs::read_to_string(fixture_dir("dedup").join("repo-x/openapi.yaml"))
+        .expect("read repo-x spec");
+    let repo_y_spec = std::fs::read_to_string(fixture_dir("dedup").join("repo-y/openapi.yaml"))
+        .expect("read repo-y spec");
+    let x_ops = OpenApiAdapter
+        .extract("openapi.yaml", &repo_x_spec)
+        .expect("repo-x spec parses");
+    let y_ops = OpenApiAdapter
+        .extract("openapi.yaml", &repo_y_spec)
+        .expect("repo-y spec parses");
+    assert_eq!(
+        x_ops[0].description.as_deref(),
+        Some("Fetch one user via Service X")
+    );
+    assert_eq!(
+        y_ops[0].description.as_deref(),
+        Some("Fetch one user via Service Y")
+    );
+
+    // Despite the now-divergent descriptions, the estate merge is untouched:
+    // still exactly ONE canonical `getUser` node — never duplicated, never
+    // dropped.
+    let (tmp, manifest) = prep_estate("dedup");
+    let (g, _coverage, results) = link_estate(&manifest, tmp.path());
+    assert!(results.iter().all(|r| r.ok), "both repos load ok");
+    assert_eq!(
+        count_ops_with_key(&g, "getUser"),
+        1,
+        "a per-repo description (even a DIFFERENT one per repo) must not affect \
+         the (api_id, format, key) dedup identity — still ONE canonical node"
     );
 }
 

@@ -107,6 +107,33 @@ fn make_fqn(container: Option<&str>, name: &str) -> String {
     }
 }
 
+/// The docstring for a `function_definition`/`class_definition` node: the
+/// first statement of its `body:` block, when that statement is a BARE
+/// string-literal expression (`expression_statement` wrapping exactly one
+/// `string` child) — Python's own docstring convention (the shape that binds
+/// `__doc__`). Unlike the comment-based languages there is no "no blank line"
+/// adjacency test here: this is a semantic first-statement rule, not a
+/// proximity heuristic, so a leading comment before it (which tree-sitter-python
+/// attaches outside the `body` block, never as one of its children) does not
+/// disqualify it, and neither does a blank line inside the block. Returns the
+/// SPAN of the string node ITSELF (never the whole statement, and never its
+/// text — bodies-from-disk, design decision 4/§8).
+fn doc_span_of(decl: Node) -> Option<Span> {
+    let body = decl.child_by_field_name("body")?;
+    let first = body.child(0)?;
+    if first.kind() != "expression_statement" {
+        return None;
+    }
+    let mut cursor = first.walk();
+    let mut children = first.children(&mut cursor);
+    let only_child = children.next()?;
+    if children.next().is_some() {
+        // More than one child: not a bare string-literal expression.
+        return None;
+    }
+    (only_child.kind() == "string").then(|| span_of(only_child))
+}
+
 /// Recursive walk. `container` is the enclosing class fqn for member symbols
 /// (`Some` only directly inside a `class_definition` body); `enclosing_fqn` is
 /// the nearest enclosing function/method fqn for call sites (empty string at
@@ -172,6 +199,7 @@ fn walk(
                         None
                     },
                     span: span_of(node),
+                    doc_span: doc_span_of(node),
                 });
                 // Descend into the body. The enclosing scope becomes this
                 // function's fqn; the container resets to None so a NESTED def is
@@ -193,6 +221,7 @@ fn walk(
                     fqn: fqn.clone(),
                     container_fqn: None,
                     span: span_of(node),
+                    doc_span: doc_span_of(node),
                 });
                 // ORM model hint (Slice 25, D3, M2b): an explicit table name declared
                 // in the class body — SQLAlchemy `__tablename__ = "…"` or Django nested

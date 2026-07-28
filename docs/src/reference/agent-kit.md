@@ -108,10 +108,14 @@ The args are the estate or single-DB form from [context detection](#context-dete
 ### Steering block
 
 The block written between the markers (`content::render_steering_block`) carries,
-in order: the identity line, an **Always Do (MUST)** section, a **Never Do**
+in order: the identity line, an **Always Do (MUST)** section (including the
+knowledge-plane rules: act on the pre-edit hook's `docs:` line conditionally,
+treat doc guidance as repo knowledge rather than ground truth, report
+`detect_changes`' "docs to review" line at commit time), a **Never Do**
 section, a **Tools (MCP)** reference (`impact`, `explain`, `context`, `query`,
-`detect_changes`), an auto-reload note, and the **Skill routing** table mapping
-task types to the four skills. The block and each skill stay ≤120 lines.
+`detect_changes`, `guidance`, `search_docs`), an auto-reload note, and the
+**Skill routing** table mapping task types to the four skills. The block and
+each skill stay ≤120 lines.
 
 ### Skills
 
@@ -121,8 +125,8 @@ blast-radius/risk tables:
 
 | Slug                         | Purpose                                                                                                 |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `strata-guide`               | First contact: which tool, the plane model, the band policy, the safe-change protocol.                  |
-| `strata-exploring`           | "How does X work?": `query` → `context` → follow buckets across planes.                                 |
+| `strata-guide`               | First contact: which tool, the plane model, the band policy, the safe-change protocol, repo-knowledge lookup (`guidance`/`search_docs`). |
+| `strata-exploring`           | "How does X work?": `guidance`/`search_docs` first on unfamiliar areas, then `query` → `context` → follow buckets across planes. |
 | `strata-impact-analysis`     | "What breaks if I change X?": `impact`, the `will_break` verdict, `members_with_dependents`, `explain`. |
 | `strata-contracts-and-infra` | Schema/API/infra: producers, consumers, dead-surface discovery.                                         |
 

@@ -109,14 +109,25 @@ strata impact classify_risk
 ```
 
 ```text
-Impact of classify_risk (crates/strata-index/src/changes.rs) — 76 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  detect_changes (crates/strata-index/src/changes.rs)
-      1  0.95   no  WILL BREAK  blast_for_file (crates/strata-index/src/changes.rs)
-      2  0.76   no  WILL BREAK  tool_blast (crates/strata-mcp/src/tools.rs)
-      4  0.69   no  WILL BREAK  call_tool (crates/strata-mcp/src/tools.rs)
+Impact of classify_risk (crates/strata-index/src/changes.rs) — 179 affected:
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  needs review  doc: classify_risk (crates/strata-index/src/changes.rs)
+      1  0.95   no  WILL BREAK    blast_for_file_in_repo (crates/strata-index/src/changes.rs)
+      1  0.95   no  WILL BREAK    detect_changes_in_repo (crates/strata-index/src/changes.rs)
+      ...
+      2  0.90   no  needs review  doc: blast_for_file_in_repo (crates/strata-index/src/changes.rs)
+      ...
+      2  0.90   no  WILL BREAK    detect_changes (crates/strata-index/src/changes.rs)
       ...
 ```
+
+A `needs review` row is a doc section (the knowledge plane's `Doc`/`DocSection`
+nodes) that documents or mentions `classify_risk` — it enters the blast radius
+the same way a code dependent does, but a stale doc is a different failure
+mode from code breaking, so it is never labelled `WILL BREAK` regardless of
+its confidence. (Counts here grow as the repo's own docs grow — this repo
+documents itself extensively, so its `impact` results include its own manual
+and design docs.)
 
 How to read each column:
 
@@ -162,12 +173,16 @@ strata explain classify_risk call_tool
 ```
 
 ```text
-Why classify_risk affects call_tool (conf 0.69, WILL BREAK):
-  classify_risk     —CALLS (Extracted 0.95)→  blast_for_file        running 0.95
-  blast_for_file    —CALLS (Inferred  0.80)→  tool_blast            running 0.76
-  tool_blast        —CALLS (Extracted 0.95)→  call_tool_ctx         running 0.72
-  call_tool_ctx     —CALLS (Extracted 0.95)→  call_tool             running 0.69
+Why classify_risk affects call_tool (conf 0.65, WILL BREAK):
+  classify_risk  —CALLS (Extracted 0.95)→  detect_changes_in_repo    running 0.95
+  detect_changes_in_repo  —CALLS (Extracted 0.95)→  detect_changes    running 0.90
+  detect_changes  —CALLS (Inferred 0.80)→  tool_detect_changes    running 0.72
+  tool_detect_changes  —CALLS (Extracted 0.95)→  call_tool_ctx    running 0.69
+  call_tool_ctx  —CALLS (Extracted 0.95)→  call_tool    running 0.65
 ```
+
+(The path and numbers come from indexing this repository at a point in time;
+both drift as the code changes.)
 
 Each hop names the edge kind (`CALLS`, `PRODUCES`, `CONSUMES`, …), its provenance
 (`Extracted`, `Inferred`, `Resolved`, `Ambiguous`) with that edge's confidence,

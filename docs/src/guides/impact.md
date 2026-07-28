@@ -23,18 +23,22 @@ The third line is the symbol's **uid**, its stable identity. Keep it; you'll nee
 
 ```console
 $ strata impact cmd_impact
-Impact of cmd_impact (crates/strata-cli/src/lib.rs) — 7 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  cmd_impact_ambiguous_lists_candidates_with_uid_hint (crates/strata-cli/src/lib.rs)
-      1  0.95   no  WILL BREAK  cmd_impact_dead_table_keeps_bare_message (crates/strata-cli/src/lib.rs)
-      1  0.95   no  WILL BREAK  cmd_impact_member_bearing_target_hints_at_member_dependents (crates/strata-cli/src/lib.rs)
-      1  0.95   no  WILL BREAK  cmd_impact_truly_dead_container_keeps_bare_message (crates/strata-cli/src/lib.rs)
-      1  0.95   no  WILL BREAK  cmd_impact_unknown_uid_is_symbol_not_found (crates/strata-cli/src/lib.rs)
-      1  0.95   no  WILL BREAK  cmd_impact_with_uid_resolves_the_exact_node (crates/strata-cli/src/lib.rs)
-      1  0.80   no  WILL BREAK  main (crates/strata-cli/src/main.rs)
+Impact of cmd_impact (crates/strata-cli/src/lib.rs) — 18 affected:
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  needs review  doc: cmd_impact (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_ambiguous_lists_candidates_with_uid_hint (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_dead_table_keeps_bare_message (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_member_bearing_target_hints_at_member_dependents (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_truly_dead_container_keeps_bare_message (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_unknown_uid_is_symbol_not_found (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_with_uid_resolves_the_exact_node (crates/strata-cli/src/lib.rs)
+      1  0.80   no  needs review  query: find a symbol (docs/src/getting-started/first-queries.md)
+      ...
+      1  0.80   no  WILL BREAK    main (crates/strata-cli/src/main.rs)
+      ...
 ```
 
-Each row is one dependent. Read the columns left to right; they're the whole point.
+Each row is one dependent. Read the columns left to right; they're the whole point. The `needs review` rows are doc sections — this very manual, in the second one's case — that mention `cmd_impact`; see [`verdict` is per row](#verdict-is-per-row-will-break-vs-may-affect) below for why they never read `WILL BREAK`. (Counts grow as the repo's own docs grow — this transcript will show more rows next time it's regenerated.)
 
 ## How to read the result
 
@@ -51,10 +55,10 @@ You can see both halves of that rule in one result:
 ```console
 $ strata impact reload --uid 'rust|strata|crates/strata-cli/src/reload.rs|SingleDbReloader::reload|'
 Impact of reload (crates/strata-cli/src/reload.rs) — 12 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.35  yes  may affect  single_db_reloader_degrades_safely_on_corrupt_db (crates/strata-cli/tests/hot_reload.rs)
-      1  0.35  yes  may affect  single_db_reloader_picks_up_an_external_reindex (crates/strata-cli/tests/hot_reload.rs)
-      2  0.33  yes  may affect  serve_stdio_reloadable (crates/strata-mcp/src/server.rs)
+  depth  conf  amb  verdict       name (path)
+      1  0.35  yes  may affect    single_db_reloader_degrades_safely_on_corrupt_db (crates/strata-cli/tests/hot_reload.rs)
+      1  0.35  yes  may affect    single_db_reloader_picks_up_an_external_reindex (crates/strata-cli/tests/hot_reload.rs)
+      2  0.33  yes  may affect    serve_stdio_reloadable (crates/strata-mcp/src/server.rs)
       ...
 ```
 
@@ -146,16 +150,34 @@ Editing a file? `blast` runs the same analysis over every symbol the file define
 
 ```console
 $ strata blast crates/strata-index/src/changes.rs
-Editing crates/strata-index/src/changes.rs touches 61 symbol(s); blast radius 1332 affected — HIGH
-  symbols (61):
+Editing crates/strata-index/src/changes.rs touches 124 symbol(s); blast radius 2656 affected — HIGH
+  symbols (124):
     - aggregate_impact [Function]
-    - classify_risk [Function]
-    - detect_changes [Function]
     ...
-  depth  conf  amb  verdict     name (path)
+    - crates/strata-index/src/changes.rs#doc:ChangeReport [DocSection]
+    ...
+  depth  conf  amb  verdict       name (path)
+      1  0.95  yes  needs review  doc: classify_risk (crates/strata-index/src/changes.rs)
       ...
-Risk: HIGH — 1332 affected
+      1  0.95  yes  needs review  doc: detect_changes (crates/strata-index/src/changes.rs)
+      ...
+      1  0.95   no  WILL BREAK    new (crates/strata-index/src/changes.rs)
+      ...
+Risk: HIGH — 2656 affected
 ```
+
+The `symbols` list is now itself cross-plane: a file's own doc comments
+(`#doc:ChangeReport`, one `DocSection` per documented item) are symbols the
+file "defines" too, alongside its functions, structs, and methods. (The `amb:
+yes` on the two doc rows above is real, not a typo — this file's own
+`classify_risk`/`detect_changes` names collide with same-named symbols
+elsewhere in a 124-symbol, whole-file aggregation, so SOME reaching path is
+ambiguous even though the direct doc-comment link is a clean Extracted 0.95;
+`blast` reports the fact honestly rather than picking the flattering path.
+Counts grow as the repo's own docs and doc comments grow — `changes.rs`
+picked up the knowledge plane's own `AffectedNode`/`BlastReport`/
+`BlastDocRef` types and their doc comments since this transcript was last
+regenerated.)
 
 `blast` is what powers the pre-edit hook for AI agents (see [Pre-edit blast checks](pre-edit-blast.md)); the `--format agent` flag prints the token-lean version that hook injects.
 

@@ -14,6 +14,7 @@
 
 - [The cross-plane graph](concepts/graph.md)
 - [The five planes](concepts/planes.md)
+- [The knowledge plane](concepts/knowledge.md)
 - [Confidence and provenance](concepts/confidence.md)
 - [Cross-boundary impact](concepts/cross-boundary.md)
 - [Languages and coverage](concepts/coverage.md)

@@ -58,6 +58,65 @@ pub struct ContextResult {
     /// maps to (the model's own view of its mapping). Empty for a node that is not a
     /// mapping model.
     pub maps_to: Vec<Node>,
+    // ── knowledge plane (Knowledge plane, K6) ──
+    /// Sources of incoming `Documents`/`Mentions` edges — the doc sections that
+    /// document or mention this node, refs-only (never body text; the `guidance`
+    /// tool fetches the body on demand). Union of both edge kinds, sorted by uid
+    /// (the same deterministic order the other buckets use).
+    pub docs: Vec<ContextDocRef>,
+}
+
+/// One knowledge-plane doc/mention reference into a symbol — [`ContextResult`]'s
+/// `docs` bucket entry. Deliberately NOT a [`Node`]: it carries the edge's own
+/// `provenance`/`confidence` (a `DocSection` node has no notion of "how
+/// confidently does this reference its target" — that lives on the edge), plus
+/// `anchor` (split out of the `DocSection`'s `fqn`, which is `<path>#<anchor>`
+/// by construction — see [`NodeKind::DocSection`]) so a caller can jump straight
+/// to `guidance`/`search_docs` without re-deriving it. Refs-only by design: no
+/// body text, matching the "bodies-from-disk, never in the graph" rule.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextDocRef {
+    pub uid: Uid,
+    pub name: String,
+    pub anchor: String,
+    pub path: String,
+    pub provenance: Provenance,
+    pub confidence: f32,
+}
+
+/// Split a `DocSection`'s `fqn` (`<path>#<anchor>`) into its `anchor` half. The
+/// format is the `NodeKind::DocSection` contract (see its doc comment), so this
+/// is a trivial split for a real DocSection node; a node with no `#` (should
+/// not happen for a DocSection) falls back to the whole fqn rather than
+/// panicking or slicing out of bounds.
+fn anchor_from_fqn(fqn: &str) -> &str {
+    fqn.split_once('#').map(|(_, anchor)| anchor).unwrap_or(fqn)
+}
+
+/// The knowledge-plane `docs` bucket: every doc section that `Documents` (its
+/// own doc comment) or `Mentions` this node, refs-only. Mirrors
+/// [`sorted_unique_nodes`]'s uid-ascending determinism, but keeps the edge (not
+/// just the node) since `provenance`/`confidence` live there, not on the node.
+fn doc_refs(graph: &Graph, uid: &Uid) -> Vec<ContextDocRef> {
+    let mut refs: Vec<ContextDocRef> = graph
+        .neighbors(
+            uid,
+            Direction::Incoming,
+            &[EdgeKind::Documents, EdgeKind::Mentions],
+        )
+        .into_iter()
+        .map(|(edge, node)| ContextDocRef {
+            uid: node.uid.clone(),
+            name: node.name.clone(),
+            anchor: anchor_from_fqn(&node.fqn).to_string(),
+            path: node.path.clone(),
+            provenance: edge.provenance,
+            confidence: edge.confidence.value(),
+        })
+        .collect();
+    refs.sort_by(|a, b| a.uid.cmp(&b.uid));
+    refs.dedup_by(|a, b| a.uid == b.uid);
+    refs
 }
 
 fn sorted_unique_nodes(neighbors: Vec<(&Edge, &Node)>) -> Vec<Node> {
@@ -140,6 +199,9 @@ pub fn context(graph: &Graph, uid: &Uid) -> Option<ContextResult> {
         sorted_unique_nodes(graph.neighbors(uid, Direction::Incoming, &[EdgeKind::MapsTo]));
     let maps_to =
         sorted_unique_nodes(graph.neighbors(uid, Direction::Outgoing, &[EdgeKind::MapsTo]));
+    // Knowledge plane (Knowledge plane, K6): every doc section that documents or
+    // mentions this node, refs-only (see `doc_refs`'s own doc comment).
+    let docs = doc_refs(graph, uid);
     Some(ContextResult {
         node,
         callers,
@@ -160,6 +222,7 @@ pub fn context(graph: &Graph, uid: &Uid) -> Option<ContextResult> {
         run_by,
         mapped_by,
         maps_to,
+        docs,
     })
 }
 
@@ -560,6 +623,20 @@ fn reverse_walk(graph: &Graph, target: &Uid, opts: &ImpactOptions) -> Best {
         // has incoming `Calls`, transitively the code that instantiates/uses the model.
         // A graph with no ORM edges is unaffected (the traversal finds none).
         EdgeKind::MapsTo,
+        // Knowledge-plane dependency edges (Knowledge plane, K2): `Documents` (a doc
+        // comment's `DocSection` → the symbol it documents, K3) and `Mentions` (a
+        // `DocSection` → anything its extracted refs resolved to) are traversed
+        // INCOMING from the target exactly like `Reads`/`Writes`/`MapsTo` — so
+        // `impact(symbol)` reaches the doc sections that reference it ("docs enter the
+        // blast radius", design §2). Each propagates at its own edge confidence/
+        // provenance (never re-graded), so a Mentions fan-out (Ambiguous 0.35) reaches
+        // exactly as ambiguous as it was graded, never laundered into a clean hit. The
+        // sibling `Contains` (Doc → DocSection) is DELIBERATELY excluded from this
+        // list — see its doc comment: a section changing does not mean its file
+        // "broke". A graph with no knowledge edges is unaffected (the traversal finds
+        // none), so knowledge-free impact results are byte-identical.
+        EdgeKind::Documents,
+        EdgeKind::Mentions,
     ];
     if opts.include_imports {
         kinds.push(EdgeKind::Imports);
@@ -1154,6 +1231,74 @@ mod tests {
             vec!["module"]
         );
         assert!(lambda.run_by.is_empty());
+    }
+
+    // ── context knowledge-plane docs bucket (K6) ──
+
+    #[test]
+    fn context_docs_bucket_unions_documents_and_mentions_refs_only() {
+        // `target`'s own doc comment (Documents, Extracted 0.95, anchor "doc:target")
+        // and a markdown section that separately mentions it (Mentions, Inferred
+        // 0.80, anchor "using-target") both surface in `docs`, sorted by uid, and
+        // carry the EDGE's provenance/confidence (not some node-level value).
+        let mut g = Graph::new();
+        g.add_node(node("target"));
+        g.add_node(Node {
+            uid: Uid("doc-comment-section".into()),
+            kind: NodeKind::DocSection,
+            name: "doc: target".into(),
+            fqn: "src/a.ts#doc:target".into(),
+            path: "src/a.ts".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_node(Node {
+            uid: Uid("markdown-section".into()),
+            kind: NodeKind::DocSection,
+            name: "Using target".into(),
+            fqn: "docs/guide.md#using-target".into(),
+            path: "docs/guide.md".into(),
+            span: Span::default(),
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(1.0),
+        });
+        g.add_edge(Edge {
+            src: Uid("doc-comment-section".into()),
+            dst: Uid("target".into()),
+            kind: EdgeKind::Documents,
+            provenance: Provenance::Extracted,
+            confidence: Confidence::new(0.95),
+        });
+        g.add_edge(Edge {
+            src: Uid("markdown-section".into()),
+            dst: Uid("target".into()),
+            kind: EdgeKind::Mentions,
+            provenance: Provenance::Inferred,
+            confidence: Confidence::new(0.80),
+        });
+
+        let ctx = context(&g, &Uid("target".into())).unwrap();
+        assert_eq!(ctx.docs.len(), 2, "both refs present: {:?}", ctx.docs);
+        // uid-ascending, mirroring every other bucket's determinism.
+        assert_eq!(ctx.docs[0].uid.as_str(), "doc-comment-section");
+        assert_eq!(ctx.docs[0].anchor, "doc:target");
+        assert_eq!(ctx.docs[0].path, "src/a.ts");
+        assert_eq!(ctx.docs[0].provenance, Provenance::Extracted);
+        assert!((ctx.docs[0].confidence - 0.95).abs() < 1e-6);
+        assert_eq!(ctx.docs[1].uid.as_str(), "markdown-section");
+        assert_eq!(ctx.docs[1].anchor, "using-target");
+        assert_eq!(ctx.docs[1].path, "docs/guide.md");
+        assert_eq!(ctx.docs[1].provenance, Provenance::Inferred);
+        assert!((ctx.docs[1].confidence - 0.80).abs() < 1e-6);
+    }
+
+    #[test]
+    fn context_docs_bucket_is_empty_for_an_undocumented_symbol() {
+        let mut g = Graph::new();
+        g.add_node(node("lonely"));
+        let ctx = context(&g, &Uid("lonely".into())).unwrap();
+        assert!(ctx.docs.is_empty());
     }
 
     // ── impact tests ──
@@ -2638,5 +2783,61 @@ mod tests {
         // N reaches T only cleanly → not ambiguous in either view.
         let en = explain(&g, &Uid("t".into()), &Uid("n".into()), &opts).expect("n reachable");
         assert!(!imp_amb("n") && !en.ambiguous, "N is clean in both views");
+    }
+
+    // ── knowledge plane (K2): Mentions/Documents traversed, Contains never is ──
+
+    #[test]
+    fn impact_traverses_mentions_and_documents_but_never_contains() {
+        // doc —Contains→ sec (never traversed: a section is not "affected" by its
+        // own container, and the container must not be surfaced as a dependent of
+        // its member — the same rule the infra ApiId `Contains` precedent set).
+        // sec —Mentions→ fn and doc2 —Documents→ fn2 (both traversed INCOMING from
+        // the target, exactly like Calls/Reads/Assumes): a symbol's `impact` must
+        // include the doc sections that reference it — "docs enter the blast
+        // radius" (design §2).
+        let mut g = Graph::new();
+        g.add_node(node_with_kind("doc", NodeKind::Doc));
+        g.add_node(node_with_kind("sec", NodeKind::DocSection));
+        g.add_node(node_with_kind("doc2", NodeKind::Doc));
+        g.add_node(node_with_kind("sec2", NodeKind::DocSection));
+        g.add_node(node("fn"));
+        g.add_node(node("fn2"));
+        g.add_edge(edge("doc", "sec", EdgeKind::Contains));
+        g.add_edge(edge("doc2", "sec2", EdgeKind::Contains));
+        g.add_edge(edge("sec", "fn", EdgeKind::Mentions));
+        g.add_edge(edge("sec2", "fn2", EdgeKind::Documents));
+
+        let opts = ImpactOptions::default();
+
+        // impact(fn) reaches "sec" via the reverse-walked Mentions edge.
+        let r = impact(&g, &Uid("fn".into()), &opts);
+        assert!(
+            r.affected.iter().any(|a| a.uid == Uid("sec".into())),
+            "Mentions must be reverse-walked so a mentioned symbol's impact \
+             includes the mentioning DocSection: {r:?}"
+        );
+
+        // impact(fn2) reaches "sec2" via the reverse-walked Documents edge.
+        let r2 = impact(&g, &Uid("fn2".into()), &opts);
+        assert!(
+            r2.affected.iter().any(|a| a.uid == Uid("sec2".into())),
+            "Documents must be reverse-walked the same way: {r2:?}"
+        );
+
+        // impact(sec) must NOT reach "doc" — Contains is never impact-traversed,
+        // in EITHER direction (a section changing doesn't "affect" its file, and
+        // a Doc target doesn't reach back out through Contains to its sections —
+        // that view is `context(doc).members`, not `impact`).
+        let r3 = impact(&g, &Uid("sec".into()), &opts);
+        assert!(
+            !r3.affected.iter().any(|a| a.uid == Uid("doc".into())),
+            "Contains must never be impact-traversed: {r3:?}"
+        );
+        let r4 = impact(&g, &Uid("doc".into()), &opts);
+        assert!(
+            r4.affected.is_empty(),
+            "a Doc has no incoming dependency edges of its own: {r4:?}"
+        );
     }
 }

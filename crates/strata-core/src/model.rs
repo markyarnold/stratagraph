@@ -69,6 +69,25 @@ pub enum NodeKind {
     /// Produced by `strata-index`; handled generically by the graph/traversal (no
     /// per-kind match arms), so this addition is additive.
     CloudAction,
+    /// A knowledge-plane **ingested markdown file** (a README/ADR/manual page —
+    /// `docs/**/*.md`, a root `*.md`, or a nested `README.md`). One per file;
+    /// `name` = filename, `fqn` = `path` = the repo-relative path. Owns its
+    /// [`DocSection`](NodeKind::DocSection)s via outgoing `Contains` edges.
+    /// Produced by `strata-index::knowledge::build_knowledge_plane` from a
+    /// `strata_knowledge::DocModel`. Lives in the knowledge plane; handled
+    /// generically by the graph/traversal (no per-kind match arms), so this
+    /// addition is additive (Knowledge plane, K2).
+    Doc,
+    /// A knowledge-plane **section of a markdown file**, delimited by a heading
+    /// (or the synthetic preamble) and the next same-or-higher heading. `name` =
+    /// heading text, `fqn` = `<path>#<anchor>` (a GitHub-style, dedup-suffixed
+    /// slug — the plan's pinned UID-stability shape), `span` = heading through
+    /// end of body. The source of outgoing `Mentions` edges to whatever it
+    /// references, and the target of incoming `Documents`/`Mentions` reverse
+    /// walks — so a symbol's `impact` includes the docs that mention it. Lives
+    /// in the knowledge plane; handled generically (no per-kind match arms),
+    /// additive (Knowledge plane, K2).
+    DocSection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -179,6 +198,45 @@ pub enum EdgeKind {
     /// edge (an honest unknown, never a guessed action). Handled generically;
     /// `impact` does not traverse it (it is reconciliation input). Additive.
     RequiresPermission,
+    /// Knowledge-plane doc-comment link: a `DocSection` node → the code symbol
+    /// it documents, from a doc comment SYNTACTICALLY adjacent to its
+    /// declaration (Rust outer `///`/`/** */` — inner `//!` excluded — TS/JS
+    /// JSDoc, Python docstring, C# `///`
+    /// XML doc — see `RawSymbol::doc_span`). A syntactic fact, always Extracted
+    /// 0.95 — never earned by prose merely mentioning a symbol (that is
+    /// [`Mentions`] below, at a lower, inferred tier). Not yet emitted by any
+    /// analyzer (K2 adds the variant + traversal; K3 wires `doc_span` across
+    /// the four analyzers and emits the edge). A dependency edge in the SAME
+    /// sense as `Mentions`: `impact` reverse-walks it INCOMING from the target,
+    /// so `impact(symbol)` reaches the section that documents it. Handled
+    /// generically by the graph/traversal (Knowledge plane, K2/K3).
+    Documents,
+    /// Knowledge-plane reference: a `DocSection` node → any node it mentions
+    /// (a path, a fully-qualified name, or a bare name resolved from the
+    /// section's extracted refs — see `strata_knowledge::DocRef`). A dependency
+    /// edge in the SAME sense as `Calls`/`Reads`/`Assumes`: `impact` reverse-
+    /// walks it INCOMING from the target, so `impact(symbol)` reaches the doc
+    /// sections that mention it — docs enter the blast radius, rendered with an
+    /// honest "needs review" verdict (never "WILL BREAK": a stale doc doesn't
+    /// fail to compile). Graded per the design §2 table: an exact repo-relative
+    /// path reference is Extracted 0.95; a unique fqn/name match is Inferred
+    /// 0.80/0.70 (the bare-name 0.70 tier is reached only from an inline-code
+    /// span, never a fenced-code-block token — a fence token is incidental
+    /// example vocabulary, not a deliberate symbol callout); a multi-candidate
+    /// match fans out Ambiguous 0.35, one edge per candidate — never a
+    /// confident pick. An unresolvable reference earns NO edge. A path
+    /// reference is always counted as `stale_doc_mentions` (the doc-drift
+    /// signal — the repo reports which docs are lying); a fenced-code-block
+    /// token's miss is silently dropped uncounted (drift is an
+    /// authorial-claim signal, and a fence token was never claimed as a
+    /// reference); an inline-code miss is counted as `stale_doc_mentions`
+    /// ONLY when its text is symbol-shaped (contains `::`/`.`, or is
+    /// compound-case) — a plain-word/`SCREAMING_SNAKE_CASE` inline-code miss
+    /// is schema-invisible (a constant/config key the graph never models),
+    /// not drift, and is counted separately as `unresolved_plain_refs` (K7 fix
+    /// F2, `strata_index::knowledge::inline_code_looks_symbol_shaped`).
+    /// Handled generically by the graph/traversal (Knowledge plane, K2).
+    Mentions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

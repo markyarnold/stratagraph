@@ -141,6 +141,9 @@ fn operation_def(
         norm_path: method.to_string(),
         operation_id: None,
         spec_path: spec_path.to_string(),
+        // Not captured by this adapter (K4 is OpenAPI + GraphQL only); a proto
+        // comment above the rpc is a future extension, not this task's scope.
+        description: None,
     }
 }
 

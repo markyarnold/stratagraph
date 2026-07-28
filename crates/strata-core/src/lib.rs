@@ -16,7 +16,7 @@ pub use graph::{Direction, Graph};
 pub use ids::Uid;
 pub use model::{Confidence, Edge, EdgeKind, Node, NodeKind, Provenance, Span};
 pub use traverse::query;
-pub use traverse::{context, ContextResult};
+pub use traverse::{context, ContextDocRef, ContextResult};
 pub use traverse::{explain, Explanation, PathHop};
 pub use traverse::{
     impact, will_break_label, AffectedNode, ImpactOptions, ImpactResult, MemberDependent,

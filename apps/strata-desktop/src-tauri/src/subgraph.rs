@@ -27,7 +27,7 @@ use serde::Serialize;
 use serde_json::Value;
 use strata_core::{Direction, EdgeKind, Graph, Node, NodeKind, Uid};
 
-/// The four visual planes a node can belong to. This is the **single source of
+/// The five visual planes a node can belong to. This is the **single source of
 /// truth** for the plane of a [`NodeKind`]; the renderer consumes the derived
 /// `plane` string and must never re-derive it from `kind`.
 ///
@@ -37,6 +37,8 @@ use strata_core::{Direction, EdgeKind, Graph, Node, NodeKind, Uid};
 /// * `infra` — the infrastructure plane: Lambda functions, IAM roles, AppSync
 ///   API/resolver/datasource resources, and any other cloud resource.
 /// * `data` — the database plane: tables and columns (Slice 16, D3).
+/// * `knowledge` — the repo's own documentation: ingested markdown docs and
+///   their sections (Knowledge plane, K2).
 ///
 /// Returned as a `&'static str` (no allocation) so callers can both compare and
 /// clone cheaply.
@@ -59,12 +61,13 @@ pub fn plane_of(kind: NodeKind) -> &'static str {
         | NodeKind::CloudResource
         | NodeKind::CloudAction => "infra",
         NodeKind::Table | NodeKind::Column => "data",
+        NodeKind::Doc | NodeKind::DocSection => "knowledge",
     }
 }
 
 /// The set of valid plane names a [`compute_subgraph`] filter may contain. Kept
 /// in sync with [`plane_of`]'s range; an unknown plane in a filter is an error.
-const PLANES: [&str; 4] = ["code", "contract", "infra", "data"];
+const PLANES: [&str; 5] = ["code", "contract", "infra", "data", "knowledge"];
 
 /// The maximum BFS depth the server will honour, regardless of the requested
 /// `depth`. Keeps a renderer feed bounded (spec: depth ≤ 3).
@@ -483,6 +486,14 @@ mod tests {
         // Data plane: database tables and columns (Slice 16, D3).
         for k in [NodeKind::Table, NodeKind::Column] {
             assert_eq!(plane_of(k), "data", "{k:?} must be in the data plane");
+        }
+        // Knowledge plane: ingested markdown docs and their sections (K2).
+        for k in [NodeKind::Doc, NodeKind::DocSection] {
+            assert_eq!(
+                plane_of(k),
+                "knowledge",
+                "{k:?} must be in the knowledge plane"
+            );
         }
     }
 

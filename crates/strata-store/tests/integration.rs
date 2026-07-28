@@ -355,6 +355,7 @@ fn parse_cache_round_trip_reopen() {
                     end_line: 3,
                     end_col: 1,
                 },
+                doc_span: None,
             }],
             imports: vec![ImportRef {
                 specifier: "./utils".into(),
@@ -393,6 +394,7 @@ fn parse_cache_round_trip_reopen() {
                     end_line: 12,
                     end_col: 3,
                 },
+                doc_span: None,
             }],
             imports: vec![],
             calls: vec![],
@@ -450,6 +452,7 @@ fn parse_cache_ignores_stale_schema_version() {
                 fqn: "stale".into(),
                 container_fqn: None,
                 span: Span::default(),
+                doc_span: None,
             }],
             imports: vec![],
             calls: vec![],

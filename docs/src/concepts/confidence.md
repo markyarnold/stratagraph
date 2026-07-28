@@ -160,12 +160,19 @@ You can see all of this in one command. On this repository:
 
 ```text
 $ strata impact will_break_label
-Impact of will_break_label (crates/strata-core/src/traverse.rs) — 161 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  impact (crates/strata-core/src/traverse.rs)
-      2  0.90   no  WILL BREAK  members_with_dependents (...)
+Impact of will_break_label (crates/strata-core/src/traverse.rs) — 409 affected:
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  needs review  doc: will_break_label (crates/strata-core/src/traverse.rs)
+      1  0.95   no  WILL BREAK    impact (crates/strata-core/src/traverse.rs)
+      2  0.90   no  needs review  doc: impact (crates/strata-core/src/traverse.rs)
+      2  0.90   no  WILL BREAK    members_with_dependents (...)
       ...
 ```
+
+(A `needs review` row is a doc section that documents or mentions
+`will_break_label` — it rides the blast radius like any other dependent, but
+is never labelled `WILL BREAK`: a stale doc goes stale, it does not fail to
+compile. Counts grow as the repo's own docs grow.)
 
 Each row carries the depth, the accumulated `conf`, the ambiguity flag, and the
 verdict derived from them. `explain <target> <affected>` unfolds the evidence
