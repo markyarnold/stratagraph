@@ -145,7 +145,8 @@ impl ContractAdapter for GraphqlAdapter {
                 let Some(field_name) = field.name().map(|n| n.text().to_string()) else {
                     continue;
                 };
-                ops.push(operation_def(kind, &field_name, spec_path));
+                let description = field_description(&field);
+                ops.push(operation_def(kind, &field_name, spec_path, description));
             }
         }
 
@@ -154,7 +155,12 @@ impl ContractAdapter for GraphqlAdapter {
 }
 
 /// Build a canonical [`OperationDef`] for one root field.
-fn operation_def(kind: RootKind, field_name: &str, spec_path: &str) -> OperationDef {
+fn operation_def(
+    kind: RootKind,
+    field_name: &str,
+    spec_path: &str,
+    description: Option<String>,
+) -> OperationDef {
     let key = format!("{}.{}", kind.canonical(), field_name);
     OperationDef {
         format: ContractFormat::Graphql,
@@ -164,7 +170,20 @@ fn operation_def(kind: RootKind, field_name: &str, spec_path: &str) -> Operation
         norm_path: field_name.to_string(),
         operation_id: None,
         spec_path: spec_path.to_string(),
+        description,
     }
+}
+
+/// A field's docstring (knowledge plane, K4): the SDL `"""…"""`/`"…"` literal
+/// immediately above the field, inside the type. apollo-parser's
+/// `StringValue -> String` conversion dequotes, unescapes, and (for a block
+/// string) dedents per the GraphQL spec's `BlockStringValue()` algorithm — so
+/// the only work left here is trimming; empty after trimming (or no docstring
+/// at all) → `None`, never `Some("")`.
+fn field_description(field: &cst::FieldDefinition) -> Option<String> {
+    let raw = String::from(field.description()?.string_value()?);
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// The concrete type name backing each root operation kind. Defaults to the

@@ -348,6 +348,7 @@ mod tests {
             norm_path: normalize_path(path),
             operation_id: op_id.map(str::to_string),
             spec_path: "openapi.yaml".to_string(),
+            description: None,
         }
     }
 
@@ -361,6 +362,7 @@ mod tests {
             norm_path: field.to_string(),
             operation_id: None,
             spec_path: spec.to_string(),
+            description: None,
         }
     }
 

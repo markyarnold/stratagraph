@@ -10,12 +10,17 @@ Before you touch a symbol, run `impact` on it and see exactly what depends on it
 
 ```text
 $ strata impact "classify_risk"
-Impact of classify_risk (crates/strata-index/src/changes.rs) — 76 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  detect_changes (crates/strata-index/src/changes.rs)
-      2  0.76   no  WILL BREAK  tool_blast (crates/strata-mcp/src/tools.rs)
+Impact of classify_risk (crates/strata-index/src/changes.rs) — 179 affected:
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  needs review  doc: classify_risk (crates/strata-index/src/changes.rs)
+      ...
+      1  0.95   no  WILL BREAK    detect_changes_in_repo (crates/strata-index/src/changes.rs)
+      ...
+      2  0.90   no  WILL BREAK    detect_changes (crates/strata-index/src/changes.rs)
       ...
 ```
+
+(`needs review` marks a doc section that documents or mentions the symbol — a doc going stale is a different failure mode from code breaking, never labelled WILL BREAK. Counts grow as the repo's own docs grow.)
 
 When you land in an unfamiliar repository, `context` gives you the 360° view of any symbol: its callers and callees, what it imports, and (where the planes are present) which contract operations it produces or consumes and which tables it touches. It is the fastest way to learn how a piece of code fits into the system rather than reading outward from it one file at a time. And when you do need to rename, [`rename`](../guides/rename.md) edits only the files the graph implicates, never a blind find-and-replace that corrupts cross-file or cross-plane references it could not see.
 

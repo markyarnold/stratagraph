@@ -47,6 +47,9 @@ fn extract_openapi_v3_yaml() {
             norm_path: "/users/{}".into(),
             operation_id: Some("getUser".into()),
             spec_path: "openapi.yaml".into(),
+            // The fixture's `getUser` declares only `summary` (no
+            // `description`) — the "one present" case, trimmed.
+            description: Some("Fetch one user".into()),
         }
     );
 
@@ -163,4 +166,31 @@ fn does_not_detect_arbitrary_documents() {
     // A YAML doc that has `paths` but no version key is NOT an OpenAPI spec.
     let paths_no_version = "paths:\n  /x:\n    get: {}\n";
     assert!(!OpenApiAdapter.detects("random.yaml", paths_no_version));
+}
+
+// ── Test 7: `summary`/`description` capture (K4, knowledge plane) ───────────
+
+#[test]
+fn operation_summary_and_description_are_captured() {
+    // Both fields present → joined with a blank line, trimmed.
+    let spec = r#"{"openapi":"3.0.0","paths":{"/users":{"get":{"operationId":"listUsers","summary":"List users","description":"Paginated."}}}}"#;
+    let ops = OpenApiAdapter
+        .extract("openapi.json", spec)
+        .expect("inline spec parses");
+    assert_eq!(
+        ops[0].description.as_deref(),
+        Some("List users\n\nPaginated.")
+    );
+}
+
+#[test]
+fn absent_description_is_none() {
+    // `updateUser` in the v3 fixture declares neither `summary` nor
+    // `description` — never `Some("")`.
+    let spec = fixture("openapi_v3.yaml");
+    let ops = OpenApiAdapter
+        .extract("openapi.yaml", &spec)
+        .expect("v3 yaml parses");
+    let update_user = op_by_key(&ops, "updateUser");
+    assert_eq!(update_user.description, None);
 }

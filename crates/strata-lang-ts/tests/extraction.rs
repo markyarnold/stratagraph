@@ -1083,3 +1083,119 @@ fn ts_drizzle_pgtable_is_deferred_no_orm_hint() {
         file.orm_models
     );
 }
+
+// --- doc_span capture (Knowledge plane, K3) ----------------------------------
+//
+// A `/** … */` JSDoc block comment immediately preceding a declaration (no
+// blank line between) sets `RawSymbol::doc_span` to the SPAN of that comment —
+// never its text (bodies-from-disk). The `export` wrapper is tolerated: the
+// comment sits before `export_statement`, not before the wrapped declaration
+// itself. A plain `//`/`/* */` comment, or one separated by a blank line, is
+// NOT a doc comment.
+
+fn sym<'a>(file: &'a strata_core::AnalyzedFile, name: &str) -> &'a RawSymbol {
+    file.symbols
+        .iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("missing symbol {name}: {:?}", file.symbols))
+}
+
+#[test]
+fn jsdoc_block_sets_doc_span_adjacent_only_through_export_wrapper() {
+    let src = concat!(
+        "/**\n",
+        " * Adds one.\n",
+        " */\n",
+        "export function addOne(x) { return x + 1; }\n",
+        "\n",
+        "// detached comment\n",
+        "\n",
+        "export function plain() {}\n",
+    );
+    let file = analyze("src/a.ts", src);
+    let span = sym(&file, "addOne")
+        .doc_span
+        .expect("doc span captured through the export wrapper");
+    assert_eq!((span.start_line, span.end_line), (1, 3));
+    assert!(
+        sym(&file, "plain").doc_span.is_none(),
+        "a blank-line-separated comment is NOT a doc comment"
+    );
+}
+
+#[test]
+fn jsdoc_on_class_interface_method_and_const_arrow_captures_span() {
+    let src = concat!(
+        "/** Documents Widget. */\n",
+        "export class Widget {\n",
+        "  /** Documents build. */\n",
+        "  build() {}\n",
+        "\n",
+        "  plain() {}\n",
+        "}\n",
+        "\n",
+        "/** Documents Shape. */\n",
+        "export interface Shape {\n",
+        "  x: number;\n",
+        "}\n",
+        "\n",
+        "/** Documents arrow. */\n",
+        "export const arrow = (x) => x;\n",
+    );
+    let file = analyze("src/w.ts", src);
+    assert!(
+        sym(&file, "Widget").doc_span.is_some(),
+        "an exported class's own doc comment sets doc_span"
+    );
+    assert!(
+        sym(&file, "build").doc_span.is_some(),
+        "a method's own doc comment sets doc_span"
+    );
+    assert!(
+        sym(&file, "plain").doc_span.is_none(),
+        "a method with no preceding comment has no doc_span"
+    );
+    assert!(
+        sym(&file, "Shape").doc_span.is_some(),
+        "an exported interface's own doc comment sets doc_span"
+    );
+    assert!(
+        sym(&file, "arrow").doc_span.is_some(),
+        "an exported const-arrow function's own doc comment sets doc_span"
+    );
+}
+
+#[test]
+fn jsdoc_single_star_block_and_line_comments_are_not_doc_comments() {
+    let src = concat!(
+        "/* not jsdoc */\n",
+        "export function notdoc() {}\n",
+        "\n",
+        "// also not jsdoc\n",
+        "export function alsonotdoc() {}\n",
+    );
+    let file = analyze("src/nd.ts", src);
+    assert!(sym(&file, "notdoc").doc_span.is_none());
+    assert!(sym(&file, "alsonotdoc").doc_span.is_none());
+}
+
+#[test]
+fn jsdoc_run_stops_at_a_blank_line_gap_within_the_comment_block() {
+    // "Line A." is separated from "Line B." by a blank line, so only the
+    // adjacent "Line B." comment is part of foo's doc_span.
+    let src = concat!(
+        "/** Line A. */\n",
+        "\n",
+        "/** Line B. */\n",
+        "export function foo() {}\n",
+    );
+    let file = analyze("src/c.ts", src);
+    let span = sym(&file, "foo")
+        .doc_span
+        .expect("the adjacent \"Line B.\" comment is still captured");
+    assert_eq!(
+        (span.start_line, span.end_line),
+        (3, 3),
+        "the run stops at the gap: only the adjacent \"Line B.\" line is included, got {span:?}"
+    );
+}

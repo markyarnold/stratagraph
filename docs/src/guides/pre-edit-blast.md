@@ -26,6 +26,23 @@ StrataGraph pre-edit blast — crates/strata-cli/src/reload.rs: 14 symbol(s) def
 Before editing, run `impact`/`context` on the symbols above and report the blast radius. Treat confidence < 0.40 or `ambiguous` as UNKNOWN — never present it as certain. PAUSE for direction if risk is HIGH/CRITICAL, crosses a repo boundary, or touches contract surface.
 ```
 
+### The `docs:` line
+
+When the file has doc sections that document or mention its symbols, the
+block carries one more line, capped at 200 bytes — the top three by
+confidence, plus a count:
+
+```text
+docs: Retry policy §retry-policy (0.95) · Rate limits §rate-limits (0.80) · +2 more — guidance src/a.ts for detail
+```
+
+It is **absent entirely** when the file has no doc links — silent when
+clean, never a bare `docs: (0)`. This is the free half of the knowledge
+plane's awareness: the agent sees it on every edit at no extra tool-call
+cost, and the standing steering rule below turns "≥ 0.80 and unconsulted"
+into a conditional (never unconditional) `guidance` fetch. See
+[The knowledge plane](../concepts/knowledge.md) for the model behind it.
+
 ## It is non-blocking and degrade-safe
 
 The hook is built to be invisible until it has something useful to say, and to never get in the way:
@@ -50,7 +67,9 @@ The injected block is **authoritative at edit time**: it's the live blast radius
 The hook is the *mechanical* half. The kit also writes a steering block into `CLAUDE.md` (or `.kiro/steering/`), the *prose* half, that holds the agent to a small set of rules even when no hook fired. The load-bearing ones:
 
 - **Run `impact` before modifying a symbol**, and report the blast radius (direct and indirect dependents, each one's verdict and confidence, an overall risk) before proceeding.
-- **Run `detect_changes` before committing**: the per-plane, whole-diff check (see [Pre-commit change checks](detect-changes.md)).
+- **Run `detect_changes` before committing**: the per-plane, whole-diff check (see [Pre-commit change checks](detect-changes.md)), reporting its "docs to review" line and only ever offering — never auto-applying — a fix for a stale section.
+- **Act on the `docs:` line above, conditionally**: when it names a section at ≥ 0.80 confidence you have not consulted this session, fetch `guidance` for the file before editing — never an unconditional per-edit call.
+- **Treat doc guidance as repo knowledge, not ground truth**: a doc can be stale (the graph counts drift); a mention below 0.40 or ambiguous is UNKNOWN, the same trust policy as every other band.
 - **Treat confidence bands as trust policy**: the ≥0.90 / 0.40–0.89 / <0.40 rule above.
 - **Flag likely-dead contract surface**: 0 producers and 0 consumers (see [Is this schema field dead?](dead-surface.md)).
 - **Never edit a schema/contract file** without first running `impact`/`context` on the affected operations.

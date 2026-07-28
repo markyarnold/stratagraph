@@ -12,13 +12,16 @@ StrataGraph is a cross-plane code graph: **code** (functions, classes, imports, 
 - You don't yet know which tool answers the question.
 - You need the tool surface, the plane model, or the confidence-band policy.
 - You're about to edit and want the safe-change protocol in one place.
+- Repo conventions / "is there guidance on X?" → reach for `guidance`/`search_docs` directly; no need to grep the docs tree by hand.
 
-## The three tools
+## The tools
 
 - **`query({ text })`**: find the symbol by name / fqn / path (case-insensitive substring). Start here when you only have a name.
-- **`context({ symbol })`**: the 360° view: `callers`, `callees`, `imports_in`/`imports_out`, `members`, `container`, and the contract buckets `producers` / `consumers` / `produces` / `consumes`.
+- **`context({ symbol })`**: the 360° view: `callers`, `callees`, `imports_in`/`imports_out`, `members`, `container`, the contract buckets `producers` / `consumers` / `produces` / `consumes`, and the knowledge-plane `docs` bucket (refs only — the sections that document/mention this symbol).
 - **`impact({ symbol, depth?, min_confidence?, include_contracts?, include_infra? })`**: reverse blast radius. Contract- and infra-aware by default (follows producer → operation → consumer, and Assumes/Routes/Runs); pass `include_contracts: false` and/or `include_infra: false` to narrow it.
 - **`explain({ symbol, affected, … })`**: the evidence chain proving WHY `affected` is in `symbol`'s blast radius (per-edge provenance/confidence + the running confidence), or an honest `reachable: false`.
+- **`guidance({ symbol? | file?, budget?, section? })`**: a token-budgeted digest of what the repo already knows about a symbol/file — doc comment first, then the docs that document/mention it, by descending confidence. Bodies are read from disk at query time, so guidance is never staler than the file. Doc guidance is repo knowledge, not ground truth: a section below 0.40 or ambiguous is UNKNOWN, same trust policy as every other band.
+- **`search_docs({ query, limit? })`**: lexical (tantivy, deterministic) full-text search over indexed docs — markdown sections, doc comments, spec descriptions. Every hit names its matched terms; use it instead of grepping the docs tree.
 
 ## Reading confidence (trust policy)
 

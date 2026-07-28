@@ -14,6 +14,7 @@
 
 - [The cross-plane graph](concepts/graph.md)
 - [The five planes](concepts/planes.md)
+- [The knowledge plane](concepts/knowledge.md)
 - [Confidence and provenance](concepts/confidence.md)
 - [Cross-boundary impact](concepts/cross-boundary.md)
 - [Languages and coverage](concepts/coverage.md)
@@ -21,6 +22,7 @@
 # Getting started
 
 - [Install](getting-started/install.md)
+- [Upgrading](getting-started/upgrading.md)
 - [Index your first repository](getting-started/first-index.md)
 - [Your first queries](getting-started/first-queries.md)
 - [Wire up your editor (agent kit)](getting-started/agent-kit.md)
@@ -57,4 +59,5 @@
 - [Architecture](project/architecture.md)
 - [Contributing](project/contributing.md)
 - [Roadmap](project/roadmap.md)
+- [Changelog](project/changelog.md)
 - [FAQ and troubleshooting](project/faq.md)

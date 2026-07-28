@@ -514,3 +514,144 @@ fn cs_does_not_capture_interpolated_string_sql_dynamic() {
         file.sql_candidates
     );
 }
+
+// --- doc_span capture (Knowledge plane, K3) ----------------------------------
+//
+// A contiguous `///` XML-doc run immediately above a declaration (no blank
+// line between) sets `RawSymbol::doc_span` to the SPAN of that run — never its
+// text (bodies-from-disk). A plain `//`/`/* */` comment, or one separated by a
+// blank line, is NOT a doc comment.
+//
+// (`sym` is already defined above, near the top of this file.)
+
+#[test]
+fn xmldoc_run_sets_doc_span_adjacent_only() {
+    let src = concat!(
+        "namespace App {\n",
+        "class R {\n",
+        "/// <summary>\n",
+        "/// Adds one.\n",
+        "/// </summary>\n",
+        "public int AddOne(int x) { return x + 1; }\n",
+        "\n",
+        "// detached comment\n",
+        "\n",
+        "public void Plain() {}\n",
+        "}\n",
+        "}\n",
+    );
+    let file = analyze("R.cs", src);
+    let span = sym(&file, "AddOne").doc_span.expect("doc span captured");
+    assert_eq!((span.start_line, span.end_line), (3, 5));
+    assert!(
+        sym(&file, "Plain").doc_span.is_none(),
+        "a blank-line-separated comment is NOT a doc comment"
+    );
+}
+
+#[test]
+fn xmldoc_on_class_and_method_captures_span() {
+    let src = concat!(
+        "namespace App {\n",
+        "/// <summary>Documents Widget.</summary>\n",
+        "public class Widget {\n",
+        "    /// <summary>Documents Build.</summary>\n",
+        "    public void Build() {}\n",
+        "\n",
+        "    public void Plain() {}\n",
+        "}\n",
+        "}\n",
+    );
+    let file = analyze("w.cs", src);
+    assert!(
+        sym(&file, "Widget").doc_span.is_some(),
+        "a class's own XML-doc comment sets doc_span"
+    );
+    assert!(
+        sym(&file, "Build").doc_span.is_some(),
+        "a method's own XML-doc comment sets doc_span"
+    );
+    assert!(
+        sym(&file, "Plain").doc_span.is_none(),
+        "a method with no preceding comment has no doc_span"
+    );
+}
+
+#[test]
+fn xmldoc_quadruple_slash_and_block_comments_are_not_doc_comments() {
+    let src = concat!(
+        "namespace App {\n",
+        "class R {\n",
+        "//// banner, not XML doc\n",
+        "public void NotDoc() {}\n",
+        "\n",
+        "/* not doc */\n",
+        "public void AlsoNotDoc() {}\n",
+        "}\n",
+        "}\n",
+    );
+    let file = analyze("nd.cs", src);
+    assert!(sym(&file, "NotDoc").doc_span.is_none());
+    assert!(sym(&file, "AlsoNotDoc").doc_span.is_none());
+}
+
+#[test]
+fn xmldoc_run_stops_at_a_blank_line_gap_within_the_comment_block() {
+    let src = concat!(
+        "namespace App {\n",
+        "class R {\n",
+        "/// Line A.\n",
+        "\n",
+        "/// Line B.\n",
+        "public void Foo() {}\n",
+        "}\n",
+        "}\n",
+    );
+    let file = analyze("c.cs", src);
+    let span = sym(&file, "Foo")
+        .doc_span
+        .expect("the adjacent \"Line B.\" comment is still captured");
+    assert_eq!(
+        (span.start_line, span.end_line),
+        (5, 5),
+        "the run stops at the gap: only the adjacent \"Line B.\" line is included, got {span:?}"
+    );
+}
+
+#[test]
+fn xmldoc_skips_an_attribute_between_the_comment_and_the_item() {
+    // `[Serializable]` (or any attribute) between a doc comment and the item
+    // it decorates is idiomatic C# everywhere — the attribute must be
+    // transparent to doc-comment adjacency.
+    let src = concat!(
+        "namespace App {\n",
+        "/// <summary>Doc</summary>\n",
+        "[Serializable]\n",
+        "public class Wrapped { }\n",
+        "}\n",
+    );
+    let file = analyze("w.cs", src);
+    let span = sym(&file, "Wrapped")
+        .doc_span
+        .expect("doc span captured through the attribute");
+    assert_eq!((span.start_line, span.end_line), (2, 2));
+}
+
+#[test]
+fn xmldoc_blank_line_before_the_attribute_still_blocks_capture() {
+    // A blank line between the doc comment and the attribute is a real gap —
+    // the attribute-skip must not silently bridge it.
+    let src = concat!(
+        "namespace App {\n",
+        "/// Doc.\n",
+        "\n",
+        "[Serializable]\n",
+        "public class Gap { }\n",
+        "}\n",
+    );
+    let file = analyze("w.cs", src);
+    assert!(
+        sym(&file, "Gap").doc_span.is_none(),
+        "a blank line between the comment and the attribute blocks capture"
+    );
+}

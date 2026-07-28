@@ -2,7 +2,7 @@
 
 A *plane* is one layer of your system that StrataGraph can read: source code, the
 contracts between services, the cloud infrastructure that runs them, the data
-they persist, and (in the future) the human knowledge that describes them. Each
+they persist, and the human knowledge that describes them. Each
 plane contributes its own nodes and edges to the one
 [cross-plane graph](graph.md) and, crucially, forms edges that **cross into**
 the other planes. That cross-plane wiring is what makes a blast radius reach from
@@ -11,14 +11,15 @@ a database column to the frontend that displays it; see
 
 StrataGraph builds whatever planes are present. A plain library repo has only the code
 plane. Add an OpenAPI spec and the contract plane appears; add a SAM template and
-the infrastructure plane appears; add SQL migrations and the data plane appears.
+the infrastructure plane appears; add SQL migrations and the data plane appears;
+add a `docs/` tree, a README, or documented code and the knowledge plane appears.
 Impact degrades gracefully: a traversal returns whatever planes exist, and a
 graph with no edges of a given kind is byte-identical to one where that plane was
 never considered.
 
-This repository, for reference, has the code, contract, and infra planes present.
-Each section below states exactly **what it ingests**, **what nodes and edges it
-creates**, and **the cross-plane links it forms**.
+This repository, for reference, has the code, contract, infra, and knowledge
+planes present. Each section below states exactly **what it ingests**, **what
+nodes and edges it creates**, and **the cross-plane links it forms**.
 
 ## Code plane
 
@@ -222,21 +223,67 @@ column, find dependent services" scenario. Measured linking accuracy is in
 > (the design's static-first-with-honest-bounds stance; runtime query-log
 > ingestion is a future runtime-observation enhancement). See [Coverage](coverage.md).
 
-## Knowledge plane (future: not built)
+## Knowledge plane
 
-The fifth plane in the design is the **knowledge plane**: an opt-in LLM and vision
-pass over ADRs, design documents, PDFs, and architecture diagrams, attaching
-`Document`, `Decision`, and `Concept` nodes with `MODEL` provenance.
+The repository's own written knowledge: READMEs, ADRs, guides under `docs/`,
+doc comments, and OpenAPI/GraphQL spec descriptions. Built whenever any of
+those exist — which is nearly every real repository.
 
-**This plane is not built.** It is described here for completeness because the
-manual and the design document (`docs/strata-design.md`) refer to all five
-planes. When it lands, its two defining properties are already specified:
+> **Design note, corrected.** An earlier revision of this page described the
+> knowledge plane as a future opt-in LLM/vision pass with `MODEL` provenance.
+> That is not what shipped. Decision 2 of the design
+> (`docs/specs/2026-07-13-knowledge-plane-design.md`) chose **structural and
+> lexical retrieval, zero ML**: deterministic graph edges (`Documents`,
+> `Mentions`), banded exactly like the other four planes, plus a full-text
+> index. No embeddings, no models, no API keys. A future semantic tier remains
+> a possible, separate, explicit decision — it is not this plane.
 
-- Its nodes/edges carry `MODEL` provenance and are **visually and structurally
-  segregated** from the deterministic graph.
-- `MODEL` provenance **never gates impact**: a model-derived edge is surfaced as
-  context, never counted as a "will break" dependency. The deterministic
-  guarantee of the other four planes is not diluted by the knowledge plane.
+**Ingests.** Markdown under `docs/` (recursively), a root-level `*.md`
+(`README.md`, `CONTRIBUTING.md`, …), or a nested `README.md` at any depth
+(`CHANGELOG*` is always excluded — noise; entries churn). From code, it
+ingests doc comments (JSDoc/TSDoc, Python docstrings, C# `///` XML, Rust outer
+`///`/`/** */`) immediately preceding a declaration. From the contract plane,
+it ingests OpenAPI/GraphQL operation descriptions.
 
-Until then, treat any reference to the knowledge plane as forward-looking. The
-four deterministic planes above are what StrataGraph reads today.
+**Creates.**
+
+- Nodes: `Doc` (one per ingested markdown file) and `DocSection` (one per
+  heading, plus a doc-comment section per documented symbol). Both
+  `Extracted` 1.0. `Doc —Contains→ DocSection` is structural membership,
+  never traversed by `impact` (the same rule as the infra plane's `Contains`).
+- Edges:
+  - `Documents` (`DocSection` → symbol): a doc comment syntactically adjacent
+    to its symbol — Extracted `0.95`. Markdown prose never earns this tier;
+    only a parser-observed adjacency does.
+  - `Mentions` (`DocSection` → any node): a reference resolved at one of four
+    tiers by how confidently it names its target — an exact repo-relative
+    path (Extracted `0.95`), a unique fqn in a fence or inline code
+    (Inferred `0.80`), a unique bare name in inline code only (Inferred
+    `0.70`), or a name matching several candidates (Ambiguous `0.35`
+    fan-out, one edge per candidate).
+
+  A reference that resolves to **nothing** produces no edge: it is counted as
+  `stale_doc_mentions` — the repo reporting that one of its own docs is lying
+  — never guessed into a phantom link. See
+  [The knowledge plane](knowledge.md) for the full model, the budgeted
+  serving surfaces (`context`'s `docs` bucket, `guidance`, `search_docs`, and
+  the pre-edit hook's `docs:` line), and the bodies-from-disk freshness rule.
+
+**Cross-plane links.** This plane bridges in **both** directions across every
+other plane, because a `Documents`/`Mentions` edge can point at a code
+symbol, a contract operation, an infra resource, or a data table. Reverse-
+walked by `impact` like any other edge: `impact(symbol)` lists the doc
+sections that document or mention it, rendered with a **"needs review"**
+verdict (a stale doc does not fail to compile, it goes stale) instead of
+"WILL BREAK," and `detect_changes` surfaces the same signal as a dedicated
+"docs to review" line. This is the plane that answers "what does the repo
+already say about the thing I'm about to change?" *before* an edit, and "what
+documentation does this change put at risk?" *after* one. Measured linking
+accuracy is in `docs/accuracy/knowledge-linking.md`.
+
+> **Honest bounds.** No semantic/embedding search and no generated summaries —
+> the engine serves refs, snippets, and budgeted digests; writing prose from
+> them is the agent's job. No ingestion of agent steering files themselves
+> (editors already inject those). No cross-repo doc linking beyond what
+> estate linking already provides for the nodes a doc references. See
+> [The knowledge plane → What is not built](knowledge.md#what-is-not-built-m1-scope).

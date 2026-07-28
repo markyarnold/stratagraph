@@ -1,8 +1,8 @@
 # Plane walkthroughs
 
-**Goal:** see, concretely, what each plane buys you, and where the payoff is the cross-boundary jump grep can't make. One short walkthrough per plane: **code** (a call chain), **contract** (a GraphQL field → its implementing resolver + querying frontend), **infra** (an IAM role → the Lambdas and resources that depend on it), and **data** (a table/column → the code that reads, writes, and maps it).
+**Goal:** see, concretely, what each plane buys you, and where the payoff is the cross-boundary jump grep can't make. One short walkthrough per plane: **code** (a call chain), **contract** (a GraphQL field → its implementing resolver + querying frontend), **infra** (an IAM role → the Lambdas and resources that depend on it), **data** (a table/column → the code that reads, writes, and maps it), and **knowledge** (a file → what the repo already knows about it).
 
-Each uses real commands. The code walkthrough runs against StrataGraph's own repo; the contract/infra/data ones use the engine's cross-repo fixtures under `crates/strata-index/tests/fixtures/` (indexed with `--workspace`), so each is reproducible. For the plane model itself, see [The five planes](../concepts/planes.md).
+Each uses real commands. The code and knowledge walkthroughs run against StrataGraph's own repo; the contract/infra/data ones use the engine's cross-repo fixtures under `crates/strata-index/tests/fixtures/` (indexed with `--workspace`), so each is reproducible. For the plane model itself, see [The five planes](../concepts/planes.md).
 
 ---
 
@@ -14,14 +14,22 @@ Take a function and ask who depends on it:
 
 ```console
 $ strata impact cmd_impact
-Impact of cmd_impact (crates/strata-cli/src/lib.rs) — 7 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  cmd_impact_dead_table_keeps_bare_message (crates/strata-cli/src/lib.rs)
+Impact of cmd_impact (crates/strata-cli/src/lib.rs) — 18 affected:
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  needs review  doc: cmd_impact (crates/strata-cli/src/lib.rs)
+      1  0.95   no  WILL BREAK    cmd_impact_dead_table_keeps_bare_message (crates/strata-cli/src/lib.rs)
       ...
-      1  0.80   no  WILL BREAK  main (crates/strata-cli/src/main.rs)
+      1  0.80   no  WILL BREAK    main (crates/strata-cli/src/main.rs)
+      ...
 ```
 
-Six tests call it directly, and so does `main`, the CLI entry point. To prove *why* a given caller is in the radius, ask `explain` for the chain:
+Six tests call it directly, and so does `main`, the CLI entry point — those
+seven rows are the `WILL BREAK` ones. The other eleven rows here are `needs
+review`: doc sections (this very manual among them) that mention `cmd_impact`
+— the knowledge plane puts docs in the blast radius too, but a stale doc is a
+different failure mode from code breaking, so it never reads `WILL BREAK`
+(counts grow as the repo's own docs grow). To prove *why* a given caller is
+in the radius, ask `explain` for the chain:
 
 ```console
 $ strata explain cmd_impact cmd_impact_dead_table_keeps_bare_message
@@ -57,9 +65,9 @@ One call gives you both sides of the contract: the resolver that **implements** 
 ```console
 $ strata impact getUser --workspace strata.workspace.toml
 Impact of getUser (src/resolvers.ts) — 2 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.80   no  WILL BREAK  QUERY getUser (getUser)
-      2  0.76   no  WILL BREAK  loadUserProfile (src/queries.ts)
+  depth  conf  amb  verdict       name (path)
+      1  0.80   no  WILL BREAK    QUERY getUser (getUser)
+      2  0.76   no  WILL BREAK    loadUserProfile (src/queries.ts)
 ```
 
 **The payoff:** changing the resolver reaches the frontend consumer through the operation node, a link that exists in *no* import and *no* shared code. With `--no-contracts`, this same impact returns 0 affected. The contract plane is the difference between "looks safe" and "breaks another team's query." (Full cross-repo treatment: [Cross-repository impact](cross-repo.md).)
@@ -86,14 +94,14 @@ Context for UserRole (IamRole) — template.yaml
 ```console
 $ strata impact UserRole --workspace strata.workspace.toml
 Impact of UserRole (template.yaml) — 7 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  UserFunction (template.yaml)
-      2  0.90   no  WILL BREAK  MUTATION createUser (createUser)
-      2  0.90   no  WILL BREAK  QUERY getUser (getUser)
-      2  0.90   no  WILL BREAK  UserDS (template.yaml)
-      3  0.86   no  WILL BREAK  CreateUserResolver (template.yaml)
-      3  0.86   no  WILL BREAK  GetUserResolver (template.yaml)
-      3  0.86   no  WILL BREAK  loadUser (src/queries.ts)
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  WILL BREAK    UserFunction (template.yaml)
+      2  0.90   no  WILL BREAK    MUTATION createUser (createUser)
+      2  0.90   no  WILL BREAK    QUERY getUser (getUser)
+      2  0.90   no  WILL BREAK    UserDS (template.yaml)
+      3  0.86   no  WILL BREAK    CreateUserResolver (template.yaml)
+      3  0.86   no  WILL BREAK    GetUserResolver (template.yaml)
+      3  0.86   no  WILL BREAK    loadUser (src/queries.ts)
 ```
 
 **The payoff, in one chain:** the IAM role → the Lambda that assumes it (d=1) → the operations that Lambda produces and the data source fronting it (d=2) → the AppSync resolvers and, at d=3, **`loadUser`, a frontend query in another repo**. A change to an IAM role surfacing a break in a frontend query, three hops and one repo boundary away. That reach is infra edges and contract edges composed together; no single-file or single-plane view produces it.
@@ -126,11 +134,11 @@ The table is mapped by an ORM model and has four columns. Its blast radius pulls
 ```console
 $ strata impact users --workspace strata.workspace.toml
 Impact of users (schema.sql) — 4 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  User (models.py)
-      1  0.95   no  WILL BREAK  touch_last_login (writer.py)
-      1  0.95   no  WILL BREAK  getUserEmail (src/users.ts)
-      1  0.95   no  WILL BREAK  listUsersWithOrg (src/users.ts)
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  WILL BREAK    User (models.py)
+      1  0.95   no  WILL BREAK    touch_last_login (writer.py)
+      1  0.95   no  WILL BREAK    getUserEmail (src/users.ts)
+      1  0.95   no  WILL BREAK    listUsersWithOrg (src/users.ts)
 ```
 
 **The payoff:** one table reaches a Python ORM model (`User`), a Python writer (`touch_last_login`), and two TypeScript readers (`getUserEmail`, `listUsersWithOrg`), **across languages**. Drop a column and you want all four in front of you. You can scope to a single column, too:
@@ -138,17 +146,52 @@ Impact of users (schema.sql) — 4 affected:
 ```console
 $ strata impact last_login --workspace strata.workspace.toml
 Impact of last_login (schema.sql) — 5 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  users (schema.sql)
-      2  0.90   no  WILL BREAK  User (models.py)
-      2  0.90   no  WILL BREAK  touch_last_login (writer.py)
-      2  0.90   no  WILL BREAK  getUserEmail (src/users.ts)
-      2  0.90   no  WILL BREAK  listUsersWithOrg (src/users.ts)
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  WILL BREAK    users (schema.sql)
+      2  0.90   no  WILL BREAK    User (models.py)
+      2  0.90   no  WILL BREAK    touch_last_login (writer.py)
+      2  0.90   no  WILL BREAK    getUserEmail (src/users.ts)
+      2  0.90   no  WILL BREAK    listUsersWithOrg (src/users.ts)
 ```
 
 The column reaches its table (d=1), then everything around the table (d=2).
 
 **Honest bounds on the data plane.** Links are **table-level**, and they come from *literal* SQL and the ORM `__tablename__`; a dynamically built query (`f"DELETE FROM {table}"`) is deliberately **not** linked, because the table name isn't a literal. So "no writes found" can mean "only dynamic writes exist." This is the never-invent rule: StrataGraph would rather miss a link than fabricate one. Verify before you treat a table as unused (see [Is this schema field dead?](dead-surface.md)).
+
+---
+
+## Knowledge plane: what does the repo already know about this?
+
+The knowledge plane is the repo's own docs — markdown, doc comments, spec descriptions — linked to the code they describe by `Documents` (a doc comment, syntactically adjacent) and `Mentions` (a markdown reference, banded by how precisely it names its target). `context` shows a symbol's `docs` bucket; `guidance` fetches the budgeted digest.
+
+Ask what the repo already knows about a real symbol in this codebase:
+
+```console
+$ strata context KnowledgeLinkCoverage
+Context for KnowledgeLinkCoverage (Class) — crates/strata-index/src/knowledge.rs
+  ...
+  docs (2):
+    - crates/strata-index/src/knowledge.rs#doc:KnowledgeLinkCoverage (0.95, Extracted)
+    - docs/plans/2026-07-13-knowledge-plane.md#task-k2-plane-builder--docdocsection-nodes-mentions-edges-coverage-drift-impact-needs-review (0.80, Inferred)
+```
+
+Two refs, cheap and cheap only — no body text, just enough to know coverage exists and where. Pull the actual content with `guidance`:
+
+```console
+$ strata guidance KnowledgeLinkCoverage
+Guidance for KnowledgeLinkCoverage — 2 section(s), budget_used 1775
+  crates/strata-index/src/knowledge.rs#doc:KnowledgeLinkCoverage (0.95, Extracted)
+    /// Coverage + drift counts [`build_knowledge_plane`] returns — the `knowledge:`
+    /// summary line's data, and (from K3 on) the vehicle for doc-comment counts.
+    ...
+  docs/plans/2026-07-13-knowledge-plane.md#task-k2-plane-builder--...--needs-review (0.80, Inferred)
+    ### Task K2: plane builder — Doc/DocSection nodes, Mentions edges, coverage, drift, impact "needs review"
+    ...
+```
+
+**The payoff:** the symbol's own doc comment first (Extracted 0.95 — a parser-observed fact), then the implementation plan section that named it (Inferred 0.80 — a unique fqn match), each body sliced live from disk, ordered by confidence, budget-capped. No grep, no guessing which of several docs is authoritative — the graph already ranked them.
+
+**Honest bounds on the knowledge plane.** Retrieval is structural and lexical only — zero ML, zero generated summaries. A reference that resolves to nothing is counted (`stale_doc_mentions`), never guessed into a phantom edge, and a large share of an honest stale count traces to references the code plane cannot model at all (a `const`, a struct field) rather than actual drift — see `docs/accuracy/knowledge-linking.md` for the measured breakdown. Full model: [The knowledge plane](../concepts/knowledge.md).
 
 ---
 

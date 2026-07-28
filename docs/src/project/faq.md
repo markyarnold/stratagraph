@@ -14,11 +14,11 @@ No. StrataGraph runs fully offline as a single binary. The one exception is opt-
 
 ### Does it send my code anywhere?
 
-No. There is no telemetry and no upload. The deterministic planes carry no language-model dependency at all. (The future, opt-in [knowledge plane](roadmap.md) is the only model-assisted part, and it does not exist yet.)
+No. There is no telemetry and no upload. All five planes — including the [knowledge plane](../concepts/knowledge.md), which is structural and lexical extraction over your own docs — carry no language-model dependency at all. (A future, opt-in model-assisted enrichment described in the [roadmap](roadmap.md) would be the only model-touched part, and it does not exist yet.)
 
 ### What languages and planes does it cover?
 
-Five languages (TypeScript, JavaScript, Python, C#, Rust) across four deterministic planes (code, contract, infrastructure, data), with a fifth (knowledge) designed but not yet built. All are first-class; TypeScript/JavaScript additionally has a compiler-grade `Resolved` tier (SCIP), while Python, C#, and Rust use band-disciplined heuristics (measured at ~1.0 precision for Python and Rust, extraction-validated for C#). See [Languages and coverage](../concepts/coverage.md) and the [Roadmap](roadmap.md).
+Five languages (TypeScript, JavaScript, Python, C#, Rust) across five deterministic planes (code, contract, infrastructure, data, knowledge). All are first-class; TypeScript/JavaScript additionally has a compiler-grade `Resolved` tier (SCIP), while Python, C#, and Rust use band-disciplined heuristics (measured at ~1.0 precision for Python and Rust, extraction-validated for C#). See [Languages and coverage](../concepts/coverage.md) and the [Roadmap](roadmap.md).
 
 ### Can it handle monorepos and multi-repo estates?
 

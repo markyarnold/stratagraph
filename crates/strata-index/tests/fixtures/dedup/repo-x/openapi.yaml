@@ -6,6 +6,7 @@ paths:
   /users/{id}:
     get:
       operationId: getUser
+      summary: Fetch one user via Service X
       responses:
         '200':
           description: ok

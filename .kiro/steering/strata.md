@@ -1,17 +1,20 @@
 <!-- strata:begin -->
 # StrataGraph: Cross-Plane Code Intelligence
 
-This repo is indexed by StrataGraph as **this repo** (3331 nodes, 26884 edges; planes present: code/contract/infra). The MCP tools below let you understand the code, assess blast radius across planes, and navigate safely.
+This repo is indexed by StrataGraph as **this repo** (5772 nodes, 38455 edges; planes present: code/contract/infra). The MCP tools below let you understand the code, assess blast radius across planes, and navigate safely.
 
 ## Always Do (MUST)
 
 - **MUST act on the pre-edit blast radius the hook injects.** Before each file edit, a PreToolUse hook computes that file's blast radius and injects it as context (the same report as `strata blast <file>`). It is authoritative at edit time: read it, report the affected dependents and risk, and follow the rules below. Never edit past it without acting on what it shows.
-- **MUST run `impact` on a symbol/field/operation BEFORE modifying it**, and report the blast radius to the user before proceeding: list the direct (d=1) and indirect (d=2) dependents with each one's `will_break` verdict (WILL BREAK only when `confidence ≥ 0.40` AND not `ambiguous`; depth does NOT decide it), its confidence, and a risk level (LOW / MEDIUM / HIGH / CRITICAL), then wait for direction.
+- **MUST run `impact` on a symbol/field/operation BEFORE modifying it**, and report the blast radius to the user before proceeding: list the direct (d=1) and indirect (d=2) dependents with each one's `will_break` verdict (WILL BREAK only when `confidence ≥ 0.40` AND not `ambiguous`; depth does NOT decide it; a doc-kind dependent — kind `Doc`/`DocSection` — is "needs review", never WILL BREAK), its confidence, and a risk level (LOW / MEDIUM / HIGH / CRITICAL), then wait for direction.
 - **MUST run `detect_changes` before committing.** It is the mechanical pre-commit check: it git-diffs your work, derives the changed symbols PER PLANE (code / contract / infra), aggregates the blast radius over the whole graph, and returns a risk level with reasons. Read its risk and affected set, report them, and pause for direction on HIGH/CRITICAL. Do NOT hand-run `impact` symbol-by-symbol when `detect_changes` does it across every plane in one call.
 - **MUST check every plane the target touches.** A GraphQL field / API operation → `context` and read its `producers` (who implements it) and `consumers` (who queries it) buckets. A Lambda / handler / module → its `produces` / `consumes`. An ordinary exported symbol → `impact` for upstream dependents.
 - **MUST warn and pause for direction** when the blast radius is HIGH or CRITICAL, when it crosses a repo boundary (estate), or when it touches contract surface consumed by another plane.
 - **MUST treat confidence bands as trust policy:** ≥ 0.90 → act on it; 0.40–0.89 → verify in the source before relying on it; < 0.40 or `ambiguous: true` → treat as UNKNOWN and **say so explicitly; never present uncertain impact as certain.**
 - **MUST flag likely-dead contract surface:** a field/operation with **0 producers AND 0 consumers** is probably dead, so call it out rather than treating it as live.
+- **MUST act on the `docs:` line the pre-edit blast injects.** When it lists a section at ≥ 0.80 covering the file that you have not consulted this session, fetch `guidance` for the file BEFORE editing. Never call guidance unconditionally — the hook line is the trigger.
+- **Doc guidance is repo knowledge, not ground truth.** Docs can be stale: the graph marks drift, and a mention below 0.40 or ambiguous is UNKNOWN — the same trust policy as every other band.
+- **Report `detect_changes`' "docs to review" line in your pre-commit summary** and offer (never auto-apply) updates for stale sections.
 
 ## Never Do
 
@@ -27,15 +30,18 @@ This repo is indexed by StrataGraph as **this repo** (3331 nodes, 26884 edges; p
 - **`context`** `{ symbol }`: the 360° view of one symbol: `callers`, `callees`, `imports_in`/`imports_out`, `members`, `container`, and the contract buckets `producers` / `consumers` / `produces` / `consumes`.
 - **`query`** `{ text }`: case-insensitive lexical search over name / fully-qualified name / path. Use it to find the exact symbol before `impact`/`context`.
 - **`detect_changes`** `{ staged? }`: the pre-commit check: git-diffs the working tree (or the staged index) vs HEAD, derives the changed symbols per plane (code / contract / infra), aggregates the blast radius over the graph, and returns `{ files, symbols, affected, risk }` with risk reasons. Use it before committing instead of running `impact` per changed symbol.
+- **`guidance`** `{ symbol?, file?, budget?, section? }`: a token-budgeted digest of what the repo already knows about a symbol or file — its own doc comment, then the docs that document/mention it, ordered by descending confidence, sliced from disk at query time (bodies are never stored in the graph). Default budget ~1,200 tokens (4800 chars) across all sections; pass `section` (an anchor) to fetch one section's full body, uncapped.
+- **`search_docs`** `{ query, limit? }`: lexical (tantivy, deterministic — no ML/embeddings) full-text search over the knowledge plane's indexed docs (markdown sections, doc comments, spec descriptions). Use it instead of grepping docs for "how do we…?"/"is there guidance on X?" questions — every hit names its matched terms, never a summary or an answer.
 
 > **Auto-reload (read this):** the MCP server now hot-reloads. When the on-disk index changes (the PostToolUse `strata index` hook, or a manual reindex) it swaps in the fresh graph before the next request, no session/server restart needed. The reload is degrade-safe: a reindex caught mid-write keeps the previous graph and retries, so a tool call never blocks or serves a half-loaded graph. It keys off `.strata/index.stamp`, falling back to the `graph.duckdb` mtime for indexes written before this feature. (Estate `--workspace` reloads the same way on a manifest or per-repo change.)
 
 ## Workflow hooks (Kiro)
 
-Three lifecycle hooks enforce this protocol automatically:
-- **strata-pre-edit**: before any file write, confirms you ran `impact` on every symbol/field about to change.
-- **strata-pre-commit**: before a command that creates a git commit, runs `detect_changes` for the per-plane changed symbols, blast radius, and risk. It applies ONLY to commit commands — any other command (including strata's own `detect-changes`/`index` runs) proceeds untouched, so the hook can never loop on its own remediation.
+Two lifecycle hooks run automatically, both scoped to the file-write tools:
+- **strata-pre-edit**: before any file write, confirms you ran `impact`/`blast` on every symbol/field about to change.
 - **strata-post-edit**: after a file edit, re-runs `strata index .` to keep the on-disk graph fresh (the MCP server hot-reloads it).
+
+There is deliberately **no pre-commit hook**: Kiro can only trigger a hook by tool name, and there is no "git commit" tool (a commit runs through the same shell tool as every other command), so a pre-commit hook would fire on all shell use. The commit-time check is therefore a rule you run **yourself**: before you create a git commit, run `detect_changes`, report its per-plane affected set and risk, and pause on HIGH/CRITICAL — exactly as the Always Do rules above require.
 
 When in doubt: `query` to find the symbol → `context` for its plane buckets → `impact` before you change it → `detect_changes` before you commit.
 <!-- strata:end -->

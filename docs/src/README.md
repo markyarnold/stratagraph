@@ -19,24 +19,28 @@ Ask what depends on a function, and StrataGraph returns the dependents ordered b
 
 ```text
 $ strata impact "classify_risk"
-Impact of classify_risk (crates/strata-index/src/changes.rs) — 76 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  detect_changes (crates/strata-index/src/changes.rs)
-      1  0.95   no  WILL BREAK  blast_for_file (crates/strata-index/src/changes.rs)
-      2  0.76   no  WILL BREAK  tool_blast (crates/strata-mcp/src/tools.rs)
-      4  0.69   no  WILL BREAK  call_tool (crates/strata-mcp/src/tools.rs)
+Impact of classify_risk (crates/strata-index/src/changes.rs) — 179 affected:
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  needs review  doc: classify_risk (crates/strata-index/src/changes.rs)
+      1  0.95   no  WILL BREAK    blast_for_file_in_repo (crates/strata-index/src/changes.rs)
+      1  0.95   no  WILL BREAK    detect_changes_in_repo (crates/strata-index/src/changes.rs)
+      ...
+      2  0.90   no  WILL BREAK    detect_changes (crates/strata-index/src/changes.rs)
       ...
 ```
+
+(A `needs review` row is a doc section that documents or mentions the changed symbol — the knowledge plane putting docs in the blast radius, never confused with a code break; see [The knowledge plane](concepts/knowledge.md). Counts grow as the repo's own docs grow.)
 
 `depth` is how many hops away the dependent is, `conf` is the calibrated confidence of the weakest edge on the path, and `amb` flags candidates StrataGraph could not resolve. When you want the *why*, ask `explain` for the evidence chain: every edge, its provenance, and the running confidence that produced the number:
 
 ```text
 $ strata explain "classify_risk" "call_tool"
-Why classify_risk affects call_tool (conf 0.69, WILL BREAK):
-  classify_risk     —CALLS (Extracted 0.95)→  blast_for_file        running 0.95
-  blast_for_file    —CALLS (Inferred  0.80)→  tool_blast            running 0.76
-  tool_blast        —CALLS (Extracted 0.95)→  call_tool_ctx         running 0.72
-  call_tool_ctx     —CALLS (Extracted 0.95)→  call_tool             running 0.69
+Why classify_risk affects call_tool (conf 0.65, WILL BREAK):
+  classify_risk  —CALLS (Extracted 0.95)→  detect_changes_in_repo    running 0.95
+  detect_changes_in_repo  —CALLS (Extracted 0.95)→  detect_changes    running 0.90
+  detect_changes  —CALLS (Inferred 0.80)→  tool_detect_changes    running 0.72
+  tool_detect_changes  —CALLS (Extracted 0.95)→  call_tool_ctx    running 0.69
+  call_tool_ctx  —CALLS (Extracted 0.95)→  call_tool    running 0.65
 ```
 
 (Counts and paths above come from indexing this repository; the exact numbers will drift as the code changes.)

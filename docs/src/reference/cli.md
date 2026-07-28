@@ -33,6 +33,8 @@ Top-level options:
 | [`mcp`](#mcp) | Serve the code graph to an MCP client over stdio. |
 | [`detect-changes`](#detect-changes) | Report the changed symbols, blast radius, and risk vs HEAD. |
 | [`blast`](#blast) | Report the pre-edit blast radius of a *file*. |
+| [`search-docs`](#search-docs) | Lexical search over the knowledge plane's indexed docs. |
+| [`guidance`](#guidance) | Token-budgeted digest of what the repo knows about a symbol or file. |
 | [`rename`](#rename) | Graph-aware multi-file rename of a code symbol. |
 | [`init`](#init) | Install an agent-integration kit. See [Agent kit](agent-kit.md). |
 | `help` | Print help for `strata` or a subcommand. |
@@ -221,6 +223,62 @@ the file's repo: an estate marker (written by `strata index --workspace`) means
 the radius is computed over the full estate graph; otherwise it is single-repo.
 This is what makes the [pre-edit hook](agent-kit.md#pretooluse-pre-edit-blast)
 estate-aware with no per-repo configuration.
+
+## search-docs
+
+Lexical (tantivy, deterministic — no ML) search over the knowledge plane's
+indexed docs: markdown sections, doc comments, and OpenAPI/GraphQL spec
+descriptions. Explainable term matches, never a summary or an answer. See
+[The knowledge plane](../concepts/knowledge.md).
+
+```
+strata search-docs [OPTIONS] <QUERY>
+```
+
+| Argument / flag | Default | Description |
+|---|---|---|
+| `<QUERY>` |  | Search text (tantivy query syntax). |
+| `--limit <N>` | `5` | Max results, hard-capped at 25 even if a larger value is given. |
+| `--db <PATH>` | `.strata/graph.duckdb` | Graph database path. Forces single-repo search (no estate). Mutually exclusive with `--workspace`. |
+| `--repo <PATH>` | grandparent of `--db` when it ends `.strata/graph.duckdb`, else the current directory | Repository root. |
+| `--workspace <MANIFEST>` |  | Estate manifest. Forces estate search: every member's own `.strata/docs.idx` is searched and merged. Mutually exclusive with `--db`. |
+
+With **neither** `--db` nor `--workspace`, `search-docs` auto-resolves the
+context the same way `blast`/`detect-changes` do. Output is `path#anchor
+(score) — snippet` per hit, headed `[lexical match]`; a missing or corrupt
+index prints the engine's own honest note (`no docs index — run strata
+index`) instead of an error.
+
+## guidance
+
+Token-budgeted digest of what the repo already knows about a symbol or file:
+its own doc comment, the docs that document/mention it, and (for a contract
+operation) its spec description re-extracted live from the spec file. Bodies
+are sliced from disk, never stored in the graph. See
+[The knowledge plane](../concepts/knowledge.md).
+
+```
+strata guidance [OPTIONS] <TARGET>
+```
+
+| Argument / flag | Default | Description |
+|---|---|---|
+| `<TARGET>` |  | The symbol to summarize (fqn preferred, else name). Pass `--file` to treat it as a repo-relative file path instead. |
+| `--file` | off | Treat `<TARGET>` as a repo-relative file path (aggregate over its symbols) instead of a symbol. |
+| `--budget <N>` | `4800` | Total character budget across all sections. Ignored when `--section` is given. |
+| `--section <ANCHOR>` |  | An anchor (from a prior `guidance`/`context`/`search-docs` result) — return that ONE section's full body, uncapped, no budget applied. |
+| `--uid <UID>` |  | Pin one candidate when `<TARGET>` resolves to several nodes. |
+| `--db <PATH>` | `.strata/graph.duckdb` | Graph database path. Forces single-repo mode (no estate). Mutually exclusive with `--workspace`. |
+| `--repo <PATH>` | grandparent of `--db` when it ends `.strata/graph.duckdb`, else the current directory | Repository root. |
+| `--workspace <MANIFEST>` |  | Estate manifest. Forces estate mode: every member's root is available for disk reads. Mutually exclusive with `--db`. |
+
+With **neither** `--db` nor `--workspace`, `guidance` auto-resolves the
+context the same way `blast`/`detect-changes` do. An ambiguous `<TARGET>`
+exits 2 and lists candidates (re-run with `--uid`), the same convention as
+`impact`/`explain`. Output is a headline (target, section count, budget
+used) followed by each section as `path#anchor (confidence, provenance)` and
+its text — or `[ref only — past budget]` / `[note]` in place of text for a
+budget-skipped or unavailable entry, so nothing is silently blank.
 
 ## rename
 

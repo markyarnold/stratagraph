@@ -17,10 +17,12 @@ mod changes;
 mod contract;
 mod data;
 mod differential;
+mod docs_index;
 mod estate;
 pub mod estate_marker;
 mod fs;
 mod infra;
+mod knowledge;
 mod rename;
 mod resolve_mode;
 mod scip_merge;
@@ -56,8 +58,8 @@ pub use data::{CONF_DATA_FACT, CONF_ORM_EXPLICIT};
 // The infra-plane band constants (Extracted refs/runs/produces + Inferred refs/produces).
 pub use changes::{
     blast_for_file, blast_for_file_in_repo, detect_changes, detect_changes_in_repo, AffectedNode,
-    BlastReport, BlastSymbol, ChangeKind, ChangeReport, ChangeScope, ChangedSymbol, ChangesError,
-    ContractChange, FileChange, Plane, Risk, RiskLevel, LOW_MAX, MEDIUM_MAX,
+    BlastDocRef, BlastReport, BlastSymbol, ChangeKind, ChangeReport, ChangeScope, ChangedSymbol,
+    ChangesError, ContractChange, FileChange, Plane, Risk, RiskLevel, LOW_MAX, MEDIUM_MAX,
 };
 pub use contract::{assemble_graph_with_contracts, build_contract_plane};
 pub use data::{
@@ -66,6 +68,12 @@ pub use data::{
 pub use differential::{
     accuracy_report, resolve_differential, resolve_differential_graph, AccuracyReport, Band,
     BandMetrics, ClassMetrics, SiteOutcome, ALL_BANDS, ALL_CLASSES,
+};
+// The lexical (tantivy) docs-index writer (K5): assembled index-time from the
+// three knowledge-plane sources (markdown sections, doc comments, spec
+// descriptions) by `index_impl`. `search_docs` (`strata-mcp`) is the reader.
+pub use docs_index::{
+    write_docs_index, DocsEntryKind, DocsIndexEntry, DocsIndexError, DOCS_INDEX_DIR,
 };
 pub use estate::{
     index_estate, index_estate_with_options, link_estate, load_estate, EstateError,
@@ -80,6 +88,15 @@ pub use infra::{
 pub use infra::{
     CONF_PRODUCES_EXTRACTED, CONF_PRODUCES_INFERRED, CONF_REF_INFERRED, CONF_REF_RESOURCE,
     CONF_RUNS,
+};
+// The knowledge-plane builder (K2/K3): Doc/DocSection nodes + banded Mentions
+// edges, plus (K3) doc-comment DocSection nodes + Extracted Documents edges.
+// `assemble_graph_with_knowledge` is the test/tool-visible convenience (code
+// plane + knowledge plane in one call); `index_impl` wires
+// `build_knowledge_plane` directly onto the fully-assembled multi-plane graph.
+pub use knowledge::{
+    assemble_graph_with_knowledge, build_knowledge_plane, doc_section_uid, KnowledgeLinkCoverage,
+    KNOW_AMBIGUOUS, KNOW_DOC_COMMENT, KNOW_MENTION_FQN, KNOW_MENTION_NAME, KNOW_MENTION_PATH,
 };
 pub use rename::{
     rename, Candidate, Edit, RenameError, RenameOptions, RenameOutcome, DEF_SITE_CONFIDENCE,
@@ -153,6 +170,23 @@ pub struct IndexStats {
     /// never silent. Capped at [`MAX_INFRA_DIAGNOSTICS`] (with a final
     /// `… and N more` line) so a pathological repo cannot flood the output.
     pub infra_diagnostics: Vec<String>,
+    /// Knowledge-plane link coverage (K2): ingested markdown docs/sections, the
+    /// `Mentions` linking tallies, and the drift count (`stale_doc_mentions`).
+    /// A repo with no markdown under `docs/**`, no root `*.md`, and no nested
+    /// `README.md` reports all-zero (additive). Fed by `build_knowledge_plane`.
+    pub knowledge_link: KnowledgeLinkCoverage,
+    /// A human-readable warning when the K5 lexical docs index
+    /// (`.strata/docs.idx`) failed to write, e.g. `"docs index: write failed
+    /// (…), search_docs will serve the previous index"`. `None` on a
+    /// successful write (the overwhelmingly common case) or when there were
+    /// simply no entries to index. The docs-index write is a best-effort side
+    /// artifact — its failure never fails the surrounding `strata index` run
+    /// (the code graph is unaffected) — but per review it must not be
+    /// SILENT either: this field is the CLI-visible counterpart to the
+    /// `eprintln!` warning already logged at write time, mirroring how
+    /// [`InfraLinkCoverage`]/[`DataLinkCoverage`] failures get a visible
+    /// `[infra]`/`[data] FAILED` line rather than only stderr.
+    pub docs_index_warning: Option<String>,
 }
 
 /// The cap on the number of per-template diagnostic lines carried in
@@ -619,6 +653,69 @@ fn index_impl(
     data_link.schemas_failed = data_diagnostics.len();
     let data_diagnostics = cap_diagnostics(data_diagnostics, "data schema failure(s)");
 
+    // ── Knowledge plane (K2): ingest markdown (docs/**/*.md, root *.md, nested
+    // README.md), parse it (K1's `parse_markdown`), and build Doc/DocSection
+    // nodes + banded Mentions edges. Runs LAST — after every other plane — so a
+    // doc's PathRef/fqn/name references resolve against the FULLY-assembled
+    // graph (a doc can mention a Table, an ApiOperation, another doc, or any
+    // code symbol from any language plane above). A markdown file that fails
+    // to produce any non-blank section (empty/whitespace-only) contributes a
+    // `Doc` with zero sections — pulldown-cmark cannot itself "fail to parse"
+    // the way SQL/CFN can, so there is no diagnostics vec here. ──
+    let markdown = collect_markdown(repo_path, Arc::clone(&vendored))?;
+    let docs: Vec<(String, strata_knowledge::DocModel)> = markdown
+        .iter()
+        .map(|(path, content)| {
+            let model = strata_knowledge::parse_markdown(path, content);
+            (path.clone(), model)
+        })
+        .collect();
+    let knowledge_link =
+        knowledge::build_knowledge_plane(&mut graph, repo_name, &combined_analyzed, &docs);
+
+    // ── Lexical docs index (K5): a tantivy full-text index at `.strata/docs.idx`,
+    // rebuilt fresh on every index run from the SAME three knowledge-plane
+    // sources `build_knowledge_plane` just linked into the graph above —
+    // markdown section bodies (sliced from `markdown`'s in-memory content via
+    // each section's `body_range`, K1), doc-comment text (sliced from each
+    // language's raw source via `RawSymbol::doc_span`'s LINE range, K3), and
+    // spec operation descriptions (K4). `docs_index::write_docs_index` is a
+    // best-effort side artifact — see its doc comment — so a write failure
+    // never propagates as an `IndexError`: `search_docs` degrades to an
+    // honest "no docs index" note rather than an otherwise-successful
+    // `strata index` run failing over a sidecar. It is, however, NOT silent
+    // (review fix): logged to stderr immediately AND carried on
+    // `IndexStats::docs_index_warning` so the CLI's human-readable summary
+    // shows it too — a write failure must be visible, never just a swallowed
+    // eprintln nobody reads. Estate mode needs nothing extra here: each
+    // member repo is indexed through this SAME `index_impl` with its own
+    // `repo_path`, so each member naturally gets its own `docs.idx`. ──
+    let strata_dir = repo_path.join(".strata");
+    let sources_for_docs: BTreeMap<&str, &str> = files
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .chain(py_files.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .chain(cs_files.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .chain(rust_files.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .collect();
+    let mut docs_entries = docs_entries_for_sections(repo_name, &docs, &markdown);
+    docs_entries.extend(docs_entries_for_doc_comments(
+        repo_name,
+        &combined_analyzed,
+        &sources_for_docs,
+    ));
+    docs_entries.extend(docs_entries_for_operations(repo_name, &operations));
+    let docs_index_warning = match docs_index::write_docs_index(&strata_dir, &docs_entries) {
+        Ok(_) => None,
+        Err(e) => {
+            let msg = format!(
+                "docs index: write failed ({e}), search_docs will serve the previous index"
+            );
+            eprintln!("[index] warning: {msg}");
+            Some(msg)
+        }
+    };
+
     let stats = IndexStats {
         // Includes TS/JS sources, the GraphQL operation documents that became
         // AnalyzedFiles (schemas, which contribute operations not docs, are not
@@ -642,6 +739,8 @@ fn index_impl(
         infra_diagnostics,
         data_link,
         data_diagnostics,
+        knowledge_link,
+        docs_index_warning,
     };
 
     store.save_graph(&graph)?;
@@ -657,8 +756,8 @@ fn index_impl(
     // reader that races a still-in-flight reindex degrades safely. A stamp-write
     // failure must not fail an otherwise-successful index (the served graph just
     // keeps using its previous staleness signal), so it is logged, not
-    // propagated.
-    let strata_dir = repo_path.join(".strata");
+    // propagated. `strata_dir` was already resolved above, for the docs-index
+    // write.
     if let Err(e) = stamp::IndexStamp::new(stats.nodes, stats.edges).write(&strata_dir) {
         eprintln!(
             "[index] warning: could not write hot-reload stamp {}: {e}",
@@ -1274,6 +1373,66 @@ pub(crate) fn extract_repo_schemas(
     Ok((schemas, diagnostics))
 }
 
+/// Directory names NEVER walked for markdown sources, regardless of
+/// `.gitignore`: **`.strata`** (the engine's own state dir — its stamp/db/index
+/// files are never mistaken for repo documentation) plus the usual
+/// dependency/build-output roots a vendored `*.md` (a bundled package README)
+/// might live under — belt-and-suspenders beyond gitignore, the same spirit as
+/// the per-language skip lists.
+const MD_SKIP_DIRS: [&str; 7] = [
+    ".strata",
+    "node_modules",
+    "__pycache__",
+    "venv",
+    ".venv",
+    "site-packages",
+    "target",
+];
+
+/// The markdown file extension routed to `strata_knowledge::parse_markdown`.
+const MD_EXTS: [&str; 1] = ["md"];
+
+/// Whether `rel` (a `/`-normalized, repo-relative path) is in the default
+/// markdown collection set (design §3 "Collection (indexer)"): any `.md` under
+/// `docs/` (recursively), a ROOT-level `*.md` (no `/` in `rel` — e.g.
+/// `README.md`, `CONTRIBUTING.md`), or a nested `README.md` at any depth.
+/// `CHANGELOG*` is excluded regardless of where it lives (noise; entries
+/// churn) — checked against the file's own base name first, so
+/// `docs/CHANGELOG.md` is excluded even though it is under `docs/`.
+fn is_collected_markdown(rel: &str) -> bool {
+    let base = rel.rsplit('/').next().unwrap_or(rel);
+    if base.starts_with("CHANGELOG") {
+        return false;
+    }
+    if rel.starts_with("docs/") {
+        return true;
+    }
+    if !rel.contains('/') {
+        return true; // a root-level *.md
+    }
+    base == "README.md"
+}
+
+/// Walk `repo_path` (gitignore-aware) and collect the default markdown
+/// collection set into a map of `/`-normalized, repo-relative path -> content
+/// (design §3, Knowledge plane K2): `docs/**/*.md`, a root `*.md`, or a nested
+/// `README.md`; `CHANGELOG*` and `.strata/` are always excluded, and vendored
+/// dependency bundles are pruned via the SAME per-file `vendored` set every
+/// other plane uses. A repo with no matching markdown returns an empty map
+/// (additive) rather than an error.
+fn collect_markdown(
+    repo_path: &Path,
+    vendored: Arc<HashSet<PathBuf>>,
+) -> Result<BTreeMap<String, String>, IndexError> {
+    let mut files = BTreeMap::new();
+    for (rel, content) in collect_lang_sources(repo_path, &MD_EXTS, &MD_SKIP_DIRS, vendored)? {
+        if is_collected_markdown(&rel) {
+            files.insert(rel, content);
+        }
+    }
+    Ok(files)
+}
+
 /// Build the data plane's code→table input: one [`CodeSqlFile`] per source file,
 /// tagged with the language plane (`ts`/`py`/`cs`) its code nodes were built under,
 /// carrying that file's captured SQL candidates.
@@ -1334,6 +1493,135 @@ fn collect_code_orm<'a>(
         }
     }
     out
+}
+
+// ── Lexical docs index (K5): assemble `docs_index::DocsIndexEntry` batches from
+// the three knowledge-plane sources. `docs_index::write_docs_index` is only the
+// WRITER (schema + atomic build) — the assembly (where each source's body text
+// lives, and how to slice it) is the index-time pipeline's job, exactly like
+// `collect_code_sql`/`collect_code_orm` above assemble the data plane's inputs.
+
+/// Markdown section entries: every section of every collected doc, body text
+/// sliced straight from `markdown`'s in-memory content via the section's
+/// `body_range` (K1) — never re-read from disk, never stored beyond this
+/// transient batch. `uid` is the exact `doc_section_uid` `build_knowledge_plane`
+/// gave the same section's graph node, so a hit correlates 1:1 with
+/// `impact`/`context`.
+fn docs_entries_for_sections(
+    repo_name: &str,
+    docs: &[(String, strata_knowledge::DocModel)],
+    markdown: &BTreeMap<String, String>,
+) -> Vec<docs_index::DocsIndexEntry> {
+    let mut out = Vec::new();
+    for (path, doc) in docs {
+        let Some(content) = markdown.get(path) else {
+            continue;
+        };
+        for section in &doc.sections {
+            let (start, end) = section.body_range;
+            // `content` is the SAME string `parse_markdown` computed this
+            // range against, so it is always in-bounds; `get` (rather than
+            // slicing directly) still degrades to an empty body instead of
+            // panicking if that were ever violated.
+            let body = content.get(start..end).unwrap_or_default().to_string();
+            out.push(docs_index::DocsIndexEntry {
+                uid: doc_section_uid(repo_name, path, &section.anchor).to_string(),
+                name: section.heading.clone(),
+                path: path.clone(),
+                anchor: section.anchor.clone(),
+                kind: docs_index::DocsEntryKind::Section,
+                body,
+            });
+        }
+    }
+    out
+}
+
+/// Extract the text of 1-based, inclusive lines `start_line..=end_line` from
+/// `source` — used to slice a doc comment's text straight from the language
+/// analyzer's already-in-memory source file content. The comment's TEXT is
+/// never captured anywhere except this transient, local batch (bodies-from-
+/// disk; `RawSymbol::doc_span` itself only ever carries the span).
+fn slice_source_lines(source: &str, start_line: u32, end_line: u32) -> String {
+    source
+        .lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let line_no = i as u32 + 1;
+            (line_no >= start_line && line_no <= end_line).then_some(line)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Doc-comment entries: every symbol across every language plane (TS/JS,
+/// Python, C#, Rust) whose `RawSymbol::doc_span` is set — the design's "every
+/// doc comment" (a superset of, never narrower than, what
+/// `build_knowledge_plane` manages to resolve to exactly one graph node: a
+/// `(path, fqn)` collision there skips the graph edge, per K3, but the text
+/// itself is still real and worth finding by search). `sources` maps a
+/// repo-relative path to that file's raw content — the union of the four
+/// language collection passes (`files`/`py_files`/`cs_files`/`rust_files`),
+/// whose path keys are disjoint by construction.
+fn docs_entries_for_doc_comments(
+    repo_name: &str,
+    combined_analyzed: &BTreeMap<String, AnalyzedFile>,
+    sources: &BTreeMap<&str, &str>,
+) -> Vec<docs_index::DocsIndexEntry> {
+    let mut out = Vec::new();
+    for (path, file) in combined_analyzed {
+        let Some(source) = sources.get(path.as_str()) else {
+            continue;
+        };
+        for symbol in &file.symbols {
+            let Some(span) = symbol.doc_span else {
+                continue;
+            };
+            let anchor = format!("doc:{}", symbol.fqn);
+            let body = slice_source_lines(source, span.start_line, span.end_line);
+            out.push(docs_index::DocsIndexEntry {
+                uid: doc_section_uid(repo_name, path, &anchor).to_string(),
+                name: format!("doc: {}", symbol.name),
+                path: path.clone(),
+                anchor,
+                kind: docs_index::DocsEntryKind::DocComment,
+                body,
+            });
+        }
+    }
+    out
+}
+
+/// Spec-description entries: every operation whose spec declared a
+/// `description` (K4) — indexed under the exact `contract::operation_uid` the
+/// operation's own `ApiOperation`/`GraphqlField` graph node carries (spec
+/// descriptions create no separate graph node — the design's §2 "Spec
+/// descriptions create no nodes" — so this uid IS the node's uid). `name`
+/// mirrors how the producer plane names the node
+/// (`build_producer_plane`/`canonical_operation_node`): `operationId` if the
+/// spec declared one, else `"METHOD path"`.
+fn docs_entries_for_operations(
+    repo_name: &str,
+    operations: &[strata_contract::OperationDef],
+) -> Vec<docs_index::DocsIndexEntry> {
+    operations
+        .iter()
+        .filter_map(|op| {
+            let body = op.description.clone()?;
+            let name = op
+                .operation_id
+                .clone()
+                .unwrap_or_else(|| format!("{} {}", op.method, op.path));
+            Some(docs_index::DocsIndexEntry {
+                uid: contract::operation_uid(repo_name, op).to_string(),
+                name,
+                path: op.spec_path.clone(),
+                anchor: op.key.clone(),
+                kind: docs_index::DocsEntryKind::SpecDescription,
+                body,
+            })
+        })
+        .collect()
 }
 
 /// Cap a per-plane diagnostics vec at [`MAX_INFRA_DIAGNOSTICS`], appending a single
@@ -1692,5 +1980,30 @@ mod tests {
             name, "myrepo",
             "`repo_name_of(\".\")` must resolve through cwd to the real basename"
         );
+    }
+
+    // ── Knowledge plane (K2): the default markdown collection set (design §3) ──
+
+    #[test]
+    fn is_collected_markdown_matches_the_default_collection_set() {
+        // docs/**/*.md — collected regardless of depth.
+        assert!(is_collected_markdown("docs/guide.md"));
+        assert!(is_collected_markdown("docs/nested/deep.md"));
+        // A root-level *.md — collected.
+        assert!(is_collected_markdown("README.md"));
+        assert!(is_collected_markdown("CONTRIBUTING.md"));
+        // A nested README.md (any depth outside docs/) — collected.
+        assert!(is_collected_markdown("packages/foo/README.md"));
+        assert!(is_collected_markdown("src/README.md"));
+
+        // CHANGELOG* — excluded everywhere, including under docs/.
+        assert!(!is_collected_markdown("CHANGELOG.md"));
+        assert!(!is_collected_markdown("docs/CHANGELOG.md"));
+        assert!(!is_collected_markdown("CHANGELOG-2024.md"));
+
+        // A nested, non-README, non-docs markdown file — not collected (only
+        // docs/**, root *.md, and nested README.md are in the default set).
+        assert!(!is_collected_markdown("packages/foo/NOTES.md"));
+        assert!(!is_collected_markdown("src/internal/design.md"));
     }
 }

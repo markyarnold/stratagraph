@@ -68,9 +68,9 @@ That's the resolver with the contract plane turned **off**: code-only, it looks 
 ```console
 $ strata impact getUser
 Impact of getUser (src/resolvers.ts) — 2 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.80   no  WILL BREAK  QUERY getUser (getUser)
-      2  0.76   no  WILL BREAK  loadUserProfile (src/queries.ts)
+  depth  conf  amb  verdict       name (path)
+      1  0.80   no  WILL BREAK    QUERY getUser (getUser)
+      2  0.76   no  WILL BREAK    loadUserProfile (src/queries.ts)
 ```
 
 The contrast is the lesson: a real dead-surface verdict survives with the planes **on**. If 0-affected only happens once you've disabled contracts/infra, the surface isn't dead; you just hid the edges that prove it's alive.
@@ -98,11 +98,11 @@ Context for users (Table) — schema.sql
 ```console
 $ strata impact users --workspace strata.workspace.toml
 Impact of users (schema.sql) — 4 affected:
-  depth  conf  amb  verdict     name (path)
-      1  0.95   no  WILL BREAK  User (models.py)
-      1  0.95   no  WILL BREAK  touch_last_login (writer.py)
-      1  0.95   no  WILL BREAK  getUserEmail (src/users.ts)
-      1  0.95   no  WILL BREAK  listUsersWithOrg (src/users.ts)
+  depth  conf  amb  verdict       name (path)
+      1  0.95   no  WILL BREAK    User (models.py)
+      1  0.95   no  WILL BREAK    touch_last_login (writer.py)
+      1  0.95   no  WILL BREAK    getUserEmail (src/users.ts)
+      1  0.95   no  WILL BREAK    listUsersWithOrg (src/users.ts)
 ```
 
 An ORM model, a Python writer, and two TypeScript readers, across languages. A table with **no** reads, writes, or `mapped_by` is a dead-table candidate. (Run `impact` on a single column to scope this to one field; see [Plane walkthroughs](plane-walkthroughs.md).)

@@ -32,6 +32,7 @@ use strata_index::{
     assemble_graph_with_contracts,
     assemble_graph_with_data,
     assemble_graph_with_infra,
+    assemble_graph_with_knowledge,
     assemble_graph_with_scip,
     // The PRODUCTION §4.1 band constants — these tests assert the REAL values
     // (re-exported from strata-index), not drifting local literal copies (T1).
@@ -48,6 +49,11 @@ use strata_index::{
     CONF_RUNS,
     CONF_THIS_METHOD,
     CONF_UNKNOWN_RECEIVER,
+    KNOW_AMBIGUOUS,
+    KNOW_DOC_COMMENT,
+    KNOW_MENTION_FQN,
+    KNOW_MENTION_NAME,
+    KNOW_MENTION_PATH,
 };
 // The contract consumer-tier constants are already `pub` in strata-contract.
 use strata_contract::{
@@ -256,6 +262,7 @@ fn routed_operations() -> Vec<OperationDef> {
         norm_path: path.replace("{id}", "{}"),
         operation_id: Some(key.to_string()),
         spec_path: spec.to_string(),
+        description: None,
     };
     vec![
         op("getUser", "/users/{id}", "openapi.yaml"),
@@ -350,6 +357,7 @@ fn consumer_operations() -> Vec<OperationDef> {
         norm_path: path.replace("{id}", "{}"),
         operation_id: Some(key.to_string()),
         spec_path: spec.to_string(),
+        description: None,
     };
     vec![
         op("getUser", "/users/{id}", "openapi.yaml"),
@@ -445,6 +453,7 @@ fn gql_op(key: &str, method: &str, field: &str) -> OperationDef {
         norm_path: field.to_string(),
         operation_id: None,
         spec_path: "schema.graphql".to_string(),
+        description: None,
     }
 }
 
@@ -1034,6 +1043,258 @@ fn data_orm_conf_constant_is_within_its_band() {
         assert!(
             CONF_ORM_EXPLICIT >= 0.95 && CONF_ORM_EXPLICIT <= 1.0,
             "CONF_ORM_EXPLICIT is outside the Extracted band [0.95, 1.0]"
+        )
+    };
+}
+
+// ── K2 (Knowledge plane): the band invariant extends to `Mentions` edges ─────
+//
+// The knowledge plane's `Mentions` edge is graded across THREE tiers (design
+// §2, "Model and vocabulary"): an exact repo-relative path reference →
+// Extracted 0.95; a unique fqn match → Inferred 0.80; a unique bare-NAME
+// match (only reachable when the fqn tier misses) → Inferred 0.70; a
+// multi-candidate match → Ambiguous 0.35 fan-out. This builds a graph
+// containing all FOUR distinct gradings (non-vacuously) and runs the same
+// §4.1 invariant over it — proving a doc's guesses never masquerade at a tier
+// they did not earn. `Documents` (doc-comment) edges are covered separately,
+// below (`knowledge_documents_edge_satisfies_band_invariant_non_vacuously`) —
+// K3's addition, closing the deferral this comment used to describe.
+//
+// Review finding F2: the fqn tier (0.80) alone already satisfies a bare
+// `Provenance::Inferred` check, so a prior version of this test could not
+// distinguish the fqn tier from the name tier — a `KNOW_MENTION_NAME`
+// (0.70) value nudge would have passed silently. `Foo.bar` (fqn `Foo.bar`,
+// name `bar`) exists specifically so the fqn tier MISSES and the name tier
+// is the only way `bar` resolves, making it non-vacuous on its own — pinned
+// by `knowledge_name_tier_reaches_the_document_0_70_value_specifically`
+// below via an EXACT-value assertion (band membership alone isn't enough:
+// [0.40, 0.80] would still admit a nudged 0.50).
+
+/// Two TS files: `alphaOne` (unique) and `beta` (declared in BOTH, forcing an
+/// Ambiguous name fan-out) — the same shape the K2 `knowledge_linking.rs`
+/// fixture uses. `Foo.bar` (fqn "Foo.bar", name "bar") is the name-tier case:
+/// its fqn differs from its name, so a doc's bare `bar` MISSES the fqn tier
+/// and can only resolve via `by_name`.
+fn knowledge_app_source() -> &'static str {
+    concat!(
+        "export function alphaOne() {}\n",
+        "export function beta() {}\n",
+        "export class Foo { bar() {} }\n",
+    )
+}
+
+fn knowledge_other_source() -> &'static str {
+    "export function beta() {}\n"
+}
+
+/// A markdown doc exercising all four `Mentions` gradings: a `PathRef` to
+/// `src/app.ts` (Extracted), a unique bare name resolving at the fqn tier
+/// (Inferred 0.80), an ambiguous bare name (Ambiguous fan-out), and a unique
+/// bare name whose fqn tier misses, resolving at the name tier (Inferred
+/// 0.70).
+fn knowledge_guide_md() -> &'static str {
+    concat!(
+        "# Using alphaOne\n",
+        "Call `alphaOne` before anything. See [the app](src/app.ts).\n",
+        "## Betas\n",
+        "`beta` is ambiguous here.\n",
+        "## Bar method\n",
+        "Call `bar` when ready.\n",
+    )
+}
+
+#[test]
+fn knowledge_mentions_edges_satisfy_band_invariant_non_vacuously() {
+    let mut analyzed = BTreeMap::new();
+    analyzed.insert(
+        "src/app.ts".to_string(),
+        analyze("src/app.ts", knowledge_app_source()),
+    );
+    analyzed.insert(
+        "src/other.ts".to_string(),
+        analyze("src/other.ts", knowledge_other_source()),
+    );
+    let doc = strata_knowledge::parse_markdown("docs/guide.md", knowledge_guide_md());
+    let docs = vec![("docs/guide.md".to_string(), doc)];
+
+    let (g, cov) =
+        assemble_graph_with_knowledge(&analyzed, REPO, &ResolveOptions::default(), &docs);
+
+    // Confirm the graph contains Mentions edges at ALL THREE §4.1 provenance
+    // bands, so the invariant below is exercising the knowledge plane
+    // non-vacuously. (The fqn-vs-name Inferred distinction is pinned
+    // separately, by exact value, in the test below — provenance alone
+    // cannot tell those two tiers apart.)
+    let mut seen_extracted = false;
+    let mut seen_inferred = false;
+    let mut seen_ambiguous = false;
+    for node in g.nodes() {
+        for (edge, _) in g.neighbors(&node.uid, Direction::Outgoing, &[EdgeKind::Mentions]) {
+            match edge.provenance {
+                Provenance::Extracted => seen_extracted = true,
+                Provenance::Inferred => seen_inferred = true,
+                Provenance::Ambiguous => seen_ambiguous = true,
+                other => panic!("unexpected provenance on a Mentions edge: {other:?}"),
+            }
+        }
+    }
+    assert!(seen_extracted, "expected an Extracted (path) Mentions edge");
+    assert!(seen_inferred, "expected an Inferred Mentions edge");
+    assert!(
+        seen_ambiguous,
+        "expected an Ambiguous (fan-out) Mentions edge"
+    );
+    assert!(cov.mentions_linked > 0 && cov.mentions_ambiguous > 0);
+
+    // The §4.1 band invariant must hold for every edge, including Mentions.
+    assert_band_invariant(&g, "knowledge-mentions");
+}
+
+#[test]
+fn knowledge_name_tier_reaches_the_document_0_70_value_specifically() {
+    // Review finding F2's discrimination test: an EXACT, HARDCODED-LITERAL
+    // 0.70 assertion — deliberately NOT `(edge.confidence.value() -
+    // KNOW_MENTION_NAME).abs() < 1e-6`, which would be circular (the edge's
+    // value is DERIVED from that same constant by construction, so it can
+    // never disagree with it regardless of what the constant is nudged to).
+    // A bare "Inferred" check is also insufficient — the fqn tier's 0.80
+    // already satisfies that, and "in [0.40, 0.80]" would still admit a
+    // nudged 0.50. Only a hardcoded-literal comparison can fail if
+    // `KNOW_MENTION_NAME` drifts from 0.70 — empirically verified (see the K2
+    // report's "F2 nudge-discrimination result": with the constant nudged to
+    // 0.50, THIS test fails while every other test in this file still
+    // passes, confirming it is the one guard actually pinning this value).
+    let mut analyzed = BTreeMap::new();
+    analyzed.insert(
+        "src/app.ts".to_string(),
+        analyze("src/app.ts", knowledge_app_source()),
+    );
+    analyzed.insert(
+        "src/other.ts".to_string(),
+        analyze("src/other.ts", knowledge_other_source()),
+    );
+    let doc = strata_knowledge::parse_markdown("docs/guide.md", knowledge_guide_md());
+    let docs = vec![("docs/guide.md".to_string(), doc)];
+
+    let (g, _cov) =
+        assemble_graph_with_knowledge(&analyzed, REPO, &ResolveOptions::default(), &docs);
+
+    let mut seen_name_tier = false;
+    for node in g.nodes() {
+        for (edge, dst) in g.neighbors(&node.uid, Direction::Outgoing, &[EdgeKind::Mentions]) {
+            if dst.fqn == "Foo.bar" {
+                assert_eq!(edge.provenance, Provenance::Inferred);
+                assert!(
+                    (edge.confidence.value() - 0.70).abs() < 1e-6,
+                    "the bar mention must sit at the pinned 0.70 name-tier value, got {}",
+                    edge.confidence.value()
+                );
+                seen_name_tier = true;
+            }
+        }
+    }
+    assert!(
+        seen_name_tier,
+        "expected exactly one Mentions edge to Foo.bar (the name-tier case)"
+    );
+}
+
+// ── K3 (Knowledge plane): the band invariant extends to `Documents` edges ───
+//
+// Closes the K2 deferral above: `Documents` edges (from a doc comment
+// SYNTACTICALLY adjacent to its symbol, `RawSymbol::doc_span`) are graded at
+// a single tier — Extracted 0.95, always — since adjacency is a syntactic
+// fact the analyzer observed directly, never an inference. No markdown doc is
+// needed to exercise this path: `Documents` comes from `analyzed` alone.
+
+/// A single TS file with one JSDoc-documented function — the K3 fixture.
+fn knowledge_doc_comment_source() -> &'static str {
+    concat!(
+        "/**\n",
+        " * Adds one.\n",
+        " */\n",
+        "export function addOne(x) {}\n",
+    )
+}
+
+#[test]
+fn knowledge_documents_edge_satisfies_band_invariant_non_vacuously() {
+    let mut analyzed = BTreeMap::new();
+    analyzed.insert(
+        "src/app.ts".to_string(),
+        analyze("src/app.ts", knowledge_doc_comment_source()),
+    );
+    let (g, cov) = assemble_graph_with_knowledge(&analyzed, REPO, &ResolveOptions::default(), &[]);
+
+    assert!(
+        cov.doc_comments >= 1,
+        "expected at least one doc-comment Documents edge"
+    );
+
+    let mut seen_documents = false;
+    for node in g.nodes() {
+        for (edge, dst) in g.neighbors(&node.uid, Direction::Outgoing, &[EdgeKind::Documents]) {
+            assert_eq!(dst.fqn, "addOne");
+            assert_eq!(edge.provenance, Provenance::Extracted);
+            // Discrimination test mirroring F2 above: an EXACT, HARDCODED-
+            // LITERAL 0.95 assertion — deliberately NOT `(edge.confidence.value()
+            // - KNOW_DOC_COMMENT).abs() < 1e-6`, which would be circular (the
+            // edge's value is DERIVED from that same constant by construction,
+            // so it can never disagree with it regardless of what the constant
+            // is nudged to). Verified: nudging `KNOW_DOC_COMMENT` to 0.85 locally
+            // makes THIS assertion fail while the rest of the suite (including
+            // the Extracted-band membership check inside `assert_band_invariant`
+            // below, which would still pass at 0.85) stays green — confirming
+            // this is the one guard actually pinning the value.
+            assert!(
+                (edge.confidence.value() - 0.95).abs() < 1e-6,
+                "the Documents edge must sit at the pinned 0.95 Extracted value, got {}",
+                edge.confidence.value()
+            );
+            seen_documents = true;
+        }
+    }
+    assert!(seen_documents, "expected a Documents edge in the graph");
+
+    // The §4.1 band invariant must hold for every edge, including Documents.
+    assert_band_invariant(&g, "knowledge-documents");
+}
+
+#[test]
+fn knowledge_conf_constants_are_within_their_bands() {
+    // Asserts the REAL knowledge.rs KNOW_* constants (re-exported from
+    // strata-index): KNOW_MENTION_PATH in the Extracted band 0.95–1.0;
+    // KNOW_MENTION_FQN/KNOW_MENTION_NAME in the Inferred band 0.40–0.80;
+    // KNOW_AMBIGUOUS in the Ambiguous band (< 0.40). A future edit moving one
+    // out of band fails here (T1).
+    const {
+        assert!(
+            KNOW_MENTION_PATH >= 0.95 && KNOW_MENTION_PATH <= 1.0,
+            "KNOW_MENTION_PATH is outside the Extracted band [0.95, 1.0]"
+        )
+    };
+    const {
+        assert!(
+            KNOW_MENTION_FQN >= 0.40 && KNOW_MENTION_FQN <= 0.80,
+            "KNOW_MENTION_FQN is outside the Inferred band [0.40, 0.80]"
+        )
+    };
+    const {
+        assert!(
+            KNOW_MENTION_NAME >= 0.40 && KNOW_MENTION_NAME <= 0.80,
+            "KNOW_MENTION_NAME is outside the Inferred band [0.40, 0.80]"
+        )
+    };
+    const {
+        assert!(
+            KNOW_AMBIGUOUS < 0.40,
+            "KNOW_AMBIGUOUS is >= 0.40 (Ambiguous ceiling)"
+        )
+    };
+    const {
+        assert!(
+            KNOW_DOC_COMMENT >= 0.95 && KNOW_DOC_COMMENT <= 1.0,
+            "KNOW_DOC_COMMENT is outside the Extracted band [0.95, 1.0]"
         )
     };
 }

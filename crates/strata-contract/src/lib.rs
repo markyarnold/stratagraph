@@ -84,6 +84,16 @@ pub struct OperationDef {
     pub operation_id: Option<String>,
     /// The spec file this operation came from (repo-relative, caller-supplied).
     pub spec_path: String,
+    /// Human-readable spec text for this operation, when the spec declares any
+    /// (knowledge plane, K4): OpenAPI's `summary`/`description` operation fields
+    /// (joined with a blank line when both are present, trimmed) or a GraphQL
+    /// field's `"""docstring"""`. `None` — never `Some("")` — when the spec
+    /// declares nothing, or the declared text is empty/whitespace-only. Always
+    /// `None` for gRPC (not captured by this adapter). Purely additive: not part
+    /// of the estate-wide identity `(api_id, format, key)` above, so two repos
+    /// merging the same canonical operation dedup regardless of whether — or
+    /// how — either one documents it.
+    pub description: Option<String>,
 }
 
 /// An error from parsing a contract specification.
