@@ -205,8 +205,8 @@ other dependency edge, with two deliberate consequences:
   line and in coverage. One M1 bound to know: link destinations are resolved
   as **literal repo-relative paths**, so a valid doc-relative link (or one
   carrying a `#anchor`) also counts as stale — treat the counter as an upper
-  bound on real drift, not a purified measure of it (the
-  [accuracy report](https://stratagraph.dev/docs/accuracy) states the bounds
+  bound on real drift, not a purified measure of it (the accuracy report at
+  `docs/accuracy/knowledge-linking.md` in the repository states the bounds
   precisely). Together, the forward and reverse signals cover both
   directions of staleness deterministically: docs that a change is about to
   stale, and docs that are stale already.
