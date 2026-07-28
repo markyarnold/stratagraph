@@ -35,7 +35,7 @@ The deterministic engine (everything from `strata-core` through `strata-cli`) sh
 - The desktop app is always a strict consumer of the engine's public API; it cannot smuggle logic into the core.
 - The same UI shell is intended to back a future hosted front end without changing the engine.
 
-This mirrors the design's packaging stance: the deterministic planes are in the core binary; heavier or specialised additions (more cloud providers, language servers, the future knowledge-plane model pass) are designed to ship as optional extensions so the base install stays small.
+This mirrors the design's packaging stance: the deterministic planes — all five, including knowledge — are in the core binary; heavier or specialised additions (more cloud providers, language servers, a future knowledge-plane model-assisted enrichment pass) are designed to ship as optional extensions so the base install stays small.
 
 ## The pipeline
 

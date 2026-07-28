@@ -13,13 +13,13 @@ StrataGraph builds a single queryable graph whose nodes and edges come from up t
 | **Infrastructure** | Cloud resources: Lambdas, IAM roles, AppSync APIs, and the edges between them | CloudFormation/SAM or Terraform/Terragrunt is present |
 | **Data** | Tables, columns, foreign keys, and the code that reads/writes them | SQL DDL or supported ORM models are present |
 
-The code plane is built for every codebase. Each other plane is a **progressive enhancement**: it activates itself when StrataGraph detects its inputs and contributes nothing until then. A single-language repository with no specs, no schema, and no infrastructure gets a clean code graph and never encounters a contract or cloud concept. The same engine, run against a repository that *does* have those artefacts, lights up the corresponding planes automatically, with no configuration required to get started. (A fifth, **knowledge** plane for design docs and ADRs is described in the design doc as future work and is not built today.)
+The code plane is built for every codebase. Each other plane is a **progressive enhancement**: it activates itself when StrataGraph detects its inputs and contributes nothing until then. A single-language repository with no specs, no schema, and no infrastructure gets a clean code graph and never encounters a contract or cloud concept. The same engine, run against a repository that *does* have those artefacts, lights up the corresponding planes automatically, with no configuration required to get started. (The fifth, **knowledge** plane activates the same way: add a `docs/` tree, a README, or doc comments and the repository's own written knowledge joins the graph — see [The knowledge plane](../concepts/knowledge.md).)
 
 The power is that wherever planes coexist, they form **one** graph you traverse in a single query. See [The five planes](../concepts/planes.md) and [The cross-plane graph](../concepts/graph.md) for the full model.
 
 ## Cross-boundary impact: follow the chain, not just the calls
 
-Because all four planes live in one graph, impact analysis can follow a dependency through edge families that a call-graph tool never has. The flagship traversals chain across boundaries:
+Because all five planes live in one graph, impact analysis can follow a dependency through edge families that a call-graph tool never has. The flagship traversals chain across boundaries:
 
 - **Producer → operation → consumer.** A backend resolver `PRODUCES` a GraphQL field; a frontend `CONSUMES` it. StrataGraph follows that chain, so changing the resolver surfaces the consumer, even in another repository, even in another language.
 - **Code → table.** A handler `READS`/`WRITES` a column; an ORM model `MAPS_TO` a table. Change the column and StrataGraph names the code that touches it.

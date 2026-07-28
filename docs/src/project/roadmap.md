@@ -45,7 +45,10 @@ Each will arrive the same way TS did: a SCIP/LSP backend behind the existing ana
 
 ## The knowledge plane
 
-The fifth plane, the "why" (design documents, ADRs, diagrams, PDFs, notes), is opt-in and not yet built (design §5.5). It is the only plane that will be model-assisted, and by deliberate design its output is always tagged `MODEL`/inferred and **segregated from the deterministic planes**: it never contributes a hard dependency edge and never gates impact. It can be switched off entirely for regulated environments. The deterministic planes that ship today carry no model dependency at all; the knowledge plane is the one place that will, kept strictly walled off.
+**M1 shipped.** The fifth plane is built and fully deterministic: markdown files, inline doc comments, and API-spec descriptions become `Doc`/`DocSection` nodes linked to the code they describe — structural and lexical extraction, no model pass (see [The knowledge plane](../concepts/knowledge.md)). What remains on the roadmap:
+
+- **Reference-resolution refinements.** Doc-relative link normalization and `#anchor` handling in path references — today a valid relative markdown link counts toward `stale_doc_mentions` and earns no edge; the accuracy report (`docs/accuracy/knowledge-linking.md`) states the bound precisely.
+- **Model-assisted enrichment (opt-in, future).** Vision/LLM extraction over PDFs, images, and diagrams — the only model-assisted part of the design. By deliberate design its output would always be tagged `MODEL`, segregated from the deterministic planes, never a hard dependency edge, never gating impact, and switchable off entirely for regulated environments. The planes that ship today — all five — carry no model dependency at all.
 
 ## Desktop: signing and Windows/Linux builds
 

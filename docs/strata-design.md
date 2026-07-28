@@ -47,7 +47,7 @@ StrataGraph builds a single queryable graph. The code plane is the universal cor
 2. **Contract plane (activates on specs).** The interface artefacts between components: REST and GraphQL APIs, gRPC and protobuf, event schemas. Activates when such specs are found. Useful within a monolith that exposes an API, not only across services.
 3. **Data plane (activates on schema artefacts).** Databases, tables, columns, constraints, views. Activates when migrations, DDL or ORM models are found. The majority of applications have a database, so this is broadly relevant, not a microservice concern.
 4. **Infrastructure plane (activates on IaC, provider agnostic).** Cloud and deployment resources read from infrastructure as code. Activates only when IaC is found, and the specific cloud is handled by an adapter (AWS first, then others). On AWS this means IAM roles and policies, Lambda functions, ECS services, EventBridge rules, queues, gateways, RDS instances, buckets, Cognito pools. The same model accommodates Kubernetes manifests, Docker Compose, GCP and Azure through their own adapters.
-5. **Knowledge plane (optional, opt in).** The "why": design documents, ADRs, diagrams, PDFs, notes. Model assisted, always tagged as inferred and segregated from the deterministic planes.
+5. **Knowledge plane (shipped 2026-07, deterministic).** The "why": READMEs, ADRs, manuals under `docs/`, inline doc comments, API-spec descriptions — parsed structurally and linked lexically to the code they describe, with doc drift measured and docs entering the blast radius as "needs review" (see `docs/specs/2026-07-13-knowledge-plane-design.md`). No model pass. A future model-assisted enrichment (vision over PDFs, images, diagrams) remains optional and opt-in, always tagged `MODEL` and segregated from the deterministic graph.
 
 Where planes coexist, **cross plane impact** is the flagship: a single traversal can run from an IAM role to a downstream consumer, through a Lambda, its code, an event contract and a table. But the same impact machinery, restricted to the planes that happen to be present, is what makes a humble monolith with a database genuinely useful too.
 
@@ -55,7 +55,7 @@ Where planes coexist, **cross plane impact** is the flagship: a single traversal
 
 These are non negotiable and shape every later decision.
 
-- **Deterministic first, model optional.** The structural graph is built without any language model and is fully reproducible. Models only ever add the knowledge plane and optional enrichment, never hard dependency edges.
+- **Deterministic first, model optional.** The structural graph — all five planes, including knowledge — is built without any language model and is fully reproducible. Models only ever add optional enrichment (the future knowledge-plane vision pass), never hard dependency edges.
 - **Provenance on every edge.** Every relationship records how it was derived and how much to trust it. An inference can never masquerade as a fact. This is the single most important property for a CTO to gate a deployment on the output.
 - **Resolved over raw.** Where a source has both a raw form and a resolved form, prefer the resolved form. Parse the Terraform plan rather than guessing at HCL interpolation. Use language server symbol resolution rather than heuristic name matching.
 - **Incremental from day one.** Content hash every input, re-parse only what changed, update only the affected subgraph. Not a future roadmap item.
@@ -70,8 +70,8 @@ These are non negotiable and shape every later decision.
 StrataGraph decides what to build by detecting what is present, then lets the user override.
 
 - **Detection.** On indexing, a probe step inspects the codebase: languages, and the presence of OpenAPI or GraphQL or protobuf specs, SQL migrations or ORM models, and IaC (and which provider). Each detected capability switches its plane on. Detection results are reported plainly so the user can see what was found and what was activated.
-- **Switches.** Every plane and adapter has an explicit switch: auto (the default, follow detection), on (force build even on weak signals) and off (never build, for example to exclude the model assisted knowledge plane in a regulated environment, or to skip IaC parsing in CI). Switches live in a simple project configuration file and as CLI flags.
-- **Packaging.** The deterministic planes ship in the core binary. Heavier or specialised adapters (additional cloud providers, language servers, the knowledge plane's model pass) can ship as optional extensions so the base install stays small. A switch being off means its extension need not even be loaded.
+- **Switches.** Every plane and adapter has an explicit switch: auto (the default, follow detection), on (force build even on weak signals) and off (never build, for example to exclude the knowledge plane's future model-assisted enrichment in a regulated environment, or to skip IaC parsing in CI). Switches live in a simple project configuration file and as CLI flags.
+- **Packaging.** The deterministic planes — all five — ship in the core binary. Heavier or specialised adapters (additional cloud providers, language servers, the knowledge plane's future model-assisted enrichment pass) can ship as optional extensions so the base install stays small. A switch being off means its extension need not even be loaded.
 
 The principle: powerful when the inputs are there, silent when they are not, and always under the user's control.
 
@@ -88,7 +88,7 @@ Every edge (and derived node) carries a provenance tag and a numeric confidence 
 | `OBSERVED` | Seen in runtime data (query logs, traces, CloudTrail) | 0.9 to 1.0 |
 | `INFERRED` | Derived heuristically (string built SQL, naming convention, framework pattern) | 0.4 to 0.8 |
 | `AMBIGUOUS` | Multiple candidate targets, none confidently selected | below 0.4 |
-| `MODEL` | Produced by an LLM or vision pass (knowledge plane only) | tagged separately, never gates impact |
+| `MODEL` | Produced by an LLM or vision pass (reserved: future knowledge-plane enrichment only — the shipped knowledge plane is deterministic and never emits it) | tagged separately, never gates impact |
 
 Impact queries take a minimum confidence threshold. The default for "will break" is high, with lower confidence edges surfaced as "may be affected, review". **Resolved by measurement (2026-06-12, §15.6):** the default will-break cutoff is **0.40**, the lowest band whose measured precision crosses the will-break bar (`INFERRED` measured 1.00, `AMBIGUOUS` 0.53; see `docs/accuracy/ts-resolution.md` and `strata_core::traverse::DEFAULT_WILL_BREAK_CONFIDENCE`). It governs the *label* only; `impact` stays recall-biased and surfaces everything, AMBIGUOUS marked. The label is emitted as a derived `will_break` field on every `AffectedNode`, surfaced through the MCP impact tool JSON, the CLI `impact`/`detect-changes` printers, and the desktop impact table.
 

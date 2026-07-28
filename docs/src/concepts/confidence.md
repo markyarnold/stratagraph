@@ -22,7 +22,7 @@ Every edge and every derived node carries one of these provenance tags
 | `Observed` | Seen in runtime data (query logs, traces, CloudTrail). *Reserved, not emitted yet.* | 0.9 – 1.0 |
 | `Inferred` | Derived heuristically: a naming convention, a framework pattern, a string-built SQL match. | 0.4 – 0.8 |
 | `Ambiguous` | Several candidate targets, none confidently selected. | below 0.4 |
-| `Model` | Produced by an LLM/vision pass (the future [knowledge plane](planes.md)). | tagged separately, **never gates impact** |
+| `Model` | Produced by an LLM/vision pass. *Reserved for future opt-in [knowledge-plane](knowledge.md) enrichment — the shipped knowledge plane is deterministic and never emits it.* | tagged separately, **never gates impact** |
 
 Provenance is the *kind* of evidence; confidence is its *strength*. The two are
 linked by a rule that the whole system enforces.

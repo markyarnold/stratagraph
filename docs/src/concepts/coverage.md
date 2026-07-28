@@ -194,10 +194,13 @@ A few notes the matrix compresses:
 
 ### Knowledge plane
 
-**Not built.** The fifth plane (LLM/vision over docs and diagrams, `MODEL`
-provenance) is designed but unimplemented. See
-[The five planes](planes.md#knowledge-plane-future-not-built). Its defining rule
-is already fixed: `MODEL` provenance never gates impact.
+**Built (M1), fully deterministic.** Markdown files, inline doc comments, and
+API-spec descriptions become `Doc`/`DocSection` nodes with `Documents`/
+`Mentions` edges — structural and lexical extraction, no model pass anywhere.
+See [The knowledge plane](knowledge.md) and
+[The five planes](planes.md#knowledge-plane). A future model-assisted
+enrichment (vision over PDFs and diagrams) remains roadmap-only; its defining
+rule is already fixed: `MODEL` provenance never gates impact.
 
 ## Surfaces
 
@@ -213,8 +216,8 @@ surfaces call the same `strata-core` traversals over the same graph:
 
 ## The one-line summary
 
-StrataGraph reads **five languages** across **four deterministic planes** (code,
-contract, infra, data; knowledge is future), grading every relationship into a
+StrataGraph reads **five languages** across **five deterministic planes** (code,
+contract, infra, data, knowledge), grading every relationship into a
 confidence band and never claiming more than the evidence supports. All five are
 first-class, with the same structure, tools, and discipline; TypeScript
 **additionally** carries a compiler-verified `Resolved` tier (SCIP), while
@@ -222,5 +225,6 @@ Python, Rust, and C# use band-disciplined heuristics, measured at ~1.0 precision
 against compiler ground truth for Python and Rust and extraction-validated for
 C#. The deferrals (gRPC code linking, IAM permission-gap reconciliation (the
 `Grants` half ships; the `RequiresPermission` half and the traversal do not yet),
-convention/Drizzle/Prisma/EF ORM, column-level data, the knowledge plane) are
-stated plainly because *stating the edge of what is known* is the product.
+convention/Drizzle/Prisma/EF ORM, column-level data, doc-relative link
+normalization in the knowledge plane) are stated plainly because *stating the
+edge of what is known* is the product.
