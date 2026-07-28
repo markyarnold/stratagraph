@@ -504,7 +504,7 @@ Steering/content tests pin these phrases (update `kiro_routing_*` + steering tes
 
 - [ ] **Step 3: Manual + changelog** — `concepts/knowledge.md` covers: the model (§2 table reproduced), bodies-from-disk freshness rule, budgets table, drift + docs-in-blast-radius, degradation notes. Changelog Unreleased entry in the established user-facing voice.
 
-- [ ] **Step 4: Dogfood + accuracy report** — rebuild release binary; `strata index .` on the strata repo; record the real `knowledge:` line; run `guidance strata-index/src/contract.rs` and `search_docs "confidence bands"`; write `docs/accuracy/knowledge-linking.md` with the measured counts (docs/sections/linked/ambiguous/stale/doc_comments) and 2–3 verified example chains. Then the client-repo pass (atlas + data-pipeline) — numbers only, no client content in the report.
+- [ ] **Step 4: Dogfood + accuracy report** — rebuild release binary; `strata index .` on the strata repo; record the real `knowledge:` line; run `guidance strata-index/src/contract.rs` and `search_docs "confidence bands"`; write `docs/accuracy/knowledge-linking.md` with the measured counts (docs/sections/linked/ambiguous/stale/doc_comments) and 2–3 verified example chains. Then the client-repo pass (two private client repos) — numbers only, no client content in the report.
 
 - [ ] **Step 5: mdbook + website** — `mdbook build docs` green; mirror changed pages + nav.json to `strataindex`, `npm run build` green, commit + push both repos.
 

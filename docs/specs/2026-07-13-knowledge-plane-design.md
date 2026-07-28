@@ -72,7 +72,7 @@ by `guidance`.
 | `Mentions` | DocSection → any node | unique fqn in a code fence or inline `code` | Inferred **0.80** |
 | `Mentions` | DocSection → any node | unique bare name in inline `code` | Inferred **0.70** |
 | `Mentions` | DocSection → several candidates | multi-candidate name | Ambiguous **0.35** fan-out, one edge per candidate |
-| *(no edge)* | — | unresolvable reference | counted as `stale_doc_mentions` |
+| *(no edge)* | — | unresolvable reference | counted per kind (as shipped, K7 F2): `PathRef` or symbol-shaped inline `code` → `stale_doc_mentions`; plain-shaped inline `code` → `unresolved_plain_refs`; fence tokens → uncounted |
 
 Markdown **never** earns `Documents` in M1: prose about a symbol is a mention,
 not proof of documentation. Only syntactic adjacency (doc comments) reaches
@@ -95,10 +95,16 @@ Consequences, both deliberate:
 ### Doc drift — the mirror image
 
 A reference in a doc that resolves to nothing (renamed symbol, deleted file)
-produces **no edge** and increments `stale_doc_mentions`, surfaced in the
-index summary and coverage. The repo reports which docs are lying. Together
-with impact-on-docs this covers both directions of staleness,
-deterministically.
+produces **no edge** and is counted — as shipped (K7 F2), per kind:
+`stale_doc_mentions` when it reads as an authorial claim (a `PathRef`, or
+symbol-shaped inline `code`); `unresolved_plain_refs` when it is a
+plain-shaped inline token the graph will never model (a bare constant or
+config key); fence-token misses are counted nowhere. Both counters surface
+in the index summary and coverage. The repo reports which docs are lying —
+bounded honestly by the accuracy report (in M1, link destinations resolve as
+literal repo-relative paths, so a valid doc-relative link also counts
+stale). Together with impact-on-docs this covers both directions of
+staleness, deterministically.
 
 ## 3. Ingestion
 
@@ -141,8 +147,12 @@ The **span** is captured, never the text — bodies stay on disk.
 the consumer linker uses, emits nodes/edges per the table above, and reports:
 
 ```
-knowledge: 34 docs, 210 sections; 480 mentions linked (12 ambiguous), 9 stale; 1,102 doc comments
+knowledge: 34 doc(s), 210 section(s); 480 mention(s) linked (12 ambiguous), 9 stale, 3 plain unresolved
 ```
+
+(The `Documents` doc-comment count is deliberately not printed on the summary
+line; it is carried in coverage and reachable via the accuracy report's
+documented `--ignored` dogfood test.)
 
 ## 4. Serving surfaces — token budgets are part of the contract
 

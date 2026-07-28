@@ -89,7 +89,9 @@ fn default_true() -> bool {
 /// `incremental == full` still holds.
 ///
 /// **v11** adds [`RawSymbol::doc_span`] — the span of a doc comment (Rust
-/// `///`/`//!`/`/** */`, TS/JS JSDoc `/** */`, Python docstring, C# `///`) found
+/// outer `///`/`/** */` — inner `//!` is excluded, it documents the enclosing
+/// module, not the next item — TS/JS JSDoc `/** */`, Python docstring, C#
+/// `///`) found
 /// SYNTACTICALLY adjacent to a symbol's declaration (no blank line between), for
 /// the knowledge plane's Extracted `Documents` edge (Knowledge plane, K3). This
 /// IS a serialized *shape* change (a new field), so it bumps the version: every
@@ -114,8 +116,9 @@ pub struct RawSymbol {
     pub span: Span,
     /// The span of a doc comment found SYNTACTICALLY adjacent to this symbol's
     /// declaration — immediately above it, with no blank line in between (Rust
-    /// `///`/`//!`/`/** */`, TS/JS JSDoc `/** */`, a Python docstring, C#
-    /// `///`) — or `None` when no such comment is adjacent. `None` for a
+    /// outer `///`/`/** */` — never inner `//!` — TS/JS JSDoc `/** */`, a
+    /// Python docstring, C# `///`) — or `None` when no such comment is
+    /// adjacent. `None` for a
     /// comment separated by a blank line: adjacency is a syntactic fact, not a
     /// proximity guess (Knowledge plane, K3). Drives the knowledge plane's
     /// Extracted `Documents` edge (`build_knowledge_plane`); never used to

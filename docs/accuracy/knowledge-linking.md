@@ -76,8 +76,12 @@ analyzers captured (`RawSymbol::doc_span`):
 - `stale_doc_mentions` — references that matched **nothing** at any tier
   **and** read as an authorial claim the graph could plausibly have resolved:
   counted, never guessed into a phantom edge. Disjoint from the two above.
-  Precisely: an unresolvable `PathRef` (an exact repo-relative path claim) is
-  always counted here; an unresolvable `InlineCode` reference is counted here
+  Precisely: an unresolvable `PathRef` is always counted here — and in M1 a
+  `PathRef` is resolved as a **literal repo-relative path**, so a valid
+  doc-relative link destination or an anchor-bearing cross-reference also
+  lands here even though its target exists (see
+  [Honest bounds](#honest-bounds-m1-scope-restated-precisely));
+  an unresolvable `InlineCode` reference is counted here
   only when its text is **symbol-shaped** — contains `::`/`.`, or is
   compound-case (has both an ASCII lower and an ASCII upper letter, e.g.
   `renamedSymbol`) — reading like a real, broken symbol reference.
@@ -302,6 +306,20 @@ exactly.
 
 ## Honest bounds (M1 scope, restated precisely)
 
+- **`PathRef` resolution is literal in M1: a valid relative link counts as
+  stale.** A markdown link destination is matched against node paths
+  **verbatim** — nothing normalizes a doc-relative destination (`planes.md`
+  written inside `docs/src/concepts/knowledge.md`) against the containing
+  doc's own directory, and a `#anchor` suffix is never stripped before the
+  lookup. A perfectly valid mdBook-relative link therefore misses every
+  tier, counts toward `stale_doc_mentions`, and contributes **no edge**.
+  Measured at the final-review HEAD (`c7ce802`): roughly 300 of the 2,448
+  counted stale references (≈12%) are this class, and the manual's internal
+  link mesh consequently produces zero doc→doc `Mentions` edges. This is a
+  false-positive class inside the drift signal plus a recall gap — never a
+  wrong edge; the graph stays conservative. The mechanical fix (normalize
+  the destination against the doc's directory; strip the anchor and try the
+  `DocSection` fqn) is queued as a follow-up.
 - **The `stale_doc_mentions` / `unresolved_plain_refs` split is a SHAPE
   heuristic, not a semantic one (K7 F2).** `inline_code_looks_symbol_shaped`
   asks only "does this text look like a symbol name" (contains `::`/`.`, or

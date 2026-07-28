@@ -202,7 +202,12 @@ other dependency edge, with two deliberate consequences:
 - **Reverse: a doc can already be lying.** A reference in a doc that resolves
   to nothing — a renamed symbol, a deleted file — produces **no edge** and
   increments `stale_doc_mentions`, surfaced in the `strata index` summary
-  line and in coverage. Together, the forward and reverse signals cover both
+  line and in coverage. One M1 bound to know: link destinations are resolved
+  as **literal repo-relative paths**, so a valid doc-relative link (or one
+  carrying a `#anchor`) also counts as stale — treat the counter as an upper
+  bound on real drift, not a purified measure of it (the
+  [accuracy report](https://stratagraph.dev/docs/accuracy) states the bounds
+  precisely). Together, the forward and reverse signals cover both
   directions of staleness deterministically: docs that a change is about to
   stale, and docs that are stale already.
 

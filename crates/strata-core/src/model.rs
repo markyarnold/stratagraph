@@ -200,7 +200,8 @@ pub enum EdgeKind {
     RequiresPermission,
     /// Knowledge-plane doc-comment link: a `DocSection` node → the code symbol
     /// it documents, from a doc comment SYNTACTICALLY adjacent to its
-    /// declaration (Rust `///`/`//!`, TS/JS JSDoc, Python docstring, C# `///`
+    /// declaration (Rust outer `///`/`/** */` — inner `//!` excluded — TS/JS
+    /// JSDoc, Python docstring, C# `///`
     /// XML doc — see `RawSymbol::doc_span`). A syntactic fact, always Extracted
     /// 0.95 — never earned by prose merely mentioning a symbol (that is
     /// [`Mentions`] below, at a lower, inferred tier). Not yet emitted by any
