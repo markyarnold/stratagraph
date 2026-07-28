@@ -71,16 +71,18 @@ describe("plane → colour", () => {
     expect(planeColor("contract")).toBe(PLANE_COLORS.contract);
     expect(planeColor("infra")).toBe(PLANE_COLORS.infra);
     expect(planeColor("data")).toBe(PLANE_COLORS.data);
+    expect(planeColor("knowledge")).toBe(PLANE_COLORS.knowledge);
   });
 
-  it("the four plane colours are mutually distinct", () => {
+  it("the five plane colours are mutually distinct", () => {
     const colors = new Set([
       PLANE_COLORS.code,
       PLANE_COLORS.contract,
       PLANE_COLORS.infra,
       PLANE_COLORS.data,
+      PLANE_COLORS.knowledge,
     ]);
-    expect(colors.size).toBe(4);
+    expect(colors.size).toBe(5);
   });
 
   it("falls back to a non-plane grey for an unknown plane", () => {
@@ -89,6 +91,7 @@ describe("plane → colour", () => {
     expect(c).not.toBe(PLANE_COLORS.contract);
     expect(c).not.toBe(PLANE_COLORS.infra);
     expect(c).not.toBe(PLANE_COLORS.data);
+    expect(c).not.toBe(PLANE_COLORS.knowledge);
   });
 
   it("a built node carries its plane's colour", () => {

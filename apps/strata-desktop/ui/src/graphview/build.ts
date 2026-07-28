@@ -17,12 +17,14 @@ import type { SubgraphDto, SubgraphEdge, SubgraphNode } from "../api";
 
 // ── palette (the one source of plane colours) ────────────────────────────────
 
-/** Plane → base node colour. Three perceptually distinct hues. */
+/** Plane → base node colour. Five perceptually distinct hues. */
 export const PLANE_COLORS = {
   code: "#4ea1ff", // blue    — program structure
   contract: "#c08cff", // violet  — interface operations
   infra: "#4cc38a", // green   — cloud resources
   data: "#e0699f", // rose    — database tables/columns (Slice 16, D3)
+  knowledge: "#3fb6b2", // teal — docs/doc-comments (kept in sync with
+  // styles.css `.verdict.needs-review`, which uses the same hue)
 } as const;
 
 export type Plane = keyof typeof PLANE_COLORS;
@@ -246,7 +248,7 @@ function seedPosition(uid: string, index: number, total: number): { x: number; y
 // ── the legend ───────────────────────────────────────────────────────────────
 
 /**
- * The legend rows for the current mode. Always includes the four planes and the
+ * The legend rows for the current mode. Always includes the five planes and the
  * reserved AMBIGUOUS edge colour; impact mode adds the target accent.
  */
 export function buildLegend(impact: boolean): LegendEntry[] {
@@ -255,6 +257,7 @@ export function buildLegend(impact: boolean): LegendEntry[] {
     { label: "contract", color: PLANE_COLORS.contract },
     { label: "infra", color: PLANE_COLORS.infra },
     { label: "data", color: PLANE_COLORS.data },
+    { label: "knowledge", color: PLANE_COLORS.knowledge },
     { label: "ambiguous edge", color: AMBIGUOUS_EDGE_COLOR },
   ];
   if (impact) rows.push({ label: "impact target", color: TARGET_COLOR });
