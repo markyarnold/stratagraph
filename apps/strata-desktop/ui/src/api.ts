@@ -85,12 +85,17 @@ export interface ContextResult {
 export interface AffectedNode {
   uid: string;
   name: string;
+  // Node kind name (server-side), e.g. "Function", "Table", "DocSection".
+  // A doc kind (Doc/DocSection) means the dependent is documentation: it is
+  // rendered "needs review", never "WILL BREAK", whatever `will_break` says.
+  kind: string;
   depth: number;
   confidence: number;
   ambiguous: boolean;
   // The §15.6 will-break verdict, computed server-side (strata_core's
   // will_break_label: confidence ≥ 0.40 and non-ambiguous) and echoed verbatim —
-  // true = "will break", false = "may be affected, review".
+  // true = "will break", false = "may be affected, review". Kind-blind by
+  // design; the doc-kind downgrade is a rendering rule (see breakVerdict).
   will_break: boolean;
 }
 
@@ -128,12 +133,31 @@ export interface ImpactResult {
 }
 
 /**
+ * A knowledge-plane doc kind. A Doc/DocSection dependent is documentation put
+ * at risk by the change — a different failure mode from code breaking — so it
+ * is downgraded to "needs review" everywhere (mirrors the CLI's
+ * `is_doc_kind_name` and the caveat documented for the MCP impact JSON).
+ */
+export function isDocKind(kind: string): boolean {
+  return kind === "Doc" || kind === "DocSection";
+}
+
+/**
  * The §15.6 will-break verdict as a table label — the GUI's word-for-word echo
  * of the engine's classification, matching the CLI's "WILL BREAK" / "may affect"
- * column. The boolean itself is computed and tested server-side.
+ * column. The boolean itself is computed and tested server-side. A doc-kind
+ * dependent overrides the bool to "needs review": the mechanical `will_break`
+ * is kind-blind, and a stale doc must never be reported as a code break.
  */
-export function breakVerdict(willBreak: boolean): string {
+export function breakVerdict(willBreak: boolean, kind?: string): string {
+  if (kind !== undefined && isDocKind(kind)) return "needs review";
   return willBreak ? "WILL BREAK" : "may affect";
+}
+
+/** The verdict cell's CSS class, paired with breakVerdict's label. */
+export function verdictClass(willBreak: boolean, kind?: string): string {
+  if (kind !== undefined && isDocKind(kind)) return "verdict needs-review";
+  return willBreak ? "verdict will-break" : "verdict may-affect";
 }
 
 /**

@@ -1,6 +1,6 @@
 # StrataGraph
 
-**Cross-boundary code intelligence you can trust.** StrataGraph builds a knowledge graph of your codebase that crosses the boundaries other tools stop at: code, API contracts (GraphQL/OpenAPI), and cloud infrastructure (SAM/CloudFormation). So "what breaks if I change this?" gets a *complete* answer: the Lambda that implements a field, the frontend that queries it, and everything in between, across every repo in your estate.
+**Cross-boundary code intelligence you can trust.** StrataGraph builds a knowledge graph of your codebase that crosses the boundaries other tools stop at: code, API contracts (GraphQL/OpenAPI/gRPC), cloud infrastructure (SAM/CloudFormation/Terraform), the database (SQL DDL and ORM models), and the repository's own documentation. So "what breaks if I change this?" gets a *complete* answer: the Lambda that implements a field, the frontend that queries it, the table a handler reads, the docs that go stale, and everything in between, across every repo in your estate.
 
 Built for **reliable accuracy**: every edge carries provenance and a calibrated confidence band, ambiguity is reported as ambiguity, and the linker never invents a relationship it can't defend. Accuracy reports with CI-enforced floors live in [`docs/accuracy/`](docs/accuracy/).
 
