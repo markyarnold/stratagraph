@@ -1,5 +1,9 @@
 # StrataGraph
 
+<p align="center">
+  <img src="docs/assets/stratagraph-hero.png" alt="One changed function's blast radius traced across all five planes: a caller that will break, a GraphQL field whose consumer in another repository will break, an ambiguous candidate that may be affected, the table it writes, the Lambda it runs on, and the doc section that needs review — every edge labelled with provenance and calibrated confidence" width="100%">
+</p>
+
 **Cross-boundary code intelligence you can trust.** StrataGraph builds a knowledge graph of your codebase that crosses the boundaries other tools stop at: code, API contracts (GraphQL/OpenAPI/gRPC), cloud infrastructure (SAM/CloudFormation/Terraform), the database (SQL DDL and ORM models), and the repository's own documentation. So "what breaks if I change this?" gets a *complete* answer: the Lambda that implements a field, the frontend that queries it, the table a handler reads, the docs that go stale, and everything in between, across every repo in your estate.
 
 Built for **reliable accuracy**: every edge carries provenance and a calibrated confidence band, ambiguity is reported as ambiguity, and the linker never invents a relationship it can't defend. Accuracy reports with CI-enforced floors live in [`docs/accuracy/`](docs/accuracy/).
