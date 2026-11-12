@@ -32,10 +32,10 @@ Start with [Your first queries](../getting-started/first-queries.md) and the [im
 
 This is the role StrataGraph was built MCP-native for. An agent edits fast and often in code it has not seen; without structural knowledge it edits blind to blast radius (see [the problem](problem.md#problem-3-ai-coding-agents-edit-blind-to-blast-radius)). StrataGraph closes that gap two ways:
 
-- **The [MCP server](../reference/mcp.md)** exposes `query`, `context`, `impact`, `explain`, `detect_changes`, and `rename` to the agent, so it can assess a change *before* committing to it and read the evidence chain behind any result.
-- **The [agent kit](../getting-started/agent-kit.md)** (`strata init claude` or `strata init kiro`) installs a strictly-governed integration: steering rules that require the agent to assess blast radius before modifying anything, a pre-edit hook that injects a file's blast radius as context at edit time, and a `detect_changes` pre-commit check. The kit treats confidence bands as trust policy (act on ≥ 0.90, verify 0.40–0.89, treat < 0.40 or ambiguous as **unknown and say so**) so the agent never reports an uncertain impact as certain, and never claims "nothing depends on this" from a textual search alone.
+- **The [MCP server](../reference/mcp.md)** exposes `query`, `context`, `impact`, `explain`, `detect_changes`, and `rename` to the agent, so it can assess a change _before_ committing to it and read the evidence chain behind any result.
+- **The [agent kit](../getting-started/agent-kit.md)** (`strata init claude`, `strata init kiro`, or `strata init kiro-crew`) installs a strictly-governed integration: steering rules that require the agent to assess blast radius before modifying anything, a pre-edit hook that injects a file's blast radius as context at edit time, and a `detect_changes` pre-commit check. The kit treats confidence bands as trust policy (act on ≥ 0.90, verify 0.40–0.89, treat < 0.40 or ambiguous as **unknown and say so**) so the agent never reports an uncertain impact as certain, and never claims "nothing depends on this" from a textual search alone.
 
-The honesty discipline matters most here: an agent that confidently asserts safety is dangerous precisely when it is wrong. StrataGraph gives the agent a result it can *calibrate*, plus dead-surface flags so it can tell a safe deletion from a breaking one. (You saw the pre-edit hook in action while these very docs were written: each file edit was preceded by an injected blast-radius report.)
+The honesty discipline matters most here: an agent that confidently asserts safety is dangerous precisely when it is wrong. StrataGraph gives the agent a result it can _calibrate_, plus dead-surface flags so it can tell a safe deletion from a breaking one. (You saw the pre-edit hook in action while these very docs were written: each file edit was preceded by an injected blast-radius report.)
 
 ## Tech leads and reviewers
 
@@ -59,7 +59,7 @@ See [Cross-boundary impact](../concepts/cross-boundary.md) and the [plane walkth
 
 ### An honest note on infrastructure scope
 
-StrataGraph is deliberate about what the infrastructure plane claims today. The AWS vertical (SAM/CloudFormation parsing, AppSync resolver → GraphQL field links, role/Lambda/handler edges) and Terraform/Terragrunt ingestion are built. Some capabilities described in the design are **deferred and labelled as such**, notably IAM *permission-gap* detection (reconciling the AWS actions code calls against what a role grants). Where a capability is not built, the docs say so plainly rather than implying it works; see [Honest limitations](../accuracy/limitations.md). The same honesty bar that governs the graph governs these docs.
+StrataGraph is deliberate about what the infrastructure plane claims today. The AWS vertical (SAM/CloudFormation parsing, AppSync resolver → GraphQL field links, role/Lambda/handler edges) and Terraform/Terragrunt ingestion are built. Some capabilities described in the design are **deferred and labelled as such**, notably IAM _permission-gap_ detection (reconciling the AWS actions code calls against what a role grants). Where a capability is not built, the docs say so plainly rather than implying it works; see [Honest limitations](../accuracy/limitations.md). The same honesty bar that governs the graph governs these docs.
 
 ---
 

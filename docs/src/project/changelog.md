@@ -8,6 +8,25 @@ the `engine:` line of every index summary print the exact build id.)
 
 ## Unreleased — on `main`
 
+**`strata init kiro-crew`: the Kiro kit plus a committed project layer.** A third
+agent beside `claude` and `kiro`, and a superset of `kiro` — the same MCP
+registration, steering block and lifecycle hooks, plus two things a checkout now
+carries for the whole team: the four task-routed skills as **project skills**
+under `.kiro/skills/<slug>/SKILL.md` (the same bodies the Claude kit installs,
+written unchanged), and a **project agent spec** at `.kiro/agents/strata.json`
+declaring the `strata` MCP server, the steering and skill resources, and three
+hooks. Select it with the agent picker or `kiro-cli --agent strata`. Kiro Crew,
+the Kiro CLI and the Kiro IDE all read these two directories. Running `kiro` and
+then `kiro-crew` on the same repo leaves the shared layer byte-identical.
+
+The spec's `stop` hook closes a long-standing gap: Kiro has no commit-specific
+trigger, so "run `detect_changes` before you commit" has had to be a rule the
+agent remembers. `stop` fires when a turn ends — still advisory, but no longer
+purely a matter of memory. There is deliberately no `preToolUse` hook: that event
+fails closed in Kiro Crew (exit 2 denies the call, and so does any other non-zero
+exit, a timeout or a crash), and the engine's edit-time advice informs rather than
+blocks. Run `strata init kiro-crew` in a repo to apply.
+
 **The knowledge plane: your own docs are now part of the graph.** `strata
 index` links markdown under `docs/`, READMEs, code doc comments, and
 OpenAPI/GraphQL descriptions into the graph as `Doc`/`DocSection` nodes and
@@ -34,7 +53,7 @@ procedure is [Upgrading](../getting-started/upgrading.md).
 
 **Kiro agent kit: pre-commit hook removed; hook format auto-detected.** Kiro can
 only trigger a hook by tool name and has no "git commit" tool, so a pre-commit
-hook fired on *every* shell command (and could intercept its own `detect_changes`
+hook fired on _every_ shell command (and could intercept its own `detect_changes`
 run). It is now **dropped**: the two remaining hooks (`strata-pre-edit`,
 `strata-post-edit`) fire only on the file-write tools, and the "run
 `detect_changes` before you commit" discipline lives in the steering block Kiro

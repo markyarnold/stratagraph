@@ -2,7 +2,7 @@
 
 This page is an honest account of what StrataGraph does **not** do yet. Everything below is deliberately deferred: a planned next step with a clear shape, not an apology and not a bug. Where a capability is partly shipped, this page says exactly where the line is. There are no dates here; the order reflects the committed sequencing in [`docs/strata-design.md`](../../strata-design.md), not a calendar.
 
-The principle behind every deferral is the same one that governs the shipped product: StrataGraph would rather ship a narrow capability that is honest than a broad one that guesses. So each item below is scoped to what it will *add*, and what it will keep refusing to invent.
+The principle behind every deferral is the same one that governs the shipped product: StrataGraph would rather ship a narrow capability that is honest than a broad one that guesses. So each item below is scoped to what it will _add_, and what it will keep refusing to invent.
 
 ## Data plane: deeper schema linking
 
@@ -25,7 +25,7 @@ The contract plane extracts OpenAPI, GraphQL, and gRPC operations, and links pro
 
 The infra plane builds the AWS resource graph (`LambdaFn`, `IamRole`, AppSync API/resolver/data-source, generic `CloudResource` inventory) and the wiring between them (`Assumes`, `Routes`, `Runs`, `Contains`, and the AppSync resolver → `GraphqlField` money link) from CloudFormation/SAM, Terraform HCL, Terraform plan JSON, and Terragrunt.
 
-**IAM permission-gap detection** (Track D2, design §6.4) reconciles what a role is *allowed* to do against what its code actually *calls*. It is being built in halves, and this is exactly where the line is today.
+**IAM permission-gap detection** (Track D2, design §6.4) reconciles what a role is _allowed_ to do against what its code actually _calls_. It is being built in halves, and this is exactly where the line is today.
 
 - **Shipped: the `Grants` half (what a role is allowed to do).** A role's granted actions are extracted into `CloudAction` nodes and `Grants` edges from CloudFormation/SAM (inline `Policies` and expanded SAM policy templates such as `DynamoDBCrudPolicy`) and Terraform (`aws_iam_role_policy`, `aws_iam_policy`, inline policies). You can already see a role's grants in `context`. True to the never-confident-wrong rule, any grant that cannot be enumerated (a managed-policy ARN, a `Deny`, a `NotAction`, a `data`-source or non-literal policy document, a policy attachment) is recorded as an `<opaque:…>` marker that makes the role **INDETERMINATE**, never silently treated as "grants nothing".
 - **Next: the `RequiresPermission` half (what code calls).** Statically detect AWS SDK calls in handler code (for example a boto3 `table.put_item` to `dynamodb:PutItem`, an AWS SDK v3 `PutObjectCommand` to `s3:PutObject`) via a curated call-to-action map, and emit `RequiresPermission` edges. The edge kind is reserved in the vocabulary; no analyzer emits it yet.
@@ -59,7 +59,7 @@ The desktop app ships for macOS today. Deferred (Track E4/E5):
 
 ## More editor adapters
 
-The agent kit installs first-class integrations for **Claude Code and Kiro** today (`strata init claude|kiro`: MCP wiring, steering/skills files, and scoped pre/post-tool-use hooks). Deferred (Track E6): adapters for **Cursor, Windsurf, and Copilot**, plus `strata init --remove` to cleanly uninstall a kit. The engine surface they all build on (the MCP server) is already there; each adapter is the tool-specific wiring on top.
+The agent kit installs first-class integrations for **Claude Code, Kiro and Kiro Crew** today (`strata init claude|kiro|kiro-crew`: MCP wiring, steering/skills files, scoped pre/post-tool-use hooks, and — for `kiro-crew` — committed project skills and a project agent spec). Deferred (Track E6): adapters for **Cursor, Windsurf, and Copilot**, plus `strata init --remove` to cleanly uninstall a kit. The engine surface they all build on (the MCP server) is already there; each adapter is the tool-specific wiring on top.
 
 ## Further out
 
