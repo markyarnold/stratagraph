@@ -27,5 +27,8 @@
     "typescript": "^5",
     "vite": "^5",
     "vitest": "3.2.6"
+  },
+  "overrides": {
+    "postcss": "^8.5.18"
   }
 }
