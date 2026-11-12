@@ -6,7 +6,7 @@ MCP server, installs steering and skills, and adds lifecycle hooks, all
 idempotently and merge-safely, so it is safe to re-run and safe alongside an
 existing setup.
 
-Two agents are supported today:
+Three agents are supported today:
 
 ```bash
 strata init          # lists supported agents
@@ -14,7 +14,7 @@ strata init          # lists supported agents
 
 ```text
 Usage: strata init <agent>
-Supported agents: claude, kiro
+Supported agents: claude, kiro, kiro-crew
 ```
 
 ## `strata init claude`
@@ -72,6 +72,75 @@ For [Kiro](https://kiro.dev), the kit is the same idea in Kiro's native formats:
   pre-commit check, the same reindex command); only the envelope differs.
   Installing one version removes the other format's StrataGraph hook files, so the two
   never coexist.
+
+## `strata init kiro-crew`
+
+```bash
+strata init kiro-crew
+```
+
+A **superset** of `strata init kiro`: the same MCP registration, steering block
+and lifecycle hooks, plus the repo-committed **project layer** that
+[Kiro Crew](https://kiro.dev/docs/crew/), the Kiro CLI and the Kiro IDE all read.
+Run `kiro` and then `kiro-crew` on the same repo and the shared layer is left
+byte-identical; only the project layer is added.
+
+Two directories do the work, and both are version-controlled, so the whole team
+gets the same setup from a checkout:
+
+- **`.kiro/skills/<slug>/SKILL.md`**: the same four task-routed skills the Claude
+  kit installs, as **project skills**. They sit exactly one level under
+  `.kiro/skills/` because that is the only depth Kiro's project-skill walk
+  reaches. The bodies are written unchanged — the frontmatter already carries the
+  `name` and `description` a project skill needs — so there is one copy of the
+  skill text for every surface, with nothing to drift.
+- **`.kiro/agents/strata.json`**: a **project agent spec** — a workspace-local
+  custom agent, resolved before your `~/.kiro/agents/` ones. Select it with the
+  agent picker, or `kiro-cli --agent strata`. It declares the `strata` MCP server
+  on the spec itself (with `includeMcpJson: true`, so your workspace and user
+  `mcp.json` servers are kept as well — this adds the engine's server without
+  narrowing what you had), points `resources` at the steering block and the
+  project skills, and carries three hooks.
+
+  It pins no `model` and narrows no `tools`: a committed file must not override
+  your own choice for every session in the repo.
+
+### The project agent's three hooks
+
+| Event                              | What it does                                                                                                   |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `agentSpawn`                       | prints the one-line "no index yet" reminder when the repo has `.strata/` but no graph, and is silent otherwise |
+| `postToolUse` (matcher `fs_write`) | after a write, backgrounds an incremental `strata index` so the graph keeps up                                 |
+| `stop`                             | when a turn ends, names the `detect_changes` pre-commit check                                                  |
+
+The `stop` hook closes a real gap. As noted above, Kiro has no commit-specific
+trigger, so the "run `detect_changes` before you commit" discipline has had to be
+a rule the agent remembers. `stop` fires when a turn ends, which is the closest
+mechanical hook to "before you commit" the surface offers — still advisory, but
+no longer purely a matter of memory.
+
+There is deliberately **no `preToolUse` hook**. That event _fails closed_ in Kiro
+Crew: exit `2` denies the tool call, and so does any other non-zero exit, a
+timeout, or a crash. The engine's edit-time advice is advisory — it informs, it
+never blocks — so putting it on an event where a transient failure would start
+blocking edits would be the wrong trade. The pre-edit blast check therefore stays
+where it already works: the standalone `strata-pre-edit` hook and, for Claude
+Code, the `PreToolUse` hook described below.
+
+Three further details, each of which would otherwise leave a hook that silently
+never fires:
+
+- **The matcher is a glob, not a regex.** Kiro Crew matches tool events with
+  filename-style globbing, so the standalone hooks'
+  `fs_write|str_replace|fs_append` alternation would match no tool here. The bare
+  name `fs_write` is both correct and sufficient — Crew resolves `str_replace`,
+  `fs_append` and `delete_file` onto that same row.
+- **The guards are relative to the working directory.** A Crew hook subprocess
+  gets a strict environment allowlist with no project-directory variable in it,
+  unlike the `$CLAUDE_PROJECT_DIR` the Claude hooks use. Crew spawns the hook in
+  the session workspace, so each command tests `./.strata` instead.
+- **Every command is doubly guarded and always exits 0.** No `.strata` directory,
+  or no `strata` on `PATH`, means silence rather than a per-turn error.
 
 ## The hooks
 
@@ -141,24 +210,24 @@ Note: `--global` and `--scope user` are equivalent. Combining `--global` with
 
 **Repo scope** (`--scope project`, the default) writes into the repo:
 
-| File | Location |
-|---|---|
-| `.mcp.json` | Repo root |
-| `CLAUDE.md`, `AGENTS.md` | Repo root |
+| File                      | Location  |
+| ------------------------- | --------- |
+| `.mcp.json`               | Repo root |
+| `CLAUDE.md`, `AGENTS.md`  | Repo root |
 | `.claude/skills/strata/…` | Repo root |
-| `.claude/settings.json` | Repo root |
+| `.claude/settings.json`   | Repo root |
 
 These files are committed and shared with the team. The steering block carries
 a per-repo identity line naming this repo's node count and planes.
 
 **Global scope** (`--global` / `--scope user`) writes into your home directory:
 
-| File | Location |
-|---|---|
-| MCP server registration | `~/.claude.json` (managed by `claude mcp add`, never hand-edited) |
-| `~/.claude/settings.json` | Hooks (merged in, same merge-safe writer) |
-| `~/.claude/skills/strata/…` | Skills (same four SKILL.md files) |
-| `~/.claude/CLAUDE.md` | Generic steering block (no per-repo identity line) |
+| File                        | Location                                                          |
+| --------------------------- | ----------------------------------------------------------------- |
+| MCP server registration     | `~/.claude.json` (managed by `claude mcp add`, never hand-edited) |
+| `~/.claude/settings.json`   | Hooks (merged in, same merge-safe writer)                         |
+| `~/.claude/skills/strata/…` | Skills (same four SKILL.md files)                                 |
+| `~/.claude/CLAUDE.md`       | Generic steering block (no per-repo identity line)                |
 
 No global `AGENTS.md` is written (Claude Code does not read a global one).
 

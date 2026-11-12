@@ -1,10 +1,6 @@
 # StrataGraph
 
-<p align="center">
-  <img src="docs/assets/stratagraph-hero.png" alt="One changed function's blast radius traced across all five planes: a caller that will break, a GraphQL field whose consumer in another repository will break, an ambiguous candidate that may be affected, the table it writes, the Lambda it runs on, and the doc section that needs review — every edge labelled with provenance and calibrated confidence" width="100%">
-</p>
-
-**Cross-boundary code intelligence you can trust.** StrataGraph builds a knowledge graph of your codebase that crosses the boundaries other tools stop at: code, API contracts (GraphQL/OpenAPI/gRPC), cloud infrastructure (SAM/CloudFormation/Terraform), the database (SQL DDL and ORM models), and the repository's own documentation. So "what breaks if I change this?" gets a *complete* answer: the Lambda that implements a field, the frontend that queries it, the table a handler reads, the docs that go stale, and everything in between, across every repo in your estate.
+**Cross-boundary code intelligence you can trust.** StrataGraph builds a knowledge graph of your codebase that crosses the boundaries other tools stop at: code, API contracts (GraphQL/OpenAPI/gRPC), cloud infrastructure (SAM/CloudFormation/Terraform), the database (SQL DDL and ORM models), and the repository's own documentation. So "what breaks if I change this?" gets a _complete_ answer: the Lambda that implements a field, the frontend that queries it, the table a handler reads, the docs that go stale, and everything in between, across every repo in your estate.
 
 Built for **reliable accuracy**: every edge carries provenance and a calibrated confidence band, ambiguity is reported as ambiguity, and the linker never invents a relationship it can't defend. Accuracy reports with CI-enforced floors live in [`docs/accuracy/`](docs/accuracy/).
 
@@ -48,9 +44,10 @@ strata impact "Query.getUser" --workspace strata.workspace.toml
 ```bash
 strata init claude    # Claude Code: MCP server, steering rules, skills, scoped hooks
 strata init kiro      # Kiro: MCP server, steering, lifecycle hooks
+strata init kiro-crew # Kiro Crew: the Kiro kit plus committed project skills and agent spec
 ```
 
-This installs a strictly-governed kit: your agent **must assess blast radius before modifying anything**, checks every plane the target touches (a schema field's producers *and* consumers, not just callers), treats confidence bands as trust policy (≥0.9 act / 0.4–0.8 verify / <0.4 say "unknown"; never present uncertain impact as certain), and flags dead contract surface. Installs are idempotent and merge-safe: existing CLAUDE.md content, MCP servers, and hooks (including a GitNexus setup) are preserved byte-for-byte. Hooks are project-scoped and silent-when-clean, with no nagging in repos that don't use StrataGraph.
+This installs a strictly-governed kit: your agent **must assess blast radius before modifying anything**, checks every plane the target touches (a schema field's producers _and_ consumers, not just callers), treats confidence bands as trust policy (≥0.9 act / 0.4–0.8 verify / <0.4 say "unknown"; never present uncertain impact as certain), and flags dead contract surface. Installs are idempotent and merge-safe: existing CLAUDE.md content, MCP servers, and hooks (including a GitNexus setup) are preserved byte-for-byte. Hooks are project-scoped and silent-when-clean, with no nagging in repos that don't use StrataGraph.
 
 ## Desktop app
 

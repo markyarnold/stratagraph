@@ -1,7 +1,7 @@
 # Multi-repo estates
 
 A single repository is rarely the whole story. The Lambda that implements a
-GraphQL field, and the frontend in *another repository* that queries it, live in
+GraphQL field, and the frontend in _another repository_ that queries it, live in
 different checkouts, and a change to the field's contract can break the consumer
 across that boundary. An **estate** is StrataGraph's model for this: a set of local
 repositories indexed together, with their shared API contracts linked across repo
@@ -33,7 +33,7 @@ graph you can query.
 
 ## Cross-repo contract identity
 
-To make two repos share *one real API* (so an operation defined in `api` and
+To make two repos share _one real API_ (so an operation defined in `api` and
 called from `web` collapses to a single canonical node, and impact crosses the
 boundary), declare the API identity in each repo with `[[repos.apis]]`:
 
@@ -97,7 +97,7 @@ Indexed estate 'acme-platform' (2 repos)
 
 If one repo fails to index, it is reported `[FAIL]` and the others still index;
 an estate degrades gracefully rather than failing wholesale. (Only an estate
-where *every* repo failed is treated as an error, because serving an empty graph
+where _every_ repo failed is treated as an error, because serving an empty graph
 silently would be a lie.)
 
 The read commands take `--workspace` too, so you can query across the estate from
@@ -151,7 +151,7 @@ you work inside that repo, with no extra flags:
 ### Workflow
 
 Index the estate once, then open any member repo and run `strata init claude`
-(or `strata init kiro`) as usual:
+(or `strata init kiro`, or `strata init kiro-crew`) as usual:
 
 ```bash
 # From the workspace root, once:
@@ -159,7 +159,7 @@ strata index --workspace strata.workspace.toml
 
 # Then, from any member repo:
 cd api
-strata init claude   # or: strata init kiro
+strata init claude   # or: strata init kiro / strata init kiro-crew
 ```
 
 The hooks and MCP server resolve the estate from the marker at runtime, so
