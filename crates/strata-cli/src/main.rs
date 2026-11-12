@@ -302,7 +302,9 @@ enum Command {
     /// Install a strictly-governed agent-integration kit (MCP, steering, skills,
     /// scoped hooks) — idempotent and merge-safe. Bare `init` lists agents.
     Init {
-        /// Which agent to set up: `claude` or `kiro`. Omit to list supported agents.
+        /// Which agent to set up: `claude`, `kiro`, or `kiro-crew` (the Kiro
+        /// kit plus the `.kiro/skills/` and `.kiro/agents/` project layer a
+        /// Kiro Crew or Kiro CLI session reads). Omit to list supported agents.
         agent: Option<String>,
         /// Project root to install into (default: current directory).
         #[arg(long, value_name = "DIR", default_value = ".")]
