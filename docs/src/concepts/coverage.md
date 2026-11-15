@@ -51,6 +51,13 @@ Each language is honest about its own dynamism, and never guesses it: a Python
 `mi.Invoke()` or `dynamic` receiver, and a JS computed member are dropped or kept
 only at the Ambiguous band, never presented as a confident call.
 
+**Not read yet: Java and Go.** `.java` and `.go` files are not parsed today, so a
+Java or Go repository gets no code plane. Its contract, infrastructure, data and
+knowledge planes are still built from its specs, IaC, SQL DDL and docs, but
+nothing bridges them back to the Java or Go code that implements, calls or runs
+behind them. Java and Go are the committed next languages, on the same rollout
+pattern (see the [Roadmap](../project/roadmap.md)).
+
 ## Language × plane
 
 Which planes a repository gets depends on the *artifacts* present, not only the
@@ -223,7 +230,7 @@ first-class, with the same structure, tools, and discipline; TypeScript
 **additionally** carries a compiler-verified `Resolved` tier (SCIP), while
 Python, Rust, and C# use band-disciplined heuristics, measured at ~1.0 precision
 against compiler ground truth for Python and Rust and extraction-validated for
-C#. The deferrals (gRPC code linking, IAM permission-gap reconciliation (the
+C#. The deferrals (Java and Go code planes, gRPC code linking, IAM permission-gap reconciliation (the
 `Grants` half ships; the `RequiresPermission` half and the traversal do not yet),
 convention/Drizzle/Prisma/EF ORM, column-level data, doc-relative link
 normalization in the knowledge plane) are stated plainly because *stating the

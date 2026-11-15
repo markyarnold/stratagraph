@@ -43,6 +43,24 @@ TypeScript/JavaScript already has compiler-grade resolution via the `strata-scip
 
 Each will arrive the same way TS did: a SCIP/LSP backend behind the existing analyzer, with a measured per-band precision report and CI floors. The infra `Runs` bridge for C# (assembly-string handlers) and Rust (Cargo bin-name handlers) is deferred alongside, since resolving those handlers needs the same compiler-grade mapping. (Python contract-plane producers/consumers are **now linked**: Flask/FastAPI/Django routes, `requests`/`httpx` calls, `gql` documents, and Graphene/Strawberry/Ariadne resolvers. Only Rust and C# code remains unscanned for contract signals.)
 
+## More languages: Java and Go
+
+The code plane reads TypeScript/JavaScript, Python, Rust and C# today. **Java and Go are the committed next pair** (design §14.1 items 6 and 7, Track A4/A5). Until they land, this is exactly where the line is for a Java or Go repository:
+
+- **What you get today.** Every plane built from non-code files works as usual: API specs (the contract plane), IaC templates and plans (the infrastructure plane), SQL DDL (the data plane), and your docs (the knowledge plane).
+- **What you don't.** `.java` and `.go` files are not parsed, so there are no code symbols and no code edges, and nothing links those planes back to the Java or Go code that implements an operation, calls it, reads a table, or runs as a Lambda handler. A blast radius that would pass through that code stops at the spec, the template or the table.
+- **What is committed.** Each language arrives the way Python and C# did: Tree-sitter extraction first, with the same confidence bands and the same refusal to guess (dynamic dispatch the heuristic cannot pin down is marked `Ambiguous`, never resolved by a guess), then compiler-grade precision as the follow-up. No date is set; the design records the trigger.
+
+## Pull-request checks: `detect-changes --base`
+
+`detect-changes` diffs against `HEAD` today: the working tree by default, or the staged index with `--staged`. That is the right scope before a commit, but a pull-request check in CI needs the whole branch compared with its base. The committed fix (design §14.1 item 8, Track B8) is a third scope:
+
+- **`strata detect-changes --base <ref>`** compares `merge-base(<ref>, HEAD)` with `HEAD`, the three-dot diff a pull request shows. It covers committed changes only, so a dirty working tree never changes the result, and it cannot be combined with `--staged`.
+- **Errors are loud.** An unknown ref, unrelated histories (no merge base) and a shallow clone that lacks the merge base each exit 2 with a message that names the fix, never a silent empty diff. A branch equal to its base is a valid, empty result.
+- **Everywhere `detect-changes` runs.** Estate mode resolves the ref in the changing member's own repository, and the MCP `detect_changes` tool gains a matching `base` argument. StrataMoat builds its own `--base` on this scope rather than reimplementing the diff.
+
+Until it ships, the two-command workaround in [Pre-commit change checks](../guides/detect-changes.md) gives the same diff.
+
 ## The knowledge plane
 
 **M1 shipped.** The fifth plane is built and fully deterministic: markdown files, inline doc comments, and API-spec descriptions become `Doc`/`DocSection` nodes linked to the code they describe — structural and lexical extraction, no model pass (see [The knowledge plane](../concepts/knowledge.md)). What remains on the roadmap:
