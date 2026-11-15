@@ -18,7 +18,7 @@ No. There is no telemetry and no upload. All five planes — including the [know
 
 ### What languages and planes does it cover?
 
-Five languages (TypeScript, JavaScript, Python, C#, Rust) across five deterministic planes (code, contract, infrastructure, data, knowledge). All are first-class; TypeScript/JavaScript additionally has a compiler-grade `Resolved` tier (SCIP), while Python, C#, and Rust use band-disciplined heuristics (measured at ~1.0 precision for Python and Rust, extraction-validated for C#). See [Languages and coverage](../concepts/coverage.md) and the [Roadmap](roadmap.md).
+Five languages (TypeScript, JavaScript, Python, C#, Rust) across five deterministic planes (code, contract, infrastructure, data, knowledge). All are first-class; TypeScript/JavaScript additionally has a compiler-grade `Resolved` tier (SCIP), while Python, C#, and Rust use band-disciplined heuristics (measured at ~1.0 precision for Python and Rust, extraction-validated for C#). Java and Go are not read yet: they are the committed next languages, and until they land a Java or Go repository gets the contract, infrastructure, data and knowledge planes but no code plane. See [Languages and coverage](../concepts/coverage.md) and the [Roadmap](roadmap.md).
 
 ### Can it handle monorepos and multi-repo estates?
 

@@ -73,7 +73,7 @@ The full design doc (provenance/confidence bands, the plane model, accuracy meth
 
 ## Status
 
-Active development. Merged: code plane for TypeScript/JavaScript (Tree-sitter + SCIP), Python, Rust, and C#; OpenAPI + GraphQL + gRPC contract planes with cross-repo estates; AWS infrastructure plane (SAM/CFN/Terraform → AppSync → contract); SQL data plane; knowledge plane (your own docs, doc comments, and spec descriptions in the graph — deterministic, with doc drift measured and docs in the blast radius); desktop GUI; agent integration (Claude Code + Kiro); and the `detect-changes`, `rename`, `blast`, `guidance`, and `search-docs` tools. In progress: IAM permission-gap detection. See the design doc's roadmap.
+Active development. Merged: code plane for TypeScript/JavaScript (Tree-sitter + SCIP), Python, Rust, and C#; OpenAPI + GraphQL + gRPC contract planes with cross-repo estates; AWS infrastructure plane (SAM/CFN/Terraform → AppSync → contract); SQL data plane; knowledge plane (your own docs, doc comments, and spec descriptions in the graph — deterministic, with doc drift measured and docs in the blast radius); desktop GUI; agent integration (Claude Code + Kiro); and the `detect-changes`, `rename`, `blast`, `guidance`, and `search-docs` tools. In progress: IAM permission-gap detection. Committed next: Java and Go code planes, and `detect-changes --base <ref>` for pull-request checks in CI. See the design doc's roadmap.
 
 ## License
 
