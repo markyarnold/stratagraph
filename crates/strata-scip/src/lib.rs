@@ -15,11 +15,13 @@
 //! Milestone 2 bridges [`ResolvedTarget`]s onto graph nodes.
 
 mod error;
+mod layout;
 mod model;
 mod resolver;
 mod runner;
 
 pub use error::ScipError;
+pub use layout::{detect_layout, detect_package_manager, PackageManager, TsLayout};
 pub use model::{Position, ResolvedTarget, ScipStats};
 pub use resolver::ScipResolver;
 pub use runner::{run_scip, RunOptions, PINNED_SCIP_TYPESCRIPT_VERSION};

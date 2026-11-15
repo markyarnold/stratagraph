@@ -59,6 +59,7 @@ fn index_fixture(name: &str) -> (strata_core::Graph, String, tempfile::TempDir) 
         resolve_mode: ResolveMode::Off,
         allow_install: false,
         include_vendored: false,
+        force_reparse: false,
     };
     index_repo_with_options(tmp.path(), &mut store, &options).expect("index");
     let g = store.load_graph().expect("load graph");

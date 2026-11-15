@@ -53,6 +53,7 @@ fn off_mode_is_heuristic_only() {
         resolve_mode: ResolveMode::Off,
         allow_install: false,
         include_vendored: false,
+        force_reparse: false,
     };
     let stats = index_repo_with_options(dir.path(), &mut store, &opts).expect("off succeeds");
 
@@ -90,6 +91,7 @@ fn auto_mode_degrades_when_scip_unavailable() {
         resolve_mode: ResolveMode::Auto,
         allow_install: false,
         include_vendored: false,
+        force_reparse: false,
     };
     // R1: indexing SUCCEEDS even though SCIP could not run.
     let stats = index_repo_with_options(dir.path(), &mut store, &opts)
@@ -116,6 +118,7 @@ fn on_mode_hard_fails_when_scip_unavailable() {
         resolve_mode: ResolveMode::On,
         allow_install: false,
         include_vendored: false,
+        force_reparse: false,
     };
     let err = match index_repo_with_options(dir.path(), &mut store, &opts) {
         Err(e) => e,
@@ -212,6 +215,7 @@ fn live_index_repo_auto_produces_resolved_edges() {
         resolve_mode: ResolveMode::Auto,
         allow_install: true, // permit the npm install + scip-typescript run
         include_vendored: false,
+        force_reparse: false,
     };
     let stats = index_repo_with_options(&project, &mut store, &opts)
         .expect("live auto index_repo succeeds");
@@ -282,6 +286,7 @@ fn live_resolved_incremental_equals_full() {
         resolve_mode: ResolveMode::On, // REQUIRE precise resolution (no silent degrade)
         allow_install: true,
         include_vendored: false,
+        force_reparse: false,
     };
 
     // ── G1: first full resolved index into the incremental store ──

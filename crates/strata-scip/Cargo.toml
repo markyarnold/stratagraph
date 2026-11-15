@@ -11,6 +11,9 @@ scip = "0.8"
 # (the `scip` crate exposes no read/parse helper of its own).
 protobuf = "=3.7.2"
 thiserror = "1"
+# Reads `package.json`'s `workspaces` and `packageManager` fields, which decide
+# how `scip-typescript` must be invoked for a repo (see `layout.rs`).
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -89,7 +89,7 @@ fn plain_index_of_estate_member_keeps_manifest_name_and_marker() {
 
     // ── Step 1: index the whole estate. ────────────────────────────────────────
     // This writes the marker and produces graph.duckdb with "my-pkg"-qualified UIDs.
-    cmd_index_workspace(&manifest, ResolveMode::Auto, false)
+    cmd_index_workspace(&manifest, ResolveMode::Auto, false, false)
         .expect("estate indexing should succeed");
 
     // Verify the marker was written.
@@ -120,7 +120,8 @@ fn plain_index_of_estate_member_keeps_manifest_name_and_marker() {
     // ── Step 2: plain reindex of the member in isolation. ──────────────────────
     // This is the regression: without the fix, this would use "member-dir" as the
     // repo name, corrupting the estate-qualified UIDs.
-    cmd_index(&member_dir, &db_path, false).expect("plain member reindex must succeed");
+    cmd_index(&member_dir, &db_path, ResolveMode::Auto, false, false)
+        .expect("plain member reindex must succeed");
 
     // ── Step 3: assert UIDs are still "my-pkg"-qualified. ──────────────────────
     let uids_after_reindex = load_node_uids(&db_path);

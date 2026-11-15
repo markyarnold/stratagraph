@@ -18,7 +18,7 @@ use strata_scip::{run_scip, Position, RunOptions, ScipError, ScipResolver};
 #[test]
 fn run_scip_on_missing_dir_errors_without_panicking() {
     let missing = Path::new("/this/path/definitely/does/not/exist/strata-scip");
-    let err = run_scip(missing, &RunOptions::default())
+    let err = run_scip(missing, Path::new("index.scip"), &RunOptions::default())
         .expect_err("a missing project dir must be an Err");
     // Must be a structured ScipError (Io here, since the dir check fails first).
     match err {
@@ -38,7 +38,7 @@ fn run_scip_on_empty_dir_errors_without_panicking() {
         timeout_secs: 120,
         ..RunOptions::default()
     };
-    let result = run_scip(dir.path(), &opts);
+    let result = run_scip(dir.path(), Path::new("index.scip"), &opts);
     match result {
         Err(ScipError::InstallFailed { .. })
         | Err(ScipError::ToolUnavailable(_))
@@ -105,8 +105,8 @@ fn live_run_scip_produces_faithful_index() {
     let project = tmp.path().join("sample");
     copy_project(&sample_fixture_dir(), &project);
 
-    let index_path =
-        run_scip(&project, &RunOptions::default()).expect("live scip-typescript run succeeds");
+    let index_path = run_scip(&project, Path::new("index.scip"), &RunOptions::default())
+        .expect("live scip-typescript run succeeds");
     assert!(index_path.is_file(), "index.scip was written");
 
     // The freshly produced index must resolve the aliased call exactly like the

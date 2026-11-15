@@ -60,6 +60,16 @@ enum Command {
         /// `*.dist-info`) is excluded so it does not inflate the graph.
         #[arg(long)]
         include_vendored: bool,
+        /// Re-parse and re-resolve every file, ignoring the caches.
+        ///
+        /// The parse cache is keyed on file content and the SCIP index cache on
+        /// a hash of the TS sources, so neither notices an upgrade that changes
+        /// how a file is analysed: an unchanged repo keeps reporting
+        /// `files reused: N` and serving the previous results. Use this after
+        /// upgrading, or after fixing a project's TypeScript setup, to make the
+        /// new resolution take effect. Slower by design.
+        #[arg(long)]
+        force: bool,
     },
     /// Show the reverse blast radius (dependents) of a symbol.
     Impact {
@@ -383,7 +393,7 @@ fn run_init(
         if !manifest.exists() && !db.exists() {
             // Single-repo index into the default DB location under `root`.
             // Auto-index on `init` never opts into vendored bundles.
-            cmd_index(&root, &db, false)?;
+            cmd_index(&root, &db, ResolveMode::Auto, false, false)?;
         }
     }
 
@@ -409,10 +419,21 @@ fn main() -> ExitCode {
             workspace,
             resolve,
             include_vendored,
+            force,
         } => {
+            // Parsed ONCE for both branches: the single-repo path used to drop
+            // the mode entirely, so `--resolve` was accepted and ignored.
+            let mode = match ResolveMode::parse(&resolve) {
+                Some(m) => m,
+                None => {
+                    eprintln!(
+                        "error: invalid --resolve value `{resolve}` (expected one of: auto, on, off)"
+                    );
+                    return ExitCode::from(1);
+                }
+            };
             if let Some(manifest) = workspace {
-                let mode = ResolveMode::parse(&resolve).unwrap_or(ResolveMode::Auto);
-                cmd_index_workspace(&manifest, mode, include_vendored).map(Some)
+                cmd_index_workspace(&manifest, mode, include_vendored, force).map(Some)
             } else {
                 let repo = match path {
                     Some(p) => p,
@@ -421,7 +442,14 @@ fn main() -> ExitCode {
                         return ExitCode::from(1);
                     }
                 };
-                cmd_index(&repo, &db_path(db.as_deref()), include_vendored).map(Some)
+                cmd_index(
+                    &repo,
+                    &db_path(db.as_deref()),
+                    mode,
+                    include_vendored,
+                    force,
+                )
+                .map(Some)
             }
         }
         Command::Impact {

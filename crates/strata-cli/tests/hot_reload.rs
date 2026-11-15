@@ -140,7 +140,7 @@ fn build_estate(root: &Path) -> std::path::PathBuf {
     .unwrap();
 
     let parsed = WorkspaceManifest::parse_file(&manifest).unwrap();
-    index_estate_with_options(&parsed, &manifest, ResolveMode::Off, false);
+    index_estate_with_options(&parsed, &manifest, ResolveMode::Off, false, false);
     manifest
 }
 
@@ -164,7 +164,7 @@ fn workspace_reloader_picks_up_a_repo_reindex() {
     )
     .unwrap();
     let parsed = WorkspaceManifest::parse_file(&manifest).unwrap();
-    index_estate_with_options(&parsed, &manifest, ResolveMode::Off, false);
+    index_estate_with_options(&parsed, &manifest, ResolveMode::Off, false, false);
 
     assert!(
         reloader.changed(),

@@ -85,7 +85,8 @@ fn generate(name: &str) {
         run_npm_install: true,
         ..RunOptions::default()
     };
-    let index = run_scip(&dir, &opts).expect("scip-typescript produced an index");
+    let index =
+        run_scip(&dir, Path::new("index.scip"), &opts).expect("scip-typescript produced an index");
     // run_scip writes <dir>/index.scip; assert it landed where the gate expects.
     assert_eq!(index, dir.join("index.scip"));
     eprintln!("wrote {}", index.display());

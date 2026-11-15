@@ -361,3 +361,90 @@ fn assemble_graph_determinism_and_equivalence() {
     graphs_equal(&g_build, &g_assemble1)
         .expect("build_graph must equal assemble_graph(analyze_all(files))");
 }
+
+// ── --force (D-TS4) ───────────────────────────────────────────────────────────
+
+/// `force_reparse` must re-parse an UNCHANGED repo.
+///
+/// The parse cache is keyed on file content alone, which says nothing about how
+/// a file was analysed, so an upgrade that changes parsing or resolution leaves
+/// an unchanged repo reporting `files reused: N` and serving the previous
+/// results indefinitely. `--force` is the supported way out, in preference to
+/// deleting `.strata/graph.duckdb` (which also discards the knowledge index and
+/// any estate marker).
+///
+/// Also asserts the forced run produces the SAME graph: forcing must redo the
+/// work, not change the answer.
+#[test]
+fn force_reparse_reparses_an_unchanged_repo_and_yields_the_same_graph() {
+    use strata_index::{index_repo_with_options, IndexOptions, ResolveMode};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("src/a.ts"),
+        "export function alpha() { return 1 }\nexport function beta() { return alpha() }\n",
+    )
+    .unwrap();
+
+    let db = root.join("graph.duckdb");
+    let opts = |force: bool| IndexOptions {
+        resolve_mode: ResolveMode::Off,
+        allow_install: false,
+        include_vendored: false,
+        force_reparse: force,
+    };
+
+    // 1. First index: everything is parsed, nothing to reuse.
+    let mut store = DuckGraphStore::open(&db).unwrap();
+    let first = index_repo_with_options(root, &mut store, &opts(false)).unwrap();
+    assert!(first.files_parsed > 0, "first run must parse: {first:?}");
+    assert_eq!(first.files_reused, 0, "nothing to reuse yet");
+    let graph_after_first = store.load_graph().unwrap();
+    drop(store);
+
+    // 2. Unforced re-index of the UNCHANGED repo: fully reused, nothing parsed.
+    let mut store = DuckGraphStore::open(&db).unwrap();
+    let second = index_repo_with_options(root, &mut store, &opts(false)).unwrap();
+    assert_eq!(
+        second.files_parsed, 0,
+        "an unchanged repo must reuse, not parse: {second:?}"
+    );
+    assert_eq!(second.files_reused, first.files_parsed);
+    drop(store);
+
+    // 3. FORCED re-index of the same unchanged repo: parsed again, nothing reused.
+    let mut store = DuckGraphStore::open(&db).unwrap();
+    let forced = index_repo_with_options(root, &mut store, &opts(true)).unwrap();
+    assert_eq!(
+        forced.files_parsed, first.files_parsed,
+        "force must re-parse every file: {forced:?}"
+    );
+    assert_eq!(
+        forced.files_reused, 0,
+        "force must reuse nothing: {forced:?}"
+    );
+
+    // 4. Same graph: forcing redoes the work, it does not change the answer.
+    let graph_after_force = store.load_graph().unwrap();
+    assert_eq!(
+        node_set(&graph_after_first),
+        node_set(&graph_after_force),
+        "a forced reindex must produce an identical node set"
+    );
+    assert_eq!(
+        edge_set(&graph_after_first),
+        edge_set(&graph_after_force),
+        "a forced reindex must produce an identical edge set"
+    );
+    drop(store);
+
+    // 5. The fresh cache is persisted, so the cost is one run, not every run.
+    let mut store = DuckGraphStore::open(&db).unwrap();
+    let after = index_repo_with_options(root, &mut store, &opts(false)).unwrap();
+    assert_eq!(
+        after.files_parsed, 0,
+        "the forced run must leave a usable cache behind: {after:?}"
+    );
+}
