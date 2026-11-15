@@ -16,6 +16,9 @@ strata-contract = { path = "../strata-contract" }
 strata-infra = { path = "../strata-infra" }
 strata-data = { path = "../strata-data" }
 strata-knowledge = { path = "../strata-knowledge" }
+# A scratch directory for the `index.scip` a SCIP run produces, so indexing
+# never writes into the repository it is reading (see `resolve_mode`).
+tempfile = "3"
 ignore = "0.4"
 blake3 = "1"
 serde = { workspace = true }

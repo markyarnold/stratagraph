@@ -8,6 +8,55 @@ the `engine:` line of every index summary print the exact build id.)
 
 ## Unreleased — on `main`
 
+**Precise TypeScript resolution now works in a monorepo.** `scip-typescript` was
+invoked once at the repo root, where it needs a `tsconfig.json`. A workspace
+keeps its projects in packages and commonly has no buildable root project at all
+— a root `tsconfig.base.json` holding `compilerOptions` for packages to `extends`
+is the usual shape — so the run exited 1 with `missing tsconfig.json` and EVERY
+TypeScript file in the repo fell back to heuristic resolution. `strata index` now
+detects the layout and asks `scip-typescript` to walk the workspaces
+(`--pnpm-workspaces`, `--yarn-workspaces`, or `--infer-tsconfig` for a
+config-less project), which returns one merged index. On the pnpm monorepo that
+reported this — 107 `.ts`/`.tsx` files across three packages — precise
+resolution went from failing outright to adding **1,523 edges over the heuristic
+(7,708 → 9,231)**.
+
+A workspace manifest now wins over a root `tsconfig.json`: such a repo indexed
+only its root project before and silently missed every package.
+
+**`strata index` no longer writes into the repository it reads.** A successful
+SCIP run left its `index.scip` in the repo root and never removed it — 1.4 MB of
+untracked file on the repo above, showing in `git status` and committable by
+accident. The index is now produced in a scratch directory.
+
+**`--resolve` is honoured for a single repository.** `strata index <path>
+--resolve on|off` parsed, passed validation, and then did nothing: only the
+`--workspace` path read the mode. `--resolve on` is the documented way to turn a
+silent degradation into a hard error, so the one diagnostic for a resolution
+problem was the thing that could not report one. An unrecognised value is now an
+error naming the accepted ones instead of silently becoming `auto`.
+
+**`strata index --force`** re-parses and re-resolves everything, ignoring both
+caches. The parse cache is keyed on file content and the SCIP cache on a hash of
+the TS sources, so neither notices a change in _how_ a file is analysed: without
+this, an unchanged repo kept reporting `files reused: N` and serving the old
+results after an upgrade or a TypeScript-setup fix. Preferred over deleting
+`.strata/graph.duckdb`, which also discards the knowledge index and any estate
+marker.
+
+**The dependency install picks the repo's own package manager.** It ran
+`npm install` unconditionally; on the pnpm repo above npm cannot even parse the
+tree (`Cannot read properties of null (reading 'matches')`), and where it does
+not fail it writes a `package-lock.json` beside the real lockfile. pnpm, yarn and
+npm are detected from `packageManager` then the lockfile. (This path is off by
+default.)
+
+**Package-manager chatter no longer buries the cause of a failure.** A
+user-level `~/.npmrc` key the installed npm has dropped makes npm open every
+captured stderr with `npm warn Unknown user config …`, which the 2 KiB bound
+could push the real message out of. Advisory `npm warn`/`npm notice` lines are
+dropped before reporting; `npm error` lines are kept.
+
 **`strata init kiro-crew`: the Kiro kit plus a committed project layer.** A third
 agent beside `claude` and `kiro`, and a superset of `kiro` — the same MCP
 registration, steering block and lifecycle hooks, plus two things a checkout now

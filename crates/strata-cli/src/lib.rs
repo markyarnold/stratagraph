@@ -200,7 +200,13 @@ fn load_estate_graph(manifest_path: &Path) -> Result<Graph, CliError> {
 /// `package`) rather than the directory basename.  This keeps the member's
 /// `graph.duckdb` consistent with the estate so `link_estate` can union it
 /// without UID collisions.  The marker file itself is untouched.
-pub fn cmd_index(repo: &Path, db: &Path, include_vendored: bool) -> Result<String, CliError> {
+pub fn cmd_index(
+    repo: &Path,
+    db: &Path,
+    resolve: ResolveMode,
+    include_vendored: bool,
+    force: bool,
+) -> Result<String, CliError> {
     if let Some(parent) = db.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -209,8 +215,17 @@ pub fn cmd_index(repo: &Path, db: &Path, include_vendored: bool) -> Result<Strin
         }
     }
     let mut store = DuckGraphStore::open(db).map_err(|e| CliError::Other(e.to_string()))?;
+    // `resolve` is threaded through rather than defaulted: a single-repo
+    // `strata index --resolve on|off` previously built
+    // `IndexOptions { include_vendored, ..default() }`, so the flag parsed,
+    // passed clap, and did nothing — only the `--workspace` path honoured it.
+    // `--resolve on` is the documented way to turn a silent degradation into a
+    // hard error, which made the one diagnostic for a resolution problem the
+    // thing that could not report one.
     let options = IndexOptions {
+        resolve_mode: resolve,
         include_vendored,
+        force_reparse: force,
         ..IndexOptions::default()
     };
     // When the repo is an estate member, use the manifest-declared name so
@@ -346,9 +361,11 @@ pub fn cmd_index_workspace(
     manifest_path: &Path,
     resolve: ResolveMode,
     include_vendored: bool,
+    force: bool,
 ) -> Result<String, CliError> {
     let (manifest, _manifest_dir) = load_manifest(manifest_path)?;
-    let stats = index_estate_with_options(&manifest, manifest_path, resolve, include_vendored);
+    let stats =
+        index_estate_with_options(&manifest, manifest_path, resolve, include_vendored, force);
 
     let mut out = format!(
         "Indexed estate '{}' ({} repos)\n",
@@ -2391,7 +2408,7 @@ mod tests {
         std::fs::write(strata_dir.join("docs.idx.tmp"), b"not a directory").unwrap();
 
         let db = strata_dir.join("graph.duckdb");
-        let out = cmd_index(&repo, &db, false)
+        let out = cmd_index(&repo, &db, strata_index::ResolveMode::Auto, false, false)
             .expect("a docs-index write failure must never fail the whole `strata index` run");
 
         assert!(
@@ -3942,7 +3959,7 @@ mod tests {
         let tmp = TempDir::new().expect("tempdir");
         copy_dir_no_strata(&crossrepo_src, tmp.path());
         let manifest = tmp.path().join("strata.workspace.toml");
-        cmd_index_workspace(&manifest, ResolveMode::Auto, false)
+        cmd_index_workspace(&manifest, ResolveMode::Auto, false, false)
             .expect("estate indexing must succeed");
 
         let producer_dir = tmp.path().join("repo-producer");
@@ -4005,7 +4022,7 @@ mod tests {
         assert!(manifest.exists(), "crossrepo fixture must have a manifest");
 
         // Index the estate — this writes the .strata/estate.toml markers.
-        cmd_index_workspace(&manifest, ResolveMode::Auto, false)
+        cmd_index_workspace(&manifest, ResolveMode::Auto, false, false)
             .expect("estate indexing must succeed on the crossrepo fixture");
 
         let producer_dir = tmp.path().join("repo-producer");

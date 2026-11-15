@@ -316,7 +316,19 @@ fn index_impl(
     let opts = load_tsconfig(repo_path)?;
 
     // Load previously persisted cache state (empty maps on first run).
-    let old_cache = store.load_parse_cache()?;
+    //
+    // `force_reparse` starts from an empty map, so every file re-parses and the
+    // run reports what it actually did (`files_parsed: N`, `files_reused: 0`).
+    // The cache key is the file's CONTENT, which says nothing about how the file
+    // was analysed, so an upgrade that changes parsing or resolution would
+    // otherwise keep serving the old analysis for an unchanged repo. The fresh
+    // cache is still persisted at the end, so this costs one slow run, not
+    // every subsequent one.
+    let old_cache = if options.force_reparse {
+        BTreeMap::new()
+    } else {
+        store.load_parse_cache()?
+    };
 
     // Decide for each current file: reuse or parse.
     let mut new_cache: BTreeMap<String, ParseCacheEntry> = BTreeMap::new();

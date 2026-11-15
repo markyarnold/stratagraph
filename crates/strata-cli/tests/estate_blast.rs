@@ -57,7 +57,7 @@ fn blast_on_producer_surfaces_cross_repo_consumer() {
     let manifest = tmp.path().join("strata.workspace.toml");
 
     // Index the estate (writes estate.toml markers in each member repo).
-    cmd_index_workspace(&manifest, ResolveMode::Auto, false)
+    cmd_index_workspace(&manifest, ResolveMode::Auto, false, false)
         .expect("estate indexing should succeed");
 
     // Verify markers exist (both member repos indexed).
@@ -115,7 +115,7 @@ fn blast_estate_file_not_in_any_member_does_not_blast_unscoped() {
     let tmp = copy_crossrepo_to_tempdir();
     let manifest = tmp.path().join("strata.workspace.toml");
 
-    cmd_index_workspace(&manifest, ResolveMode::Auto, false)
+    cmd_index_workspace(&manifest, ResolveMode::Auto, false, false)
         .expect("estate indexing should succeed");
 
     // Create a file that lives OUTSIDE all estate member directories — directly
@@ -164,7 +164,7 @@ fn blast_with_explicit_db_stays_single_repo() {
     let tmp = copy_crossrepo_to_tempdir();
     let manifest = tmp.path().join("strata.workspace.toml");
 
-    cmd_index_workspace(&manifest, ResolveMode::Auto, false)
+    cmd_index_workspace(&manifest, ResolveMode::Auto, false, false)
         .expect("estate indexing should succeed");
 
     let producer_db = tmp.path().join("repo-producer/.strata/graph.duckdb");

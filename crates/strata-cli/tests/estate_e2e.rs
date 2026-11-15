@@ -125,7 +125,7 @@ fn estate_e2e_full_flow() {
     // --workspace` runs.
     git_init_and_commit(&producer_dir, "baseline");
 
-    cmd_index_workspace(&manifest, ResolveMode::Auto, false)
+    cmd_index_workspace(&manifest, ResolveMode::Auto, false, false)
         .expect("step 1: estate indexing should succeed");
 
     // Verify markers exist in both repos and carry the correct fields.
@@ -241,7 +241,8 @@ fn estate_e2e_full_flow() {
     // by step 1 so UID package = "repo-producer" (not the dir basename which
     // happens to be the same, but the estate-qualified value), and (b) leave the
     // marker intact.
-    cmd_index(&producer_dir, &producer_db, false).expect("step 4: plain reindex must succeed");
+    cmd_index(&producer_dir, &producer_db, ResolveMode::Auto, false, false)
+        .expect("step 4: plain reindex must succeed");
 
     let uids = load_node_uids(&producer_db);
     assert!(
