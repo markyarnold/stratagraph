@@ -2019,3 +2019,143 @@ mod tests {
         assert!(!is_collected_markdown("src/internal/design.md"));
     }
 }
+
+// ── index summary rendering ───────────────────────────────────────────────────
+
+/// Render the human-readable `index` summary for `stats`.
+///
+/// THE single source for this text, shared by `strata index` and `moat index`.
+/// It previously lived in `strata-cli`, so `moat index` — which drives the same
+/// in-process indexer — reimplemented only the first six lines and silently
+/// omitted every plane: on a repo of 90 Terraform and Terragrunt files it
+/// reported nothing about either, which reads as "moat indexed less" when both
+/// had produced an identical graph. One renderer is what stops that recurring.
+///
+/// `engine_id` adds the `engine:` provenance line when given. `strata index`
+/// passes [`strata_core::ENGINE_ID`]; `moat index` passes `None`, because moat
+/// carries its own version and the engine id would be ambiguous there.
+///
+/// Every plane section is **silent when empty**: a plain code repo with no
+/// templates, no Terragrunt units, no SQL schemas and no docs renders exactly
+/// the header lines and nothing else.
+pub fn render_index_summary(
+    repo: &std::path::Path,
+    stats: &IndexStats,
+    engine_id: Option<&str>,
+) -> String {
+    let engine_line = match engine_id {
+        Some(id) => format!("\n  engine:        {id}"),
+        None => String::new(),
+    };
+    let mut out = format!(
+        "Indexed {repo}{engine_line}\n  files indexed: {indexed}\n  files parsed:  {parsed}\n  files reused:  {reused}\n  nodes:         {nodes}\n  edges:         {edges}",
+        repo = repo.display(),
+        indexed = stats.files_indexed,
+        parsed = stats.files_parsed,
+        reused = stats.files_reused,
+        nodes = stats.nodes,
+        edges = stats.edges,
+    );
+    // Infrastructure-plane summary — shown when CFN/SAM templates were detected OR
+    // when one failed to parse, so a real template can never be silently skipped.
+    // A plain code repo (no templates, no failures) prints nothing extra.
+    let infra = &stats.infra_link;
+    if infra.templates_detected > 0 || infra.templates_failed > 0 {
+        // Each per-template parse failure on its own line first, so it is
+        // impossible to miss (the 8k-line silent-skip must never recur).
+        for diag in &stats.infra_diagnostics {
+            out.push_str(&format!("\n  [infra] FAILED {diag}"));
+        }
+        out.push_str(&format!(
+            "\n  infra:         {templates} template(s), {failed} failed, {resources} resource(s); \
+             {resolvers_linked}/{resolvers_total} resolvers linked, \
+             {runs_linked} Lambda(s) → handler",
+            templates = infra.templates_detected,
+            failed = infra.templates_failed,
+            resources = infra.resources_total,
+            resolvers_linked = infra.resolvers_linked,
+            resolvers_total = infra.resolvers_total,
+            runs_linked = infra.lambdas_runs_linked,
+        ));
+    }
+    // Terragrunt structural summary — shown only when units were detected (a repo
+    // with no `terragrunt.hcl` prints nothing extra). Surfaces the unit count and
+    // how many declared dependencies resolved to a known same-repo unit.
+    let tg = &stats.terragrunt;
+    if tg.units_detected > 0 {
+        out.push_str(&format!(
+            "\n  terragrunt:    {units} unit(s); {linked}/{total} dependencies resolved",
+            units = tg.units_detected,
+            linked = tg.deps_linked,
+            total = tg.deps_total,
+        ));
+    }
+    // Data-plane summary — shown when `.sql` schema files were detected OR one
+    // failed to parse, so a real schema can never be silently skipped. A repo with
+    // no SQL schema prints nothing extra (additive).
+    let data = &stats.data_link;
+    if data.schemas_detected > 0 || data.schemas_failed > 0 {
+        for diag in &stats.data_diagnostics {
+            out.push_str(&format!("\n  [data] FAILED {diag}"));
+        }
+        out.push_str(&format!(
+            "\n  data:          {schemas} schema(s), {failed} failed, {tables} table(s), \
+             {columns} column(s); {fks_linked}/{fks_total} foreign keys linked",
+            schemas = data.schemas_detected,
+            failed = data.schemas_failed,
+            tables = data.tables_total,
+            columns = data.columns_total,
+            fks_linked = data.fks_linked,
+            fks_total = data.fks_total,
+        ));
+        // Code→table links: raw-SQL Reads/Writes (M2) and ORM model→table MapsTo
+        // (M2b). Each prints linked/total so an unresolved count is visible (honest
+        // never-invent accounting).
+        out.push_str(&format!(
+            "\n  data:          {reads}/{reads_total} reads, {writes}/{writes_total} writes, \
+             {orm}/{orm_total} ORM model(s) linked to tables",
+            reads = data.reads_linked,
+            reads_total = data.reads_linked + data.reads_unresolved,
+            writes = data.writes_linked,
+            writes_total = data.writes_linked + data.writes_unresolved,
+            orm = data.orm_models_linked,
+            orm_total = data.orm_models_total,
+        ));
+        // Informational (NOT a failure): individual statements skipped inside files
+        // that DID parse — a PL/pgSQL `DO`/`CREATE FUNCTION` body sqlparser can't
+        // read. The surrounding tables were still extracted; this just makes the
+        // skip visible (the data-plane robustness signal).
+        if data.statements_skipped > 0 {
+            out.push_str(&format!(
+                "\n  data:          {skipped} unparseable statement(s) skipped \
+                 (tables around them were kept)",
+                skipped = data.statements_skipped,
+            ));
+        }
+    }
+    // Knowledge-plane summary — shown when at least one markdown doc was
+    // ingested (docs/**/*.md, a root *.md, or a nested README.md). A repo with
+    // no matching markdown prints nothing extra (additive).
+    let knowledge = &stats.knowledge_link;
+    if knowledge.docs > 0 {
+        out.push_str(&format!(
+            "\n  knowledge:      {docs} doc(s), {sections} section(s); {linked} mention(s) \
+             linked ({ambiguous} ambiguous), {stale} stale, {plain} plain unresolved",
+            docs = knowledge.docs,
+            sections = knowledge.sections,
+            linked = knowledge.mentions_linked,
+            ambiguous = knowledge.mentions_ambiguous,
+            stale = knowledge.stale_doc_mentions,
+            plain = knowledge.unresolved_plain_refs,
+        ));
+    }
+    // K5 lexical docs index (`.strata/docs.idx`) write failure — a review fix:
+    // this used to be `eprintln!`-only and silent in the CLI's own summary,
+    // so `strata index` could report success while the docs index quietly
+    // stayed stale. Mirrors the `[infra]`/`[data] FAILED` convention above; a
+    // successful write (the overwhelming common case) prints nothing extra.
+    if let Some(warning) = &stats.docs_index_warning {
+        out.push_str(&format!("\n  [docs] WARNING {warning}"));
+    }
+    out
+}

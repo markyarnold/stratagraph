@@ -448,3 +448,95 @@ fn force_reparse_reparses_an_unchanged_repo_and_yields_the_same_graph() {
         "the forced run must leave a usable cache behind: {after:?}"
     );
 }
+
+// ── shared index summary ──────────────────────────────────────────────────────
+
+/// `render_index_summary` is the single source for both front ends' summary.
+/// The `engine:` line is opt-in, because `strata index` prints its build id and
+/// `moat index` does not.
+#[test]
+fn the_summary_renders_the_engine_line_only_when_given_one() {
+    use strata_index::render_index_summary;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("src/a.ts"),
+        "export function alpha(){ return 1 }\n",
+    )
+    .unwrap();
+
+    let db = root.join("graph.duckdb");
+    let mut store = DuckGraphStore::open(&db).unwrap();
+    let stats = index_repo(root, &mut store).unwrap();
+
+    let with = render_index_summary(root, &stats, Some("abc123"));
+    assert!(
+        with.contains("  engine:        abc123"),
+        "must render the provenance line when given: {with}"
+    );
+
+    let without = render_index_summary(root, &stats, None);
+    assert!(
+        !without.contains("engine:"),
+        "must omit it entirely when not given: {without}"
+    );
+    // Everything else is identical — the engine line is the ONLY difference.
+    assert_eq!(
+        with.replace("\n  engine:        abc123", ""),
+        without,
+        "the two renderings must differ only by the engine line"
+    );
+    // The header the front ends relied on is preserved verbatim.
+    for needle in [
+        "files indexed: ",
+        "files parsed:  ",
+        "files reused:  ",
+        "nodes:         ",
+        "edges:         ",
+    ] {
+        assert!(without.contains(needle), "missing {needle:?}: {without}");
+    }
+}
+
+/// Every plane section is silent when empty: a plain code repo with no
+/// templates, no Terragrunt units, no SQL schemas and no docs renders the
+/// header and nothing else. This is what makes one shared renderer safe to use
+/// from a front end that never printed planes before.
+#[test]
+fn the_summary_is_silent_for_planes_a_repo_does_not_have() {
+    use strata_index::render_index_summary;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("src/a.ts"),
+        "export function alpha(){ return 1 }\n",
+    )
+    .unwrap();
+
+    let db = root.join("graph.duckdb");
+    let mut store = DuckGraphStore::open(&db).unwrap();
+    let stats = index_repo(root, &mut store).unwrap();
+    let out = render_index_summary(root, &stats, None);
+
+    for absent in [
+        "infra:",
+        "terragrunt:",
+        "data:",
+        "[infra] FAILED",
+        "[data] FAILED",
+    ] {
+        assert!(
+            !out.contains(absent),
+            "a plain code repo must not mention {absent:?}: {out}"
+        );
+    }
+    assert_eq!(
+        out.lines().count(),
+        6,
+        "header only — one line per counter plus the path: {out}"
+    );
+}
