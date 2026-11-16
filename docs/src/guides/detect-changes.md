@@ -36,6 +36,20 @@ $ strata detect-changes --staged
 
 `--staged` diffs `git diff --cached HEAD`, the precise set you're about to commit. Use it as the last step before `git commit`.
 
+### 3. In CI: check a whole pull request
+
+Both scopes compare with `HEAD`, so on a clean CI checkout of a pull-request branch a plain run and `--staged` both report no changed files. Until `--base <ref>` ships (see the [Roadmap](../project/roadmap.md)), move `HEAD` back to the merge base without touching the files. The staged scope then holds the whole branch:
+
+```console
+$ git reset --soft "$(git merge-base origin/main HEAD)"
+$ strata detect-changes --staged
+```
+
+- The checkout needs enough history to find the merge base. For GitHub Actions that means `actions/checkout` with `fetch-depth: 0`, or at least fetching the base ref.
+- If the merge base cannot be found, `git merge-base` prints nothing and `git reset --soft ""` fails, so the step fails rather than checking an empty diff.
+- The reset moves `HEAD` in the CI checkout. Run it after any step that needs the original `HEAD`.
+- Build the graph first (`strata index .`), as in any other run.
+
 ## How to read the result
 
 ### Changed symbols, per plane

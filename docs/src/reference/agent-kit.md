@@ -16,10 +16,11 @@ strata init claude --global          # install into ~/.claude (global scope)
 strata init claude --scope user      # same as --global
 strata init claude --scope project   # same as the default (repo scope)
 strata init kiro                     # install the Kiro kit
+strata init kiro-crew                # the Kiro kit + the committed project layer
 strata init <agent> --path <DIR> --yes
 ```
 
-Supported agents: `claude`, `kiro`. An unknown agent is an error naming the
+Supported agents: `claude`, `kiro`, `kiro-crew`. An unknown agent is an error naming the
 supported set; bare `init` prints the same list.
 
 ## Context detection
@@ -60,7 +61,7 @@ re-run reports all-`unchanged`:
 | `upsert_managed_block` | `CLAUDE.md`, `AGENTS.md`, `.kiro/steering/strata.md` | Owns only the text **between** the markers `<!-- strata:begin -->` and `<!-- strata:end -->`. File missing → create; markers absent → append after existing content; markers present → replace only the inter-marker region. Every byte outside the markers is preserved verbatim (a foreign `gitnexus` block survives).                                                                                                  |
 | `merge_json`           | `.mcp.json`, `.kiro/settings/mcp.json`               | Deep-merges **only our keys** into existing JSON, preserving every foreign key/server/hook. Output is pretty-printed (2-space) with a trailing newline, rewritten only if bytes change. **Malformed** existing JSON is an actionable error: the file is left untouched, never clobbered.                                                                                                                                  |
 | `edit_json`            | `.claude/settings.json`                              | Parses existing JSON and applies a structural edit (the hook merge below), preserving every foreign key/server/hook; pretty-printed with a trailing newline, rewritten only if bytes change. Malformed existing JSON is an actionable error: the file is left untouched. (`.claude/settings.json` needs the structural `upsert_hook` merge, not a plain key deep-merge, so it uses this writer rather than `merge_json`.) |
-| `write_owned`          | skills, Kiro hook files                              | For files StrataGraph wholly owns: write/overwrite freely, reporting `created` / `updated` / `unchanged` by byte-compare. Parent directories are created.                                                                                                                                                                                                                                                                      |
+| `write_owned`          | skills, Kiro hook files                              | For files StrataGraph wholly owns: write/overwrite freely, reporting `created` / `updated` / `unchanged` by byte-compare. Parent directories are created.                                                                                                                                                                                                                                                                 |
 
 Claude hook entries are merged **structurally**: every StrataGraph-owned hook command
 carries the marker token `strata-hook` (in a trailing comment). On re-run,
@@ -71,10 +72,10 @@ one, never duplicating, never disturbing foreign hooks (which lack the token).
 
 `strata init claude` supports two scopes, selected by `--global` / `--scope`.
 
-| Flag | Scope | Installs into |
-|---|---|---|
-| (none) / `--scope project` | Repo (default) | The current repository root |
-| `--global` / `--scope user` | Global (user-wide) | `~/.claude` |
+| Flag                        | Scope              | Installs into               |
+| --------------------------- | ------------------ | --------------------------- |
+| (none) / `--scope project`  | Repo (default)     | The current repository root |
+| `--global` / `--scope user` | Global (user-wide) | `~/.claude`                 |
 
 Pick one scope per repo. Claude Code runs both project-level and user-level
 hooks, so installing both in the same repo causes duplicate blast injections and
@@ -123,12 +124,12 @@ The four skills (`content::skills`) are static, agent-independent SKILL.md bodie
 each with `name`/`description` frontmatter and the shared confidence-band and
 blast-radius/risk tables:
 
-| Slug                         | Purpose                                                                                                 |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Slug                         | Purpose                                                                                                                                  |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `strata-guide`               | First contact: which tool, the plane model, the band policy, the safe-change protocol, repo-knowledge lookup (`guidance`/`search_docs`). |
-| `strata-exploring`           | "How does X work?": `guidance`/`search_docs` first on unfamiliar areas, then `query` → `context` → follow buckets across planes. |
-| `strata-impact-analysis`     | "What breaks if I change X?": `impact`, the `will_break` verdict, `members_with_dependents`, `explain`. |
-| `strata-contracts-and-infra` | Schema/API/infra: producers, consumers, dead-surface discovery.                                         |
+| `strata-exploring`           | "How does X work?": `guidance`/`search_docs` first on unfamiliar areas, then `query` → `context` → follow buckets across planes.         |
+| `strata-impact-analysis`     | "What breaks if I change X?": `impact`, the `will_break` verdict, `members_with_dependents`, `explain`.                                  |
+| `strata-contracts-and-infra` | Schema/API/infra: producers, consumers, dead-surface discovery.                                                                          |
 
 ### Hooks
 
@@ -172,15 +173,15 @@ silent-when-clean.
 Writes into `~/.claude` (`claude::install`, scope `User`). The target map
 differs from the repo scope:
 
-| Target | Writer | Contents |
-|---|---|---|
-| `~/.claude.json` (MCP registration) | `claude mcp add --scope user` (CLI subprocess) | Registers `strata` as a user-scoped MCP server; `~/.claude.json` is managed by Claude Code, never hand-edited by this tool. |
-| `~/.claude/settings.json` | `edit_json` (same merge-safe writer) | The three scoped hooks, merged in. |
-| `~/.claude/skills/strata/strata-guide/SKILL.md` | `write_owned` | Skill: which tool to use. |
-| `~/.claude/skills/strata/strata-exploring/SKILL.md` | `write_owned` | Skill: understand architecture. |
-| `~/.claude/skills/strata/strata-impact-analysis/SKILL.md` | `write_owned` | Skill: blast radius. |
-| `~/.claude/skills/strata/strata-contracts-and-infra/SKILL.md` | `write_owned` | Skill: producers/consumers/dead surface. |
-| `~/.claude/CLAUDE.md` | `upsert_managed_block` | Generic steering block (no per-repo identity line). |
+| Target                                                        | Writer                                         | Contents                                                                                                                    |
+| ------------------------------------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `~/.claude.json` (MCP registration)                           | `claude mcp add --scope user` (CLI subprocess) | Registers `strata` as a user-scoped MCP server; `~/.claude.json` is managed by Claude Code, never hand-edited by this tool. |
+| `~/.claude/settings.json`                                     | `edit_json` (same merge-safe writer)           | The three scoped hooks, merged in.                                                                                          |
+| `~/.claude/skills/strata/strata-guide/SKILL.md`               | `write_owned`                                  | Skill: which tool to use.                                                                                                   |
+| `~/.claude/skills/strata/strata-exploring/SKILL.md`           | `write_owned`                                  | Skill: understand architecture.                                                                                             |
+| `~/.claude/skills/strata/strata-impact-analysis/SKILL.md`     | `write_owned`                                  | Skill: blast radius.                                                                                                        |
+| `~/.claude/skills/strata/strata-contracts-and-infra/SKILL.md` | `write_owned`                                  | Skill: producers/consumers/dead surface.                                                                                    |
+| `~/.claude/CLAUDE.md`                                         | `upsert_managed_block`                         | Generic steering block (no per-repo identity line).                                                                         |
 
 No `AGENTS.md` is written globally (Claude Code does not read a global one).
 No `.mcp.json` is written (the MCP server is registered via `claude mcp add`,
@@ -236,12 +237,12 @@ satisfied when using Claude Code normally.
 
 Writes five files (`kiro::install`):
 
-| File                                  | Writer                 | Contents                                                             |
-| ------------------------------------- | ---------------------- | -------------------------------------------------------------------- |
-| `.kiro/settings/mcp.json`             | `merge_json`           | Adds `mcpServers.strata` (`{ "command": "strata", "args": [ … ] }`). |
-| `.kiro/steering/strata.md`            | `upsert_managed_block` | The managed steering block (Kiro routing).                           |
-| `.kiro/hooks/strata-pre-edit.*`       | `write_owned`          | Pre-edit impact check (fires on the file-write tools). |
-| `.kiro/hooks/strata-post-edit.*`      | `write_owned`          | Post-edit reindex (fires on the file-write tools).     |
+| File                             | Writer                 | Contents                                                             |
+| -------------------------------- | ---------------------- | -------------------------------------------------------------------- |
+| `.kiro/settings/mcp.json`        | `merge_json`           | Adds `mcpServers.strata` (`{ "command": "strata", "args": [ … ] }`). |
+| `.kiro/steering/strata.md`       | `upsert_managed_block` | The managed steering block (Kiro routing).                           |
+| `.kiro/hooks/strata-pre-edit.*`  | `write_owned`          | Pre-edit impact check (fires on the file-write tools).               |
+| `.kiro/hooks/strata-post-edit.*` | `write_owned`          | Post-edit reindex (fires on the file-write tools).                   |
 
 The steering block is the same content as Claude's, but its routing section is the
 Kiro cross-references (Kiro reads steering files, not skills): it names the two
@@ -253,9 +254,9 @@ hook file is pretty-printed JSON with a trailing newline.
 > is no "git commit" tool — a commit runs through the same shell tool as every
 > build and `git log`. A pre-commit hook would therefore fire on all shell use.
 > So the commit-time check lives in the **steering** instead (the `MUST run
-> detect_changes before committing` rule Kiro reads), and both hooks ride the
+detect_changes before committing` rule Kiro reads), and both hooks ride the
 > mechanically scoped write tools. (Claude Code's matcher can inspect the command
-> text, so it *does* run a real pre-commit hook — this is Kiro-specific.) Any
+> text, so it _does_ run a real pre-commit hook — this is Kiro-specific.) Any
 > previously installed `strata-pre-commit` / `strata-post-commit` hook is removed
 > on install.
 
@@ -269,8 +270,8 @@ releases; installing one format removes the other's StrataGraph hook files). Bot
 formats carry identical hook data; only the envelope differs:
 
 - **`old` (default), `*.kiro.hook`:** `{ enabled, name, description, version: "1",
-  when: { type: "preToolUse" | "postToolUse", toolTypes: [ … ] }, then: { type:
-  "askAgent" | "runCommand", … } }`.
+when: { type: "preToolUse" | "postToolUse", toolTypes: [ … ] }, then: { type:
+"askAgent" | "runCommand", … } }`.
 - **`new`, `*.json`:** a top-level `version: "v1"` wrapping a `hooks` array whose
   single entry carries a `name`, `description`, `trigger` (PascalCase), an
   optional `matcher` (a regex tested against the tool name), and an `action`
@@ -280,10 +281,83 @@ The per-hook trigger/matcher in the table below use the `new`-format names; the
 `old` format expresses the same via `when.type` (`preToolUse`/`postToolUse`) and
 `when.toolTypes`.
 
-| File                      | `trigger`     | `matcher`                          | `action`  | Detail                                                                                                                                                     |
-| ------------------------- | ------------- | ---------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `strata-pre-edit.json`    | `PreToolUse`  | `fs_write\|str_replace\|fs_append` | `agent`   | A STOP-style prompt confirming blast-radius assessment (`blast`/`impact`/`context`) across planes before any file write.                                   |
-| `strata-post-edit.json`   | `PostToolUse` | `fs_write\|str_replace\|fs_append` | `command` | `strata index .` with `timeout: 120`: reindex after a file edit (the MCP server hot-reloads the fresh index).                                              |
+| File                    | `trigger`     | `matcher`                          | `action`  | Detail                                                                                                                   |
+| ----------------------- | ------------- | ---------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `strata-pre-edit.json`  | `PreToolUse`  | `fs_write\|str_replace\|fs_append` | `agent`   | A STOP-style prompt confirming blast-radius assessment (`blast`/`impact`/`context`) across planes before any file write. |
+| `strata-post-edit.json` | `PostToolUse` | `fs_write\|str_replace\|fs_append` | `command` | `strata index .` with `timeout: 120`: reindex after a file edit (the MCP server hot-reloads the fresh index).            |
+
+## `strata init kiro-crew`
+
+Everything `strata init kiro` writes, plus five more files (`kiro_crew::install`
+runs `kiro::install` first, then appends its own):
+
+| File                                               | Writer        | Contents                                                                |
+| -------------------------------------------------- | ------------- | ----------------------------------------------------------------------- |
+| `.kiro/skills/strata-guide/SKILL.md`               | `write_owned` | The `strata-guide` skill body, verbatim.                                |
+| `.kiro/skills/strata-exploring/SKILL.md`           | `write_owned` | The `strata-exploring` skill body, verbatim.                            |
+| `.kiro/skills/strata-impact-analysis/SKILL.md`     | `write_owned` | The `strata-impact-analysis` skill body, verbatim.                      |
+| `.kiro/skills/strata-contracts-and-infra/SKILL.md` | `write_owned` | The `strata-contracts-and-infra` skill body, verbatim.                  |
+| `.kiro/agents/strata.json`                         | `write_owned` | The project agent spec (below), pretty-printed with a trailing newline. |
+
+The skill bodies are the exact same text `strata init claude` writes under
+`.claude/skills/strata/<slug>/SKILL.md` — `content::skills()` is the single
+source for both. They are written unchanged rather than re-frontmattered: the
+existing frontmatter already carries the `name` and `description` a Kiro project
+skill needs, `triggers` is optional (consulted only when trigger injection is
+enabled) and `always` defaults to `false`, which is what the kit wants — the
+always-on channel for this content is the steering block.
+
+Each slug is a **direct child** of `.kiro/skills/`. Kiro walks
+`.kiro/skills/*/SKILL.md` — exactly one level — so the `strata/<slug>` nesting the
+Claude kit uses under `.claude/skills/` would never be discovered here.
+
+### The project agent spec
+
+`.kiro/agents/strata.json` is a workspace-local custom agent. Kiro resolves
+`.kiro/agents/` before `~/.kiro/agents/`, with no upward walk.
+
+| Key                 | Value                                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `name`              | `strata` — selects the agent (`kiro-cli --agent strata`, or the agent picker).                                            |
+| `mcpServers.strata` | `{ "command": "strata", "args": [ … ] }` — the same detected args as the `mcp.json` registration.                         |
+| `includeMcpJson`    | `true` — also starts the enabled servers of the user-level and workspace `mcp.json` that the spec does not define itself. |
+| `resources`         | `file://.kiro/steering/**/*.md` and `skill://.kiro/skills/**/SKILL.md`.                                                   |
+| `permissions`       | One rule allowing `strata/*` MCP tools.                                                                                   |
+| `hooks`             | `agentSpawn`, `postToolUse` (matcher `fs_write`), `stop`.                                                                 |
+
+No `model`, `tools` or `excludedTools`: a committed file must not override the
+user's own choice for every session in the repo.
+
+### Kiro Crew hooks
+
+These are the agent spec's own `hooks`, which the Kiro CLI reads itself and which
+Kiro Crew fires from its turn loop for backends whose harness cannot. They are a
+different mechanism from the standalone `.kiro/hooks/*` files above, and use the
+camelCase event names:
+
+| Event         | `matcher`  | Action  | Detail                                                                                                                                              |
+| ------------- | ---------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agentSpawn`  | —          | command | Prints the "no index yet" line when `.strata/` exists but `graph.duckdb` does not; silent otherwise. Stdout on this event enters the model context. |
+| `postToolUse` | `fs_write` | command | Backgrounds `strata index . --db ./.strata/graph.duckdb` after a write.                                                                             |
+| `stop`        | —          | command | Prints the `detect_changes` pre-commit reminder. Plain stdout, never the `{"decision":"block"}` form that would request another turn.               |
+
+Three properties of these commands are load-bearing:
+
+- **No `preToolUse` entry.** That event fails closed in Kiro Crew — exit `2`
+  denies the tool call, and so does any other non-zero exit, a timeout or a
+  crash. The engine's edit-time advice is advisory, so it never sits there; the
+  pre-edit blast check stays on the standalone `strata-pre-edit` hook and, for
+  Claude Code, `PreToolUse`.
+- **The matcher is a glob, not a regex.** Unlike the standalone hooks' `matcher`
+  (a regex over the tool name), a Crew tool-event matcher is matched with
+  filename-style globbing, so `fs_write|str_replace|fs_append` would match
+  nothing. `fs_write` alone covers every write: Crew resolves `str_replace`,
+  `fs_append` and `delete_file` onto that same row.
+- **The guards are cwd-relative.** A Crew hook subprocess receives a strict
+  environment allowlist (`PATH`, `HOME`, `KIROCREW_HOME`, locale and TLS keys)
+  with no project-directory variable, unlike `$CLAUDE_PROJECT_DIR`. Crew spawns
+  the hook in the session workspace, so each command tests `./.strata`, checks
+  `command -v strata`, and always exits 0.
 
 ## Estates
 

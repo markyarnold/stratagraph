@@ -2,7 +2,7 @@
 
 This page is an honest account of what StrataGraph does **not** do yet. Everything below is deliberately deferred: a planned next step with a clear shape, not an apology and not a bug. Where a capability is partly shipped, this page says exactly where the line is. There are no dates here; the order reflects the committed sequencing in [`docs/strata-design.md`](../../strata-design.md), not a calendar.
 
-The principle behind every deferral is the same one that governs the shipped product: StrataGraph would rather ship a narrow capability that is honest than a broad one that guesses. So each item below is scoped to what it will *add*, and what it will keep refusing to invent.
+The principle behind every deferral is the same one that governs the shipped product: StrataGraph would rather ship a narrow capability that is honest than a broad one that guesses. So each item below is scoped to what it will _add_, and what it will keep refusing to invent.
 
 ## Data plane: deeper schema linking
 
@@ -25,7 +25,7 @@ The contract plane extracts OpenAPI, GraphQL, and gRPC operations, and links pro
 
 The infra plane builds the AWS resource graph (`LambdaFn`, `IamRole`, AppSync API/resolver/data-source, generic `CloudResource` inventory) and the wiring between them (`Assumes`, `Routes`, `Runs`, `Contains`, and the AppSync resolver → `GraphqlField` money link) from CloudFormation/SAM, Terraform HCL, Terraform plan JSON, and Terragrunt.
 
-**IAM permission-gap detection** (Track D2, design §6.4) reconciles what a role is *allowed* to do against what its code actually *calls*. It is being built in halves, and this is exactly where the line is today.
+**IAM permission-gap detection** (Track D2, design §6.4) reconciles what a role is _allowed_ to do against what its code actually _calls_. It is being built in halves, and this is exactly where the line is today.
 
 - **Shipped: the `Grants` half (what a role is allowed to do).** A role's granted actions are extracted into `CloudAction` nodes and `Grants` edges from CloudFormation/SAM (inline `Policies` and expanded SAM policy templates such as `DynamoDBCrudPolicy`) and Terraform (`aws_iam_role_policy`, `aws_iam_policy`, inline policies). You can already see a role's grants in `context`. True to the never-confident-wrong rule, any grant that cannot be enumerated (a managed-policy ARN, a `Deny`, a `NotAction`, a `data`-source or non-literal policy document, a policy attachment) is recorded as an `<opaque:…>` marker that makes the role **INDETERMINATE**, never silently treated as "grants nothing".
 - **Next: the `RequiresPermission` half (what code calls).** Statically detect AWS SDK calls in handler code (for example a boto3 `table.put_item` to `dynamodb:PutItem`, an AWS SDK v3 `PutObjectCommand` to `s3:PutObject`) via a curated call-to-action map, and emit `RequiresPermission` edges. The edge kind is reserved in the vocabulary; no analyzer emits it yet.
@@ -43,6 +43,24 @@ TypeScript/JavaScript already has compiler-grade resolution via the `strata-scip
 
 Each will arrive the same way TS did: a SCIP/LSP backend behind the existing analyzer, with a measured per-band precision report and CI floors. The infra `Runs` bridge for C# (assembly-string handlers) and Rust (Cargo bin-name handlers) is deferred alongside, since resolving those handlers needs the same compiler-grade mapping. (Python contract-plane producers/consumers are **now linked**: Flask/FastAPI/Django routes, `requests`/`httpx` calls, `gql` documents, and Graphene/Strawberry/Ariadne resolvers. Only Rust and C# code remains unscanned for contract signals.)
 
+## More languages: Java and Go
+
+The code plane reads TypeScript/JavaScript, Python, Rust and C# today. **Java and Go are the committed next pair** (design §14.1 items 6 and 7, Track A4/A5). Until they land, this is exactly where the line is for a Java or Go repository:
+
+- **What you get today.** Every plane built from non-code files works as usual: API specs (the contract plane), IaC templates and plans (the infrastructure plane), SQL DDL (the data plane), and your docs (the knowledge plane).
+- **What you don't.** `.java` and `.go` files are not parsed, so there are no code symbols and no code edges, and nothing links those planes back to the Java or Go code that implements an operation, calls it, reads a table, or runs as a Lambda handler. A blast radius that would pass through that code stops at the spec, the template or the table.
+- **What is committed.** Each language arrives the way Python and C# did: Tree-sitter extraction first, with the same confidence bands and the same refusal to guess (dynamic dispatch the heuristic cannot pin down is marked `Ambiguous`, never resolved by a guess), then compiler-grade precision as the follow-up. No date is set; the design records the trigger.
+
+## Pull-request checks: `detect-changes --base`
+
+`detect-changes` diffs against `HEAD` today: the working tree by default, or the staged index with `--staged`. That is the right scope before a commit, but a pull-request check in CI needs the whole branch compared with its base. The committed fix (design §14.1 item 8, Track B8) is a third scope:
+
+- **`strata detect-changes --base <ref>`** compares `merge-base(<ref>, HEAD)` with `HEAD`, the three-dot diff a pull request shows. It covers committed changes only, so a dirty working tree never changes the result, and it cannot be combined with `--staged`.
+- **Errors are loud.** An unknown ref, unrelated histories (no merge base) and a shallow clone that lacks the merge base each exit 2 with a message that names the fix, never a silent empty diff. A branch equal to its base is a valid, empty result.
+- **Everywhere `detect-changes` runs.** Estate mode resolves the ref in the changing member's own repository, and the MCP `detect_changes` tool gains a matching `base` argument. StrataMoat builds its own `--base` on this scope rather than reimplementing the diff.
+
+Until it ships, the two-command workaround in [Pre-commit change checks](../guides/detect-changes.md) gives the same diff.
+
 ## The knowledge plane
 
 **M1 shipped.** The fifth plane is built and fully deterministic: markdown files, inline doc comments, and API-spec descriptions become `Doc`/`DocSection` nodes linked to the code they describe — structural and lexical extraction, no model pass (see [The knowledge plane](../concepts/knowledge.md)). What remains on the roadmap:
@@ -59,7 +77,7 @@ The desktop app ships for macOS today. Deferred (Track E4/E5):
 
 ## More editor adapters
 
-The agent kit installs first-class integrations for **Claude Code and Kiro** today (`strata init claude|kiro`: MCP wiring, steering/skills files, and scoped pre/post-tool-use hooks). Deferred (Track E6): adapters for **Cursor, Windsurf, and Copilot**, plus `strata init --remove` to cleanly uninstall a kit. The engine surface they all build on (the MCP server) is already there; each adapter is the tool-specific wiring on top.
+The agent kit installs first-class integrations for **Claude Code, Kiro and Kiro Crew** today (`strata init claude|kiro|kiro-crew`: MCP wiring, steering/skills files, scoped pre/post-tool-use hooks, and — for `kiro-crew` — committed project skills and a project agent spec). Deferred (Track E6): adapters for **Cursor, Windsurf, and Copilot**, plus `strata init --remove` to cleanly uninstall a kit. The engine surface they all build on (the MCP server) is already there; each adapter is the tool-specific wiring on top.
 
 ## Further out
 

@@ -16,6 +16,7 @@
 pub mod claude;
 pub mod content;
 pub mod kiro;
+pub mod kiro_crew;
 pub mod writers;
 
 pub use kiro::KiroVersion;
@@ -34,6 +35,12 @@ pub enum Agent {
     /// `.kiro/hooks/*` in the legacy `.kiro.hook` or new `.json` format (per
     /// [`KiroVersion`], selected by `--kiro-version`).
     Kiro,
+    /// Kiro Crew: the [`Agent::Kiro`] kit PLUS the repo-committed project
+    /// layer a Crew or Kiro-CLI session reads — `.kiro/skills/*/SKILL.md`
+    /// project skills and a `.kiro/agents/strata.json` project agent spec
+    /// carrying three advisory hooks. A superset of `Kiro`, so the two
+    /// compose idempotently in either order.
+    KiroCrew,
 }
 
 impl Agent {
@@ -42,12 +49,13 @@ impl Agent {
         match s {
             "claude" => Some(Agent::Claude),
             "kiro" => Some(Agent::Kiro),
+            "kiro-crew" => Some(Agent::KiroCrew),
             _ => None,
         }
     }
 
     /// The supported agent names, for the bare-`init` listing and error messages.
-    pub const SUPPORTED: &'static [&'static str] = &["claude", "kiro"];
+    pub const SUPPORTED: &'static [&'static str] = &["claude", "kiro", "kiro-crew"];
 }
 
 /// What `init` did to one file. Carried into the summary the user sees.
@@ -265,6 +273,12 @@ pub fn run(
             let resolved = kiro::resolve_kiro_version(root, kiro_version);
             kiro::install(root, &ctx, resolved, scope)?
         }
+        // A superset of the Kiro arm — `kiro_crew::install` runs the same
+        // installer first, then adds the project layer.
+        Agent::KiroCrew => {
+            let resolved = kiro::resolve_kiro_version(root, kiro_version);
+            kiro_crew::install(root, &ctx, resolved, scope)?
+        }
     };
     Ok(render_summary(agent, root, &ctx, &reports))
 }
@@ -274,6 +288,7 @@ fn render_summary(agent: Agent, root: &Path, ctx: &RepoContext, reports: &[FileR
     let agent_label = match agent {
         Agent::Claude => "Claude Code",
         Agent::Kiro => "Kiro",
+        Agent::KiroCrew => "Kiro Crew",
     };
     let mut out = format!("StrataGraph agent kit for {agent_label}:\n");
     for r in reports {
@@ -338,6 +353,11 @@ mod tests {
     fn agent_parse_known_and_unknown() {
         assert_eq!(Agent::parse("claude"), Some(Agent::Claude));
         assert_eq!(Agent::parse("kiro"), Some(Agent::Kiro));
+        assert_eq!(Agent::parse("kiro-crew"), Some(Agent::KiroCrew));
+        // Underscore and camelCase spellings are NOT accepted: the listed
+        // name is the one the docs and `SUPPORTED` state.
+        assert_eq!(Agent::parse("kiro_crew"), None);
+        assert_eq!(Agent::parse("kirocrew"), None);
         assert_eq!(Agent::parse("cursor"), None);
     }
 
