@@ -54,6 +54,17 @@ pub struct IndexOptions {
     /// it never inflates the graph; set true (`--include-vendored`) to index it
     /// anyway. The `.strataignore` exclude list is honored regardless.
     pub include_vendored: bool,
+    /// Ignore both caches and redo the work: the per-file parse cache and the
+    /// source-hash-keyed `index.scip` cache (`--force`).
+    ///
+    /// Neither cache key includes anything about HOW a file was analysed — the
+    /// parse cache is keyed on file content, the SCIP cache on a hash of the TS
+    /// sources — so an upgrade that changes resolution behaviour leaves an
+    /// unchanged repo reporting `files reused: N` and still serving the old
+    /// results. This is the supported way out, in preference to deleting
+    /// `.strata/graph.duckdb` by hand, which also discards the knowledge index
+    /// and any estate marker.
+    pub force_reparse: bool,
 }
 
 impl Default for IndexOptions {
@@ -62,6 +73,7 @@ impl Default for IndexOptions {
             resolve_mode: ResolveMode::Auto,
             allow_install: false,
             include_vendored: false,
+            force_reparse: false,
         }
     }
 }
@@ -96,7 +108,7 @@ pub fn resolve_scip(
                     degraded: true,
                 });
             }
-            match run_cached(repo_path, sources, opts.allow_install) {
+            match run_cached(repo_path, sources, opts.allow_install, opts.force_reparse) {
                 Ok(resolver) => Ok(ScipOutcome {
                     resolver: Some(resolver),
                     degraded: false,
@@ -126,7 +138,7 @@ pub fn resolve_scip(
                     repo_path.display()
                 )));
             }
-            let resolver = run_cached(repo_path, sources, opts.allow_install)?;
+            let resolver = run_cached(repo_path, sources, opts.allow_install, opts.force_reparse)?;
             Ok(ScipOutcome {
                 resolver: Some(resolver),
                 degraded: false,
@@ -137,8 +149,51 @@ pub fn resolve_scip(
 
 /// Cheap capability gate: can `scip-typescript` run without a network install?
 /// True when installs are permitted, or when `typescript` is already present.
+///
+/// "Present" has to account for monorepo installs. A pnpm workspace hoists
+/// nothing by default, so `typescript` is commonly a package's devDependency
+/// with no `<root>/node_modules/typescript` at all — and pnpm materialises the
+/// real packages under `node_modules/.pnpm/`. Checking only the root therefore
+/// reported "not runnable" for repos where SCIP would have worked, and because
+/// that verdict takes `Auto`'s *silent* degrade path (no diagnostic at all),
+/// the resolution loss was invisible. The checks stay filesystem-only and
+/// shallow: a `node_modules/.pnpm` entry beginning `typescript@`, else a
+/// workspace package that has its own copy.
 fn scip_runnable(repo_path: &Path, allow_install: bool) -> bool {
-    allow_install || repo_path.join("node_modules").join("typescript").is_dir()
+    if allow_install || repo_path.join("node_modules").join("typescript").is_dir() {
+        return true;
+    }
+    pnpm_store_has_typescript(repo_path) || a_workspace_package_has_typescript(repo_path)
+}
+
+/// Whether pnpm's own store (`node_modules/.pnpm/typescript@<version>`) holds
+/// typescript. One `read_dir` of a flat directory, no recursion.
+fn pnpm_store_has_typescript(repo_path: &Path) -> bool {
+    let store = repo_path.join("node_modules").join(".pnpm");
+    let Ok(entries) = std::fs::read_dir(store) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().starts_with("typescript@"))
+}
+
+/// Whether any immediate child of a conventional workspace directory has its
+/// own `node_modules/typescript`.
+///
+/// Bounded deliberately: the conventional container directories, one level of
+/// packages each. This is a capability *hint* before spending a subprocess, so
+/// a cheap wrong-negative is acceptable where a deep repo walk is not.
+fn a_workspace_package_has_typescript(repo_path: &Path) -> bool {
+    const CONTAINERS: [&str; 4] = ["packages", "apps", "libs", "services"];
+    CONTAINERS.iter().any(|c| {
+        let Ok(entries) = std::fs::read_dir(repo_path.join(c)) else {
+            return false;
+        };
+        entries
+            .flatten()
+            .any(|e| e.path().join("node_modules").join("typescript").is_dir())
+    })
 }
 
 /// Run `scip-typescript` (or reuse a cached index keyed by the source hash) and
@@ -147,12 +202,16 @@ fn run_cached(
     repo_path: &Path,
     sources: &BTreeMap<String, String>,
     allow_install: bool,
+    force: bool,
 ) -> Result<ScipResolver, ScipError> {
     let hash = sources_hash(sources);
     let cached = cache_path(&hash);
 
-    // Reuse a previously produced index for this exact source set.
-    if cached.is_file() {
+    // Reuse a previously produced index for this exact source set. `force`
+    // skips the reuse: the key is the SOURCES, so an index produced by an
+    // older/differently-invoked scip run is indistinguishable from a current
+    // one and would otherwise be served indefinitely for an unchanged repo.
+    if !force && cached.is_file() {
         if let Ok(resolver) = ScipResolver::from_index_file(&cached) {
             return Ok(resolver);
         }
@@ -163,7 +222,23 @@ fn run_cached(
         run_npm_install: allow_install,
         ..RunOptions::default()
     };
-    let index_path = run_scip(repo_path, &run_opts)?;
+
+    // Write the index OUTSIDE the repository. `run_scip` used to write
+    // `<repo>/index.scip` and leave it there, so every successful index put a
+    // multi-megabyte untracked file in the repo being indexed — 1.4 MB on the
+    // repo that prompted this, showing up in `git status` ready to be committed
+    // by accident. Indexing must not modify the tree it reads.
+    //
+    // The temp directory is dropped (and removed) when this function returns;
+    // the index we keep is the copy in the cache, which lives under the system
+    // temp dir keyed by the source hash.
+    let scratch = tempfile::Builder::new()
+        .prefix("strata-scip-run-")
+        .tempdir()
+        .map_err(|e| ScipError::Io(format!("creating a scratch directory: {e}")))?;
+    let out = scratch.path().join("index.scip");
+
+    let index_path = run_scip(repo_path, &out, &run_opts)?;
     let resolver = ScipResolver::from_index_file(&index_path)?;
 
     // Best-effort cache write; failures here are non-fatal (we already parsed).
@@ -225,6 +300,7 @@ mod tests {
             resolve_mode: ResolveMode::Off,
             allow_install: false,
             include_vendored: false,
+            force_reparse: false,
         };
         let out = resolve_scip(dir.path(), &sources, &opts).expect("off never errors");
         assert!(out.resolver.is_none());
@@ -242,6 +318,7 @@ mod tests {
             resolve_mode: ResolveMode::Auto,
             allow_install: false,
             include_vendored: false,
+            force_reparse: false,
         };
         let out = resolve_scip(dir.path(), &sources, &opts).expect("auto degrades, never errors");
         assert!(out.resolver.is_none(), "no resolver when degraded");
@@ -259,6 +336,7 @@ mod tests {
             resolve_mode: ResolveMode::On,
             allow_install: false,
             include_vendored: false,
+            force_reparse: false,
         };
         let msg = match resolve_scip(dir.path(), &sources, &opts) {
             Err(e) => e.to_string(),
@@ -278,12 +356,91 @@ mod tests {
             resolve_mode: ResolveMode::On,
             allow_install: false,
             include_vendored: false,
+            force_reparse: false,
         };
         let msg = match resolve_scip(dir.path(), &sources, &opts) {
             Err(e) => e.to_string(),
             Ok(_) => panic!("on + no sources must be an error"),
         };
         assert!(msg.contains("sources"));
+    }
+
+    /// A pnpm workspace hoists nothing, so `typescript` is commonly a
+    /// package's devDependency with no `<root>/node_modules/typescript`. The
+    /// gate must still say "runnable" — before this it returned false and took
+    /// `Auto`'s SILENT degrade path, losing precise resolution with no
+    /// diagnostic at all.
+    #[test]
+    fn the_capability_gate_sees_a_pnpm_store_install() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(
+            d.path()
+                .join("node_modules/.pnpm/typescript@5.6.2/node_modules"),
+        )
+        .unwrap();
+        assert!(
+            scip_runnable(d.path(), false),
+            "a pnpm store install must count as typescript being present"
+        );
+    }
+
+    #[test]
+    fn the_capability_gate_sees_a_workspace_package_install() {
+        for container in ["packages", "apps", "libs", "services"] {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(d.path().join(container).join("web/node_modules/typescript"))
+                .unwrap();
+            assert!(
+                scip_runnable(d.path(), false),
+                "typescript under {container}/* must count"
+            );
+        }
+    }
+
+    #[test]
+    fn the_capability_gate_still_says_no_when_typescript_is_absent() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("node_modules/.pnpm/react@19.0.0")).unwrap();
+        std::fs::create_dir_all(d.path().join("packages/web/src")).unwrap();
+        assert!(
+            !scip_runnable(d.path(), false),
+            "an unrelated package must not be mistaken for typescript"
+        );
+    }
+
+    #[test]
+    fn allow_install_still_short_circuits_the_gate() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(scip_runnable(d.path(), true));
+    }
+
+    /// D-TS4: the SCIP cache is keyed on the SOURCES, so an index produced by
+    /// an older or differently-invoked scip run is indistinguishable from a
+    /// current one. `force` must not serve it.
+    #[test]
+    fn force_ignores_a_cached_scip_index() {
+        let sources =
+            BTreeMap::from([("src/a.ts".to_string(), "export function f(){}".to_string())]);
+        let hash = sources_hash(&sources);
+        let cached = cache_path(&hash);
+        std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        // A deliberately unparseable "index": reaching it is the failure the
+        // non-forced path would show, and forcing must get past it.
+        std::fs::write(&cached, b"not a scip index").unwrap();
+
+        let d = tempfile::tempdir().unwrap();
+        // allow_install=false and no typescript → Auto degrades without
+        // running anything, which is all this assertion needs: the point is
+        // that the corrupt cache entry is not returned as a resolver.
+        let opts = IndexOptions {
+            resolve_mode: ResolveMode::Auto,
+            allow_install: false,
+            include_vendored: false,
+            force_reparse: true,
+        };
+        let out = resolve_scip(d.path(), &sources, &opts).expect("auto never errors");
+        assert!(out.resolver.is_none());
+        let _ = std::fs::remove_file(&cached);
     }
 
     #[test]

@@ -266,7 +266,7 @@ pub fn index_estate(
     manifest_path: &Path,
     mode: ResolveMode,
 ) -> EstateStats {
-    index_estate_with_options(manifest, manifest_path, mode, false)
+    index_estate_with_options(manifest, manifest_path, mode, false, false)
 }
 
 /// [`index_estate`] with an explicit `include_vendored` switch (the CLI
@@ -279,6 +279,7 @@ pub fn index_estate_with_options(
     manifest_path: &Path,
     mode: ResolveMode,
     include_vendored: bool,
+    force: bool,
 ) -> EstateStats {
     let manifest_dir = manifest_path
         .parent()
@@ -319,6 +320,7 @@ pub fn index_estate_with_options(
             resolve_mode: mode,
             allow_install: false,
             include_vendored,
+            force_reparse: force,
         };
 
         // Open the store, index, and save — R2: failures are recorded, not propagated.
