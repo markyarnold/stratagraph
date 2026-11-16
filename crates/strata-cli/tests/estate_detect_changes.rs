@@ -109,7 +109,7 @@ fn detect_changes_on_producer_surfaces_cross_repo_consumer() {
     git_commit_all(&producer_dir, "baseline");
 
     // Index the estate (writes estate.toml markers in each member repo).
-    cmd_index_workspace(&manifest, ResolveMode::Auto, false)
+    cmd_index_workspace(&manifest, ResolveMode::Auto, false, false)
         .expect("estate indexing should succeed");
 
     // Verify marker exists in producer.
@@ -163,7 +163,7 @@ fn detect_changes_with_explicit_db_stays_single_repo() {
     git_commit_all(&producer_dir, "baseline");
 
     // Index the estate.
-    cmd_index_workspace(&manifest, ResolveMode::Auto, false)
+    cmd_index_workspace(&manifest, ResolveMode::Auto, false, false)
         .expect("estate indexing should succeed");
 
     // Modify the producer handler's function body so diff_code_symbols sees a

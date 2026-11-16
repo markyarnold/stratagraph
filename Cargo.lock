@@ -4793,6 +4793,7 @@ version = "0.2.0"
 dependencies = [
  "protobuf",
  "scip",
+ "serde_json",
  "tempfile",
  "thiserror 1.0.69",
 ]
