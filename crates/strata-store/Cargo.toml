@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 strata-core = { path = "../strata-core" }
-duckdb = { version = "1", features = ["bundled"] }
+duckdb = { version = "=1.10503.1", features = ["bundled"] }
 thiserror = "1"
 serde_json = { workspace = true }
 

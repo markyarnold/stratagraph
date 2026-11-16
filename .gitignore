@@ -141,3 +141,13 @@ target/
 # ---------------------------------------------------------------------------
 docs/superpowers/
 .superpowers/
+
+# Agent-tooling scratch directories. These are not engine source, but while they
+# sat untracked they made `git status --porcelain` non-empty, and the build id
+# embedded by `strata-core/build.rs` reads exactly that to decide the `-dirty`
+# suffix — so every binary built from a checkout carrying them was stamped
+# `…-dirty`, which defeats the "the exact build id is always visible" guarantee
+# the changelog makes about `strata --version`.
+.agents/
+.codex/
+.ruv-swarm/

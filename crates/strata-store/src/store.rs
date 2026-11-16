@@ -152,6 +152,34 @@ CREATE TABLE IF NOT EXISTS parse_cache (
 // DuckGraphStore
 // ---------------------------------------------------------------------------
 
+/// Map a DuckDB open failure onto an actionable [`StoreError`].
+///
+/// The one case worth translating is a graph written by a build with a newer
+/// DuckDB: DuckDB refuses it with a message about storage version numbers
+/// ("Trying to read a database file with version number 999, but we can only
+/// read versions between 64 and 68"), which is accurate and useless — it names
+/// neither the cause nor the remedy. Since the graph is derived data, deleting
+/// and re-indexing is always safe, so say that.
+///
+/// Every other error is passed through unchanged: guessing at unrelated IO or
+/// permission failures would be worse than DuckDB's own wording.
+fn explain_open_error(path: &Path, e: duckdb::Error) -> StoreError {
+    let text = e.to_string();
+    let is_version_mismatch = text.contains("version number")
+        && (text.contains("can only read versions") || text.contains("newer version"));
+    if !is_version_mismatch {
+        return StoreError::from(e);
+    }
+    StoreError::Db(format!(
+        "{} was written by a newer build of strata and cannot be read by this one. \
+         The graph is derived data, so it is safe to rebuild: delete it and re-index \
+         (`strata index <repo>`, or `rm {} && strata index <repo>`). \
+         Underlying error: {text}",
+        path.display(),
+        path.display()
+    ))
+}
+
 pub struct DuckGraphStore {
     conn: Connection,
 }
@@ -163,8 +191,15 @@ impl DuckGraphStore {
     }
 
     /// Open (creating if needed) a DuckDB database at `path`; ensures schema exists.
+    ///
+    /// A graph written by a build carrying a NEWER DuckDB than this one cannot
+    /// be read — DuckDB's storage format is forward-incompatible by design, and
+    /// its own error names only storage version numbers, which tell the reader
+    /// nothing about what to do. The graph is derived data, so the remedy is
+    /// always the same and always safe: re-index. [`explain_open_error`] turns
+    /// that case into an instruction.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let conn = Connection::open(path)?;
+        let conn = Connection::open(path).map_err(|e| explain_open_error(path, e))?;
         Self::init(conn)
     }
 
@@ -417,5 +452,54 @@ impl GraphStore for DuckGraphStore {
             map.insert(path, ParseCacheEntry { hash, analyzed });
         }
         Ok(map)
+    }
+}
+
+#[cfg(test)]
+mod open_error_tests {
+    use super::*;
+
+    /// A graph written by a newer build must produce an instruction, not a
+    /// storage-version number. DuckDB's own wording is accurate and useless.
+    #[test]
+    fn a_newer_graph_explains_how_to_recover() {
+        let e = duckdb::Error::DuckDBFailure(
+            duckdb::ffi::Error::new(1),
+            Some(
+                "IO Error: Trying to read a database file with version number 999, \
+                 but we can only read versions between 64 and 68."
+                    .to_string(),
+            ),
+        );
+        let msg = explain_open_error(Path::new("/repo/.strata/graph.duckdb"), e).to_string();
+        assert!(
+            msg.contains("written by a newer build"),
+            "must name the cause: {msg}"
+        );
+        assert!(msg.contains("strata index"), "must name the remedy: {msg}");
+        assert!(
+            msg.contains("/repo/.strata/graph.duckdb"),
+            "must name the file: {msg}"
+        );
+        assert!(
+            msg.contains("version number 999"),
+            "must keep the underlying error for support: {msg}"
+        );
+    }
+
+    /// Unrelated failures pass through untouched — guessing at an IO or
+    /// permission error would be worse than DuckDB's own wording.
+    #[test]
+    fn unrelated_open_errors_are_not_reworded() {
+        let e = duckdb::Error::DuckDBFailure(
+            duckdb::ffi::Error::new(1),
+            Some("IO Error: Permission denied".to_string()),
+        );
+        let msg = explain_open_error(Path::new("/repo/x.duckdb"), e).to_string();
+        assert!(msg.contains("Permission denied"), "{msg}");
+        assert!(
+            !msg.contains("strata index"),
+            "must not offer a remedy that does not apply: {msg}"
+        );
     }
 }
